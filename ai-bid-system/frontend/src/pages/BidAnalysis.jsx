@@ -1,204 +1,216 @@
-import React from 'react';
-import { BarChart3, TrendingUp, Target, CheckCircle, AlertTriangle, PieChart } from 'lucide-react';
+import React, { useState } from 'react';
+import { FileText, File, FileType, Upload, CheckCircle, AlertCircle, X } from 'lucide-react';
 
 const BidAnalysis = () => {
-  const analysisData = [
-    { category: '技术方案', score: 85, average: 72, trend: 'up' },
-    { category: '价格合理性', score: 92, average: 78, trend: 'up' },
-    { category: '公司资质', score: 78, average: 80, trend: 'down' },
-    { category: '售后服务', score: 88, average: 75, trend: 'up' },
-    { category: '交付周期', score: 70, average: 68, trend: 'up' },
-  ];
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [isDragging, setIsDragging] = useState(false);
 
-  const requirements = [
-    { text: 'ISO9001质量体系认证', status: 'met', critical: true },
-    { text: '3年以上行业经验', status: 'met', critical: true },
-    { text: '项目负责人具备高级职称', status: 'unmet', critical: true },
-    { text: '提供3个类似项目案例', status: 'met', critical: false },
-    { text: '7×24小时技术支持', status: 'met', critical: false },
-    { text: '30天交付周期', status: 'unmet', critical: true },
-  ];
+  const handleFileUpload = (event) => {
+    const file = event.target.files[0];
+    if (file) {
+      setSelectedFile(file);
+      console.log('上传文件:', file.name);
+    }
+  };
 
-  const strengths = [
-    '技术方案得分较高，创新点突出',
-    '价格优势明显，性价比高',
-    '售后服务完善，响应速度快',
-  ];
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    setIsDragging(true);
+  };
 
-  const weaknesses = [
-    '公司资质方面缺少特定认证',
-    '交付周期较长，需优化生产流程',
-    '项目负责人资质不符合要求',
-  ];
+  const handleDragLeave = () => {
+    setIsDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setIsDragging(false);
+    
+    const file = e.dataTransfer.files[0];
+    if (file && (file.type.includes('pdf') || file.name.match(/\.(doc|docx)$/i))) {
+      setSelectedFile(file);
+      console.log('拖拽上传文件:', file.name);
+    }
+  };
+
+  const removeFile = () => {
+    setSelectedFile(null);
+  };
 
   return (
-    <div className="space-y-6">
-      {/* 概览卡片 */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <div className="flex items-center">
-            <div className="w-12 h-12 bg-blue-50 rounded-lg flex items-center justify-center mr-4">
-              <BarChart3 size={24} className="text-blue-600" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-gray-900">86.4</div>
-              <div className="text-sm text-gray-500">综合得分</div>
-            </div>
-          </div>
-          <div className="mt-4 text-xs text-green-600 flex items-center">
-            <TrendingUp size={12} className="mr-1" />
-            较上月提升 5.2%
-          </div>
-        </div>
-
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <div className="flex items-center">
-            <div className="w-12 h-12 bg-green-50 rounded-lg flex items-center justify-center mr-4">
-              <Target size={24} className="text-green-600" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-gray-900">85%</div>
-              <div className="text-sm text-gray-500">通过率</div>
-            </div>
-          </div>
-          <div className="mt-4 text-xs text-green-600">高于行业平均 12%</div>
-        </div>
-
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <div className="flex items-center">
-            <div className="w-12 h-12 bg-purple-50 rounded-lg flex items-center justify-center mr-4">
-              <CheckCircle size={24} className="text-purple-600" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-gray-900">28</div>
-              <div className="text-sm text-gray-500">已满足要求</div>
-            </div>
-          </div>
-          <div className="mt-4 text-xs text-gray-500">总计 32 项要求</div>
-        </div>
-
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <div className="flex items-center">
-            <div className="w-12 h-12 bg-yellow-50 rounded-lg flex items-center justify-center mr-4">
-              <AlertTriangle size={24} className="text-yellow-600" />
-            </div>
-            <div>
-              <div className="text-2xl font-bold text-gray-900">4</div>
-              <div className="text-sm text-gray-500">未满足要求</div>
-            </div>
-          </div>
-          <div className="mt-4 text-xs text-red-600">其中 3 项为关键要求</div>
-        </div>
+    <div className="min-h-screen bg-gradient-to-br from-purple-50/50 via-white to-white flex flex-col items-center justify-center p-4 md:p-8">
+      {/* 页面大标题 */}
+      <div className="text-center mb-8 md:mb-12">
+        <h1 className="text-3xl md:text-4xl lg:text-5xl font-extrabold mb-4">
+          <span className="text-black">标书AI</span>{' '}
+          <span className="text-transparent bg-clip-text bg-gradient-to-r from-purple-600 to-blue-500">
+            投标文件深度解析报告
+          </span>
+        </h1>
+        <p className="text-gray-500 text-sm md:text-base">AI智能分析，提升投标成功率</p>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* 评分分析 */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-bold text-gray-900">各维度评分</h3>
-            <PieChart size={20} className="text-gray-400" />
-          </div>
-          <div className="space-y-4">
-            {analysisData.map((item, index) => (
-              <div key={index} className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span className="font-medium text-gray-700">{item.category}</span>
-                  <div className="flex items-center">
-                    <span className="font-bold text-gray-900">{item.score}分</span>
-                    <span className="ml-2 text-xs text-gray-500">（平均 {item.average}分）</span>
-                    {item.trend === 'up' ? (
-                      <span className="ml-2 text-xs text-green-600 flex items-center">
-                        <TrendingUp size={10} className="mr-1" /> 优异
-                      </span>
-                    ) : (
-                      <span className="ml-2 text-xs text-red-600 flex items-center">
-                        <TrendingUp size={10} className="mr-1 rotate-180" /> 需改进
-                      </span>
-                    )}
+      {/* 核心内容卡片 */}
+      <div className="w-full max-w-4xl bg-white rounded-2xl shadow-lg p-6 md:p-8">
+        {/* 卡片顶部标题 */}
+        <div className="text-center mb-8">
+          <h2 className="text-2xl md:text-3xl font-bold text-gray-900 mb-4">
+            深度解析投标文件
+          </h2>
+          <p className="text-gray-500 text-sm md:text-base leading-relaxed max-w-3xl mx-auto">
+            投标应答策略建议、评分项分析、废标项分析、投标文件组成框架梳理、商务资料清单梳理
+          </p>
+        </div>
+
+        {/* 文件上传区域 */}
+        <div 
+          className={`border-2 border-dashed rounded-2xl p-8 md:p-12 mb-8 transition-all duration-300 ${
+            isDragging 
+              ? 'border-purple-400 bg-purple-50/50' 
+              : selectedFile 
+                ? 'border-green-200 bg-green-50/30' 
+                : 'border-purple-200 hover:border-purple-300 hover:bg-purple-50/30'
+          }`}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+        >
+          {selectedFile ? (
+            <div className="flex flex-col items-center justify-center">
+              <div className="w-20 h-20 bg-green-100 rounded-2xl flex items-center justify-center text-green-600 mb-6">
+                <CheckCircle size={40} />
+              </div>
+              <div className="text-center mb-6">
+                <p className="text-gray-900 font-bold text-lg mb-2">文件已选择</p>
+                <p className="text-gray-600 mb-1">{selectedFile.name}</p>
+                <p className="text-gray-400 text-sm">
+                  文件大小: {(selectedFile.size / 1024 / 1024).toFixed(2)} MB
+                </p>
+              </div>
+              <div className="flex space-x-4">
+                <button
+                  onClick={removeFile}
+                  className="px-6 py-2.5 border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors flex items-center"
+                >
+                  <X size={18} className="mr-2" />
+                  重新选择
+                </button>
+                <button className="px-6 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center">
+                  <FileText size={18} className="mr-2" />
+                  开始解析
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-col items-center justify-center">
+              {/* 文档图标 */}
+              <div className="flex space-x-6 mb-8">
+                <div className="flex flex-col items-center">
+                  <div className="w-16 h-16 bg-purple-100 rounded-xl flex items-center justify-center text-purple-600 mb-2">
+                    <File size={32} />
                   </div>
+                  <span className="text-xs text-gray-500">DOC</span>
                 </div>
-                <div className="w-full bg-gray-200 rounded-full h-2">
-                  <div 
-                    className="h-2 rounded-full bg-gradient-to-r from-purple-500 to-indigo-500"
-                    style={{ width: `${item.score}%` }}
-                  ></div>
+                <div className="flex flex-col items-center">
+                  <div className="w-16 h-16 bg-blue-100 rounded-xl flex items-center justify-center text-blue-600 mb-2">
+                    <FileType size={32} />
+                  </div>
+                  <span className="text-xs text-gray-500">DOCX</span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <div className="w-16 h-16 bg-orange-100 rounded-xl flex items-center justify-center text-orange-600 mb-2">
+                    <FileText size={32} />
+                  </div>
+                  <span className="text-xs text-gray-500">PDF</span>
                 </div>
               </div>
-            ))}
-          </div>
-        </div>
 
-        {/* 要求符合情况 */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-bold text-gray-900 mb-6">招标要求符合情况</h3>
-          <div className="space-y-3">
-            {requirements.map((req, index) => (
-              <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                <div className="flex items-center">
-                  {req.status === 'met' ? (
-                    <CheckCircle size={16} className="text-green-500 mr-3" />
-                  ) : (
-                    <AlertTriangle size={16} className="text-red-500 mr-3" />
-                  )}
-                  <span className={`text-sm ${req.critical ? 'font-medium text-gray-900' : 'text-gray-700'}`}>
-                    {req.text}
-                    {req.critical && <span className="ml-2 text-xs text-red-600">（关键）</span>}
-                  </span>
+              {/* 提示文字 */}
+              <p className="text-gray-900 font-bold text-lg mb-2">
+                支持(.doc/.docx/.pdf)格式投标文件
+              </p>
+              <p className="text-gray-500 text-sm text-center mb-8 max-w-md">
+                点击下方按钮上传文件，或直接拖拽文件到此处
+                <br />
+                文件大小不超过 50MB
+              </p>
+
+              {/* 上传按钮 */}
+              <label className="cursor-pointer">
+                <input
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.doc,.docx"
+                  onChange={handleFileUpload}
+                />
+                <div className="px-8 py-3.5 bg-purple-600 text-white rounded-xl hover:bg-purple-700 transition-colors flex items-center text-lg font-medium">
+                  <Upload size={20} className="mr-3" />
+                  点击上传投标文件
                 </div>
-                <span className={`text-xs px-3 py-1 rounded-full ${req.status === 'met' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-                  {req.status === 'met' ? '已满足' : '未满足'}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+              </label>
 
-      {/* 优劣势分析 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
-            <div className="w-8 h-8 bg-green-50 rounded-lg flex items-center justify-center mr-3">
-              <TrendingUp size={18} className="text-green-600" />
+              {/* 拖拽提示 */}
+              <p className="text-gray-400 text-sm mt-6">
+                或拖拽文件到此处
+              </p>
             </div>
-            优势分析
-          </h3>
-          <ul className="space-y-3">
-            {strengths.map((strength, index) => (
-              <li key={index} className="flex items-start">
-                <div className="w-6 h-6 bg-green-100 rounded-full flex items-center justify-center mr-3 mt-0.5 flex-shrink-0">
-                  <div className="w-2 h-2 bg-green-600 rounded-full"></div>
-                </div>
-                <span className="text-gray-700">{strength}</span>
-              </li>
-            ))}
-          </ul>
+          )}
         </div>
 
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
-            <div className="w-8 h-8 bg-red-50 rounded-lg flex items-center justify-center mr-3">
-              <AlertTriangle size={18} className="text-red-600" />
+        {/* 功能特性说明 */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="bg-gray-50 rounded-xl p-5">
+            <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600 mb-4">
+              <FileText size={24} />
             </div>
-            待改进项
-          </h3>
-          <ul className="space-y-3">
-            {weaknesses.map((weakness, index) => (
-              <li key={index} className="flex items-start">
-                <div className="w-6 h-6 bg-red-100 rounded-full flex items-center justify-center mr-3 mt-0.5 flex-shrink-0">
-                  <div className="w-2 h-2 bg-red-600 rounded-full"></div>
-                </div>
-                <span className="text-gray-700">{weakness}</span>
-              </li>
-            ))}
-          </ul>
-          <div className="mt-6 p-4 bg-blue-50 rounded-lg">
-            <p className="text-sm text-blue-800">
-              <span className="font-bold">建议：</span> 
-              尽快补充项目负责人高级职称认证，优化生产流程缩短交付周期。
+            <h3 className="font-bold text-gray-900 mb-2">智能解析</h3>
+            <p className="text-gray-600 text-sm">
+              自动提取投标文件关键信息，识别评分标准和废标条款
+            </p>
+          </div>
+
+          <div className="bg-gray-50 rounded-xl p-5">
+            <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center text-green-600 mb-4">
+              <CheckCircle size={24} />
+            </div>
+            <h3 className="font-bold text-gray-900 mb-2">策略建议</h3>
+            <p className="text-gray-600 text-sm">
+              提供针对性的投标应答策略，优化技术方案和商务响应
+            </p>
+          </div>
+
+          <div className="bg-gray-50 rounded-xl p-5">
+            <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center text-purple-600 mb-4">
+              <AlertCircle size={24} />
+            </div>
+            <h3 className="font-bold text-gray-900 mb-2">风险预警</h3>
+            <p className="text-gray-600 text-sm">
+              识别潜在废标风险，提前预警并给出规避建议
             </p>
           </div>
         </div>
+
+        {/* 底部说明 */}
+        <div className="mt-8 pt-6 border-t border-gray-100">
+          <div className="flex flex-col md:flex-row justify-between items-center text-sm text-gray-500">
+            <div className="mb-4 md:mb-0">
+              <p className="flex items-center">
+                <CheckCircle size={14} className="mr-2 text-green-500" />
+                100% 数据安全，文件处理完成后自动删除
+              </p>
+            </div>
+            <div>
+              <p>支持文件格式：PDF、DOC、DOCX</p>
+              <p className="mt-1">最大文件大小：50MB</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 页面底部信息 */}
+      <div className="mt-8 text-center text-gray-400 text-sm">
+        <p>AI · 智能投标助手</p>
+        <p className="mt-1">让投标更简单，让中标更容易</p>
       </div>
     </div>
   );

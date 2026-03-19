@@ -37,7 +37,7 @@ const Sidebar = () => {
         <div className="w-8 h-8 bg-gradient-to-br from-purple-600 to-indigo-500 rounded-lg flex items-center justify-center text-white mr-3 shadow-md shadow-purple-100">
           <span className="font-bold text-lg">X</span>
         </div>
-        <span className="font-bold text-lg tracking-tight">喜鹊标书AI</span>
+        <span className="font-bold text-lg tracking-tight">标书AI</span>
       </div>
 
       {/* 导航菜单 */}
