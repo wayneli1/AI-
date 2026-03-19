@@ -2,12 +2,15 @@ import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   FilePlus, FileText, Compass, ShieldCheck, 
-  Image, BookOpen 
+  Image, BookOpen, LogOut, User
 } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { Dropdown, message } from 'antd';
 
 const Sidebar = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { user, signOut } = useAuth();
 
   const mainNav = [
     { name: '新建标书', icon: <FilePlus size={18} />, path: '/create-bid' },
@@ -27,6 +30,48 @@ const Sidebar = () => {
 
   const handleNavClick = (path) => {
     navigate(path);
+  };
+
+  const handleSignOut = async () => {
+    try {
+      const { error } = await signOut();
+      if (error) throw error;
+      message.success('已成功退出登录');
+      navigate('/login');
+    } catch (error) {
+      message.error('退出登录失败');
+    }
+  };
+
+  const userMenuItems = [
+    {
+      key: 'profile',
+      label: '个人资料',
+      icon: <User size={16} />,
+      onClick: () => navigate('/profile'),
+    },
+    {
+      key: 'divider',
+      type: 'divider',
+    },
+    {
+      key: 'logout',
+      label: '退出登录',
+      icon: <LogOut size={16} />,
+      danger: true,
+      onClick: handleSignOut,
+    },
+  ];
+
+  const getUserInitial = () => {
+    if (user?.user_metadata?.full_name) {
+      return user.user_metadata.full_name.charAt(0).toUpperCase();
+    }
+    return user?.email?.charAt(0).toUpperCase() || 'U';
+  };
+
+  const getUserName = () => {
+    return user?.user_metadata?.full_name || user?.email?.split('@')[0] || '用户';
   };
 
   return (
@@ -84,15 +129,21 @@ const Sidebar = () => {
 
       {/* 底部用户信息 */}
       <div className="p-4 border-t border-gray-50">
-        <div className="flex items-center">
-          <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center text-gray-600 text-sm font-medium">
-            U
+        <Dropdown
+          menu={{ items: userMenuItems }}
+          placement="topRight"
+          trigger={['click']}
+        >
+          <div className="flex items-center cursor-pointer hover:bg-gray-50 p-2 rounded-md transition-colors">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-sm font-medium">
+              {getUserInitial()}
+            </div>
+            <div className="ml-3 flex-1">
+              <div className="text-sm font-medium text-gray-700">{getUserName()}</div>
+              <div className="text-xs text-gray-400">{user?.email}</div>
+            </div>
           </div>
-          <div className="ml-3">
-            <div className="text-sm font-medium text-gray-700">用户名称</div>
-            <div className="text-xs text-gray-400">管理员</div>
-          </div>
-        </div>
+        </Dropdown>
       </div>
     </aside>
   );
