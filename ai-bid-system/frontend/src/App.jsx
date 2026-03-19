@@ -6,7 +6,6 @@ import MyBids from './pages/MyBids';
 import BidAnalysis from './pages/BidAnalysis';
 import BidReview from './pages/BidReview';
 import ImageLibrary from './pages/ImageLibrary';
-import ProductLibrary from './pages/ProductLibrary';
 import KnowledgeBase from './pages/KnowledgeBase';
 
 const App = () => {
@@ -20,7 +19,6 @@ const App = () => {
           <Route path="bid-analysis" element={<BidAnalysis />} />
           <Route path="bid-review" element={<BidReview />} />
           <Route path="image-library" element={<ImageLibrary />} />
-          <Route path="product-library" element={<ProductLibrary />} />
           <Route path="knowledge-base" element={<KnowledgeBase />} />
         </Route>
       </Routes>

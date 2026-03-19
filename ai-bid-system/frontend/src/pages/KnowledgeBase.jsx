@@ -22,23 +22,6 @@ const KnowledgeBase = () => {
     }
   };
 
-  const handleDragUpload = (event) => {
-    const file = event.target.files[0];
-    if (file) {
-      const newFile = {
-        id: Date.now(),
-        name: file.name,
-        size: (file.size / 1024 / 1024).toFixed(2) + ' MB',
-        type: file.name.split('.').pop().toUpperCase(),
-        date: new Date().toLocaleDateString('zh-CN'),
-        status: 'uploaded'
-      };
-      setUploadedFile(newFile);
-      setFiles([newFile, ...files]);
-      console.log('拖拽上传文件:', file.name);
-    }
-  };
-
   const deleteFile = (id) => {
     setFiles(files.filter(file => file.id !== id));
     if (uploadedFile?.id === id) {
@@ -83,9 +66,8 @@ const KnowledgeBase = () => {
       {/* 页面标题 */}
       <h1 className="text-2xl font-bold text-gray-900 mb-8">知识库</h1>
 
-      {/* 顶部上传卡区 - 两栏布局 */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-10">
-        {/* 左侧卡片 - 点击上传 */}
+      {/* 顶部上传卡区 - 单栏布局 */}
+      <div className="mb-10">
         <label className="cursor-pointer">
           <input
             type="file"
@@ -93,33 +75,12 @@ const KnowledgeBase = () => {
             accept=".doc,.docx"
             onChange={handleFileUpload}
           />
-          <div className="bg-purple-50/30 rounded-xl p-8 hover:bg-purple-100/40 hover:shadow-md transition-all duration-300 flex flex-col items-center justify-center h-full min-h-[200px]">
-            <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center text-purple-600 mb-6 shadow-sm">
-              <Upload size={32} />
+          <div className="bg-purple-50/30 rounded-xl p-10 hover:bg-purple-100/40 hover:shadow-md transition-all duration-300 flex flex-col items-center justify-center min-h-[220px]">
+            <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center text-purple-600 mb-6 shadow-sm">
+              <Upload size={40} />
             </div>
-            <p className="text-purple-700 font-bold text-lg mb-3 text-center">
+            <p className="text-purple-700 font-bold text-xl mb-3 text-center">
               点击上传完整投标文件
-            </p>
-            <p className="text-gray-500 text-sm text-center">
-              支持docx、doc格式，最大300M
-            </p>
-          </div>
-        </label>
-
-        {/* 右侧卡片 - 拖拽上传 */}
-        <label className="cursor-pointer">
-          <input
-            type="file"
-            className="hidden"
-            accept=".doc,.docx"
-            onChange={handleDragUpload}
-          />
-          <div className="bg-blue-50/30 rounded-xl p-8 hover:bg-blue-100/40 hover:shadow-md transition-all duration-300 flex flex-col items-center justify-center h-full min-h-[200px] border-2 border-dashed border-blue-200">
-            <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center text-blue-600 mb-6 shadow-sm">
-              <Upload size={32} />
-            </div>
-            <p className="text-blue-700 font-bold text-lg mb-3 text-center">
-              拖拽上传投标文件
             </p>
             <p className="text-gray-500 text-sm text-center">
               支持docx、doc格式，最大300M
