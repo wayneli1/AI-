@@ -26,6 +26,9 @@ CREATE TABLE public.images (
     user_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE NOT NULL,
     image_name TEXT NOT NULL,
     image_url TEXT NOT NULL,
+    file_size INTEGER,
+    file_type TEXT,
+    description TEXT,
     tags TEXT[],
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

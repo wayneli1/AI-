@@ -1,65 +1,203 @@
-import React, { useState } from 'react';
-import { Upload, Inbox, FileText, Download, Eye, Trash2, CheckCircle, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Upload, Inbox, FileText, Download, Eye, Trash2, CheckCircle, X, Loader2 } from 'lucide-react';
+import { supabase } from '../lib/supabase';
+import { useAuth } from '../contexts/AuthContext';
+import { message } from 'antd';
 
 const KnowledgeBase = () => {
+  const { user } = useAuth();
   const [files, setFiles] = useState([]);
   const [uploadedFile, setUploadedFile] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const handleFileUpload = (event) => {
+  useEffect(() => {
+    fetchDocuments();
+  }, [user]);
+
+  const fetchDocuments = async () => {
+    if (!user) return;
+    
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('documents')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('获取文档失败:', error);
+        // 如果获取失败，返回空数组
+        setFiles([]);
+        return;
+      }
+
+      const formattedFiles = data.map(doc => ({
+        id: doc.id,
+        name: doc.file_name,
+        size: doc.file_size ? `${(doc.file_size / 1024 / 1024).toFixed(2)} MB` : '0 MB',
+        type: doc.file_type?.toUpperCase() || doc.file_name.split('.').pop().toUpperCase(),
+        date: new Date(doc.created_at).toLocaleDateString('zh-CN'),
+        status: 'processed',
+        file_url: doc.file_url
+      }));
+
+      setFiles(formattedFiles);
+    } catch (error) {
+      console.error('获取文档失败:', error);
+      message.error('获取文档列表失败');
+      setFiles([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleFileUpload = async (event) => {
     const file = event.target.files[0];
-    if (file) {
+    if (!file || !user) return;
+
+    // 检查文件类型
+    const allowedTypes = ['.pdf', '.doc', '.docx'];
+    const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+    
+    if (!allowedTypes.includes(fileExtension)) {
+      message.error('只支持 PDF、DOC、DOCX 格式的文件');
+      return;
+    }
+
+    // 检查文件大小（最大300MB）
+    const maxSize = 300 * 1024 * 1024; // 300MB
+    if (file.size > maxSize) {
+      message.error('文件大小不能超过300MB');
+      return;
+    }
+
+    try {
+      setUploading(true);
+      
+      // 1. 上传文件到 Storage
+     const safeFileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${fileExtension.replace('.', '')}`;
+      const filePath = `${user.id}/${safeFileName}`;
+      
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('documents')
+        .upload(filePath, file, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) throw uploadError;
+
+      // 2. 构建文件访问URL（私有桶）
+      const fileUrl = `${supabase.supabaseUrl}/storage/v1/object/documents/${filePath}`;
+
+      // 3. 首先确保用户在profiles表中有记录
+      const { data: profileData, error: profileError } = await supabase
+        .from('profiles')
+        .upsert({
+          id: user.id,
+          username: user.email?.split('@')[0] || 'user',
+          company_name: '未设置'
+        }, {
+          onConflict: 'id'
+        })
+        .select()
+        .single();
+
+      if (profileError) {
+        console.error('创建/更新用户profile失败:', profileError);
+      }
+
+      // 4. 写入数据库
+      const { data: insertData, error: insertError } = await supabase
+        .from('documents')
+        .insert({
+          user_id: user.id,
+          file_name: file.name,
+          file_url: fileUrl
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error('数据库插入错误:', insertError);
+        throw insertError;
+      }
+
+      // 4. 更新本地状态
       const newFile = {
-        id: Date.now(),
+        id: insertData.id,
         name: file.name,
-        size: (file.size / 1024 / 1024).toFixed(2) + ' MB',
-        type: file.name.split('.').pop().toUpperCase(),
+        size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
+        type: fileExtension.replace('.', '').toUpperCase(),
         date: new Date().toLocaleDateString('zh-CN'),
-        status: 'uploaded'
+        status: 'processed',
+        file_url: fileUrl
       };
+
       setUploadedFile(newFile);
       setFiles([newFile, ...files]);
-      console.log('上传文件:', file.name);
+      
+      // 5. 显示成功消息
+      message.success(`${file.name} 上传成功！`);
+      
+      // 6. 刷新列表
+      fetchDocuments();
+
+    } catch (error) {
+      console.error('上传失败:', error);
+      
+      if (error.message.includes('duplicate')) {
+        message.error('文件已存在，请重命名后重新上传');
+      } else {
+        message.error('上传失败，请重试');
+      }
+    } finally {
+      setUploading(false);
+      // 清空input值，允许重复上传同一文件
+      event.target.value = '';
     }
   };
 
-  const deleteFile = (id) => {
-    setFiles(files.filter(file => file.id !== id));
-    if (uploadedFile?.id === id) {
-      setUploadedFile(null);
+  const deleteFile = async (id) => {
+    const fileToDelete = files.find(file => file.id === id);
+    if (!fileToDelete || !user) return;
+
+    try {
+      // 从文件名解析出文件路径
+      const filePath = `${user.id}/${fileToDelete.name}`;
+      
+      // 1. 从Storage删除文件
+      const { error: storageError } = await supabase.storage
+        .from('documents')
+        .remove([filePath]);
+
+      if (storageError) throw storageError;
+
+      // 2. 从数据库删除记录
+      const { error: dbError } = await supabase
+        .from('documents')
+        .delete()
+        .eq('id', id)
+        .eq('user_id', user.id);
+
+      if (dbError) throw dbError;
+
+      // 3. 更新本地状态
+      setFiles(files.filter(file => file.id !== id));
+      if (uploadedFile?.id === id) {
+        setUploadedFile(null);
+      }
+
+      message.success('文件删除成功');
+    } catch (error) {
+      console.error('删除失败:', error);
+      message.error('删除失败，请重试');
     }
   };
 
-  const sampleFiles = [
-    {
-      id: 1,
-      name: '智慧城市项目投标文件.docx',
-      size: '12.4 MB',
-      type: 'DOCX',
-      date: '2024-03-19',
-      status: 'processed'
-    },
-    {
-      id: 2,
-      name: '数据中心建设技术方案.pdf',
-      size: '8.7 MB',
-      type: 'PDF',
-      date: '2024-03-18',
-      status: 'processed'
-    },
-    {
-      id: 3,
-      name: '网络安全系统投标书.doc',
-      size: '5.2 MB',
-      type: 'DOC',
-      date: '2024-03-17',
-      status: 'processing'
-    }
-  ];
 
-  // 初始化时使用示例文件
-  if (files.length === 0) {
-    setFiles(sampleFiles);
-  }
 
   return (
     <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
@@ -72,19 +210,48 @@ const KnowledgeBase = () => {
           <input
             type="file"
             className="hidden"
-            accept=".doc,.docx"
+            accept=".pdf,.doc,.docx"
             onChange={handleFileUpload}
+            disabled={uploading || !user}
           />
-          <div className="bg-purple-50/30 rounded-xl p-10 hover:bg-purple-100/40 hover:shadow-md transition-all duration-300 flex flex-col items-center justify-center min-h-[220px]">
-            <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center text-purple-600 mb-6 shadow-sm">
-              <Upload size={40} />
-            </div>
-            <p className="text-purple-700 font-bold text-xl mb-3 text-center">
-              点击上传完整投标文件
-            </p>
-            <p className="text-gray-500 text-sm text-center">
-              支持docx、doc格式，最大300M
-            </p>
+          <div className={`bg-purple-50/30 rounded-xl p-10 hover:bg-purple-100/40 hover:shadow-md transition-all duration-300 flex flex-col items-center justify-center min-h-[220px] ${(uploading || !user) ? 'opacity-50 cursor-not-allowed' : ''}`}>
+            {uploading ? (
+              <>
+                <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center text-purple-600 mb-6 shadow-sm">
+                  <Loader2 size={40} className="animate-spin" />
+                </div>
+                <p className="text-purple-700 font-bold text-xl mb-3 text-center">
+                  上传中...
+                </p>
+                <p className="text-gray-500 text-sm text-center">
+                  请稍候
+                </p>
+              </>
+            ) : !user ? (
+              <>
+                <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center text-purple-600 mb-6 shadow-sm">
+                  <Upload size={40} />
+                </div>
+                <p className="text-purple-700 font-bold text-xl mb-3 text-center">
+                  请先登录
+                </p>
+                <p className="text-gray-500 text-sm text-center">
+                  登录后即可上传文件
+                </p>
+              </>
+            ) : (
+              <>
+                <div className="w-20 h-20 bg-white rounded-2xl flex items-center justify-center text-purple-600 mb-6 shadow-sm">
+                  <Upload size={40} />
+                </div>
+                <p className="text-purple-700 font-bold text-xl mb-3 text-center">
+                  点击上传完整投标文件
+                </p>
+                <p className="text-gray-500 text-sm text-center">
+                  支持 PDF、DOC、DOCX 格式，最大300M
+                </p>
+              </>
+            )}
           </div>
         </label>
       </div>
@@ -99,7 +266,12 @@ const KnowledgeBase = () => {
       </div>
 
       {/* 文件列表或空状态 */}
-      {files.length > 0 ? (
+      {loading ? (
+        <div className="flex flex-col items-center justify-center py-16">
+          <Loader2 size={48} className="text-purple-600 animate-spin mb-4" />
+          <p className="text-gray-500">加载中...</p>
+        </div>
+      ) : files.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
@@ -152,12 +324,25 @@ const KnowledgeBase = () => {
                   </td>
                   <td className="py-4 px-4">
                     <div className="flex space-x-2">
-                      <button className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg">
-                        <Eye size={16} />
-                      </button>
-                      <button className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg">
-                        <Download size={16} />
-                      </button>
+                       <button 
+                         onClick={() => window.open(file.file_url, '_blank')}
+                         className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg"
+                       >
+                         <Eye size={16} />
+                       </button>
+                       <button 
+                         onClick={() => {
+                           const link = document.createElement('a');
+                           link.href = file.file_url;
+                           link.download = file.name;
+                           document.body.appendChild(link);
+                           link.click();
+                           document.body.removeChild(link);
+                         }}
+                         className="p-2 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-lg"
+                       >
+                         <Download size={16} />
+                       </button>
                       <button 
                         onClick={() => deleteFile(file.id)}
                         className="p-2 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg"
@@ -170,6 +355,17 @@ const KnowledgeBase = () => {
               ))}
             </tbody>
           </table>
+        </div>
+       ) : !user ? (
+        /* 未登录状态 */
+        <div className="flex flex-col items-center justify-center py-16">
+          <div className="w-24 h-24 bg-purple-50 rounded-2xl flex items-center justify-center text-purple-600 mb-6">
+            <Inbox size={48} />
+          </div>
+          <p className="text-gray-400 text-lg mb-2">请先登录</p>
+          <p className="text-gray-400 text-sm text-center max-w-md">
+            登录后即可上传和管理文件
+          </p>
         </div>
       ) : (
         /* 空状态展示区域 */
