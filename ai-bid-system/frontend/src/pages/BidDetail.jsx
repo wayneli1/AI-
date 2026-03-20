@@ -41,13 +41,20 @@ const BidDetail = () => {
     if (id) fetchProjectDetail();
   }, [id, navigate]);
 
-  // 2. 根据当前选中的 Tab 决定显示的 Markdown 内容
+ // 2. 根据当前选中的 Tab 决定显示的 Markdown 内容
   const currentMarkdown = useMemo(() => {
     if (!project) return '';
-    if (activeTab === 'report') return project.analysis_report || '暂无数据';
-    if (activeTab === 'framework') return project.framework_content || '暂无数据';
-    if (activeTab === 'checklist') return project.checklist_content || '暂无数据';
-    return '';
+    let text = '';
+    if (activeTab === 'report') text = project.analysis_report || '';
+    else if (activeTab === 'framework') text = project.framework_content || '';
+    else if (activeTab === 'checklist') text = project.checklist_content || '';
+    
+    // 修复转义符
+    text = text.replace(/\\n/g, '\n');
+    // 【魔法正则】：强制在 Markdown 表格前加一个空行，彻底解决表格变成一行的问题
+    text = text.replace(/([^\n])\n(\s*\|)/g, '$1\n\n$2');
+    
+    return text || '暂无数据';
   }, [project, activeTab]);
 
   // 3. 自动提取当前 Markdown 的 H1/H2 标题生成右侧目录锚点 (TOC)
@@ -70,7 +77,7 @@ const BidDetail = () => {
     return items;
   }, [currentMarkdown]);
 
-  // 自定义 Markdown 渲染组件（自动给标题加 ID 以便跳转，美化表格）
+// 自定义 Markdown 渲染组件（自动给标题加 ID 以便跳转，美化表格）
   const MarkdownComponents = {
     h1: ({node, ...props}) => {
       const id = props.children[0]?.toString().toLowerCase().replace(/\s+/g, '-');
@@ -81,19 +88,20 @@ const BidDetail = () => {
       return <h2 id={id} className="text-xl font-semibold mt-6 mb-3 text-purple-700" {...props} />
     },
     h3: ({node, ...props}) => <h3 className="text-lg font-medium mt-4 mb-2 text-gray-800" {...props} />,
-    p: ({node, ...props}) => <p className="mb-4 leading-relaxed text-gray-600" {...props} />,
-    ul: ({node, ...props}) => <ul className="list-disc pl-6 mb-4 space-y-1 text-gray-600" {...props} />,
-    ol: ({node, ...props}) => <ol className="list-decimal pl-6 mb-4 space-y-1 text-gray-600" {...props} />,
+    p: ({node, ...props}) => <p className="mb-4 leading-relaxed text-gray-700" {...props} />,
+    ul: ({node, ...props}) => <ul className="list-disc pl-6 mb-4 space-y-1 text-gray-700" {...props} />,
+    ol: ({node, ...props}) => <ol className="list-decimal pl-6 mb-4 space-y-1 text-gray-700" {...props} />,
     blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-purple-500 bg-purple-50 py-2 px-4 rounded-r-md my-4 italic text-gray-700" {...props} />,
-    // 企业级表格美化
+    
+    // 【核心大修】：完全复刻高级 SaaS 的表格样式
     table: ({node, ...props}) => (
-      <div className="overflow-x-auto my-6 rounded-lg border border-gray-200 shadow-sm">
-        <table className="w-full text-left border-collapse" {...props} />
+      <div className="overflow-x-auto my-6 rounded-lg border border-[#e4e7ed] shadow-sm">
+        <table className="w-full text-left border-collapse bg-white" {...props} />
       </div>
     ),
-    thead: ({node, ...props}) => <thead className="bg-gray-50 border-b border-gray-200" {...props} />,
-    th: ({node, ...props}) => <th className="px-6 py-3 text-sm font-semibold text-gray-700 uppercase tracking-wider border-r last:border-0 border-gray-200" {...props} />,
-    td: ({node, ...props}) => <td className="px-6 py-4 text-sm text-gray-600 border-r last:border-0 border-b border-gray-200" {...props} />,
+    thead: ({node, ...props}) => <thead className="bg-[#f5f7fa] border-b border-[#e4e7ed]" {...props} />,
+    th: ({node, ...props}) => <th className="px-6 py-4 text-sm font-bold text-[#333] border-r border-[#e4e7ed] last:border-0 whitespace-nowrap" {...props} />,
+    td: ({node, ...props}) => <td className="px-6 py-4 text-sm text-[#606266] border-r border-b border-[#e4e7ed] last:border-r-0 hover:bg-blue-50/50 transition-colors align-top leading-relaxed" {...props} />,
   };
 
   if (loading) {
@@ -163,8 +171,8 @@ const BidDetail = () => {
 
           <div className="flex-1 overflow-y-auto p-8 relative scroll-smooth flex">
             {/* Markdown 正文渲染 */}
-            <div className="flex-1 max-w-4xl pr-8">
-              <ReactMarkdown 
+                <div className="flex-1 max-w-4xl pr-8">              
+                    <ReactMarkdown 
                 remarkPlugins={[remarkGfm]}
                 components={MarkdownComponents}
               >

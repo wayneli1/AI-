@@ -117,13 +117,34 @@ const BidAnalysis = () => {
       setUploading(true);
       setUploadProgress(10);
 
-      // 1. 在数据库中创建记录
+      // 1. 上传文件到 Supabase Storage
+      const safeFileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}_${selectedFile.name.replace(/[^a-zA-Z0-9.]/g, '_')}`;
+      const filePath = `${user.id}/${safeFileName}`;
+      
+      const { error: uploadError } = await supabase.storage
+        .from('documents')
+        .upload(filePath, selectedFile, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) throw uploadError;
+
+      // 获取文件的公开访问 URL
+      const { data: urlData } = supabase.storage
+        .from('documents')
+        .getPublicUrl(filePath);
+      
+      const fileUrl = urlData.publicUrl;
+      setUploadProgress(20);
+
+      // 2. 在数据库中创建记录（使用获取到的 fileUrl）
       const { data: projectData, error: insertError } = await supabase
         .from('bidding_projects')
         .insert({
           user_id: user.id,
           project_name: selectedFile.name.replace(/\.[^/.]+$/, ''), // 移除扩展名
-          file_url: '', // 暂时为空，后续可以存储文件URL
+          file_url: fileUrl, // 存储文件的公开访问链接
           analysis_report: '',
           framework_content: '',
           checklist_content: '',
@@ -150,7 +171,7 @@ const BidAnalysis = () => {
             .from('bidding_projects')
             .update({
               analysis_report: results.report,
-              framework_content: results.framework,
+              framework_content: results.frame,
               checklist_content: results.checklist,
               status: 'completed'
             })
