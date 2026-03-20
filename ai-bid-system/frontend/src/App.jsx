@@ -13,6 +13,7 @@ import BidReview from './pages/BidReview';
 import ImageLibrary from './pages/ImageLibrary';
 import KnowledgeBase from './pages/KnowledgeBase';
 import Profile from './pages/Profile';
+import BidDetail from './pages/BidDetail';
 
 const App = () => {
   return (
@@ -34,6 +35,7 @@ const App = () => {
             <Route path="create-bid" element={<CreateBid />} />
             <Route path="my-bids" element={<MyBids />} />
             <Route path="bid-analysis" element={<BidAnalysis />} />
+            <Route path="bid-analysis/:id" element={<BidDetail />} />
             <Route path="bid-review" element={<BidReview />} />
             <Route path="image-library" element={<ImageLibrary />} />
             <Route path="knowledge-base" element={<KnowledgeBase />} />
