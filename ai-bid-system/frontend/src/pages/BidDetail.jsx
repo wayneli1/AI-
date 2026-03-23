@@ -77,31 +77,115 @@ const BidDetail = () => {
     return items;
   }, [currentMarkdown]);
 
-// 自定义 Markdown 渲染组件（自动给标题加 ID 以便跳转，美化表格）
+// 自定义 Markdown 渲染组件（与下载文档样式完全一致）
   const MarkdownComponents = {
     h1: ({node, ...props}) => {
       const id = props.children[0]?.toString().toLowerCase().replace(/\s+/g, '-');
-      return <h1 id={id} className="text-2xl font-bold mt-8 mb-4 pb-2 border-b border-gray-200 text-gray-800" {...props} />
+      return (
+        <h1 
+          id={id} 
+          className="text-[24px] font-bold mt-8 mb-6 pb-3 border-b border-[#e5e7eb] text-[#111827]" 
+          {...props} 
+        />
+      );
     },
     h2: ({node, ...props}) => {
       const id = props.children[0]?.toString().toLowerCase().replace(/\s+/g, '-');
-      return <h2 id={id} className="text-xl font-semibold mt-6 mb-3 text-purple-700" {...props} />
+      return (
+        <h2 
+          id={id} 
+          className="text-[18px] font-bold mt-7 mb-4 text-[#6d28d9]" 
+          {...props} 
+        />
+      );
     },
-    h3: ({node, ...props}) => <h3 className="text-lg font-medium mt-4 mb-2 text-gray-800" {...props} />,
-    p: ({node, ...props}) => <p className="mb-4 leading-relaxed text-gray-700" {...props} />,
-    ul: ({node, ...props}) => <ul className="list-disc pl-6 mb-4 space-y-1 text-gray-700" {...props} />,
-    ol: ({node, ...props}) => <ol className="list-decimal pl-6 mb-4 space-y-1 text-gray-700" {...props} />,
-    blockquote: ({node, ...props}) => <blockquote className="border-l-4 border-purple-500 bg-purple-50 py-2 px-4 rounded-r-md my-4 italic text-gray-700" {...props} />,
+    h3: ({node, ...props}) => (
+      <h3 
+        className="text-[16px] font-bold mt-6 mb-3 text-[#374151]" 
+        {...props} 
+      />
+    ),
+    p: ({node, ...props}) => (
+      <p 
+        className="mb-4 text-justify text-[#333333] leading-[1.6]" 
+        {...props} 
+      />
+    ),
+    ul: ({node, ...props}) => (
+      <ul 
+        className="list-disc ml-6 mb-4 mt-2 text-[#333333] leading-[1.6]" 
+        {...props} 
+      />
+    ),
+    ol: ({node, ...props}) => (
+      <ol 
+        className="list-decimal ml-6 mb-4 mt-2 text-[#333333] leading-[1.6]" 
+        {...props} 
+      />
+    ),
+    li: ({node, ...props}) => (
+      <li 
+        className="mb-2 text-justify leading-[1.6]" 
+        {...props} 
+      />
+    ),
+    blockquote: ({node, ...props}) => (
+      <blockquote 
+        className="border-l-4 border-[#8b5cf6] bg-[#f5f3ff] text-[#64748b] p-3 my-4" 
+        {...props} 
+      />
+    ),
+    pre: ({node, ...props}) => (
+      <pre 
+        className="bg-[#f1f5f9] border border-[#e2e8f0] p-4 my-4 rounded overflow-x-auto" 
+        {...props} 
+      />
+    ),
+    code: ({node, inline, ...props}) => {
+      if (inline) {
+        return (
+          <code 
+            className="font-['Consolas','Monaco',monospace] bg-[#f1f5f9] px-1.5 py-0.5 rounded text-sm" 
+            {...props} 
+          />
+        );
+      }
+      return <code {...props} />;
+    },
+    a: ({node, ...props}) => (
+      <a 
+        className="text-[#2563eb] no-underline hover:underline" 
+        {...props} 
+      />
+    ),
     
-    // 【核心大修】：完全复刻高级 SaaS 的表格样式
+    // 表格样式（与下载文档完全一致）
     table: ({node, ...props}) => (
-      <div className="overflow-x-auto my-6 rounded-lg border border-[#e4e7ed] shadow-sm">
-        <table className="w-full text-left border-collapse bg-white" {...props} />
+      <div className="overflow-x-auto my-6">
+        <table 
+          className="w-full border-collapse text-[14px]" 
+          {...props} 
+        />
       </div>
     ),
-    thead: ({node, ...props}) => <thead className="bg-[#f5f7fa] border-b border-[#e4e7ed]" {...props} />,
-    th: ({node, ...props}) => <th className="px-6 py-4 text-sm font-bold text-[#333] border-r border-[#e4e7ed] last:border-0 whitespace-nowrap" {...props} />,
-    td: ({node, ...props}) => <td className="px-6 py-4 text-sm text-[#606266] border-r border-b border-[#e4e7ed] last:border-r-0 hover:bg-blue-50/50 transition-colors align-top leading-relaxed" {...props} />,
+    thead: ({node, ...props}) => (
+      <thead 
+        className="bg-[#f8fafc]" 
+        {...props} 
+      />
+    ),
+    th: ({node, ...props}) => (
+      <th 
+        className="font-bold text-[#1e293b] px-3 py-2.5 border border-[#cbd5e1] text-left align-top" 
+        {...props} 
+      />
+    ),
+    td: ({node, ...props}) => (
+      <td 
+        className="text-[#475569] px-3 py-2.5 border border-[#cbd5e1] align-top" 
+        {...props} 
+      />
+    ),
    };
 
   // Markdown 转 HTML 函数
@@ -493,8 +577,13 @@ ${html}
           </div>
 
           <div className="flex-1 overflow-y-auto p-8 relative scroll-smooth flex">
-            {/* Markdown 正文渲染 */}
-                <div className="flex-1 max-w-4xl pr-8">              
+             {/* Markdown 正文渲染 */}
+                <div className="flex-1 max-w-4xl pr-8" style={{
+                  fontFamily: "'Microsoft YaHei', 'SimSun', sans-serif",
+                  fontSize: '15px',
+                  lineHeight: 1.6,
+                  color: '#333333'
+                }}>              
                     <ReactMarkdown 
                 remarkPlugins={[remarkGfm]}
                 components={MarkdownComponents}
