@@ -69,11 +69,12 @@ export async function runDifyAnalysis(file, user_id) {
 export function validateBidFile(file) {
   if (!file) return { isValid: false, message: '请选择文件' };
   
-  const isValidFormat = file.name.match(/\.(pdf|doc|docx)$/i);
+  // 【关键修改】：去掉了 doc，只保留 pdf 和 docx
+  const isValidFormat = file.name.match(/\.(pdf|docx)$/i);
   const isLt50M = file.size / 1024 / 1024 <= 50;
   
   if (!isValidFormat) {
-    return { isValid: false, message: '只支持 PDF、DOC、DOCX 格式的文件' };
+    return { isValid: false, message: '仅支持 PDF 和 DOCX 格式。如果是老版 doc，请用 Word 另存为 docx 后上传' };
   }
   if (!isLt50M) {
     return { isValid: false, message: '文件大小不能超过 50MB' };

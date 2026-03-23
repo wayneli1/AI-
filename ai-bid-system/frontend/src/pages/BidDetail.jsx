@@ -5,6 +5,8 @@ import { Tabs, Spin, Button, Anchor, message } from 'antd';
 import { ArrowLeft, Download, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import DocViewer, { DocViewerRenderers } from "@cyntler/react-doc-viewer";
+import "@cyntler/react-doc-viewer/dist/index.css";
 
 const { TabPane } = Tabs;
 
@@ -141,15 +143,29 @@ const BidDetail = () => {
       {/* 主体分栏区域 */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* 左侧：原文预览区 (占宽 40%) */}
+       {/* 左侧：原文预览区 (占宽 40%) */}
         <div className="w-[40%] border-r border-gray-200 bg-gray-100 flex flex-col">
           <div className="p-3 bg-gray-50 border-b border-gray-200 text-sm font-medium text-gray-600 flex justify-between items-center">
             <span>原文预览</span>
           </div>
           <div className="flex-1 overflow-hidden p-4">
             {project?.file_url ? (
-               // 如果你有存在 Storage 里的真实 URL，用 iframe 渲染
-              <iframe src={project.file_url} className="w-full h-full rounded shadow bg-white border-0" title="PDF预览" />
+              // 智能判断：如果是 PDF，正常渲染
+              project.file_url.toLowerCase().includes('.pdf') ? (
+                <iframe src={project.file_url} className="w-full h-full rounded shadow bg-white border-0" title="PDF预览" />
+              ) : (
+                // 如果是 DOCX，显示优雅的替代 UI
+                <div className="w-full h-full flex flex-col items-center justify-center bg-white rounded shadow text-gray-500 border border-gray-200">
+                  <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mb-4">
+                    <FileText size={32} className="text-blue-500" />
+                  </div>
+                  <p className="text-lg font-medium mb-2 text-gray-800">标书已成功解析</p>
+                  <p className="text-sm text-gray-500 mb-6 text-center px-8">
+                    由于不可控力原因Word 文档无法在此直接预览。（pdf可以）<br/>
+                    <span className="text-purple-600 mt-2 inline-block">右侧深度解析报告已就绪，请下载进行对照阅读。</span>
+                  </p>
+                </div>
+              )
             ) : (
               <div className="w-full h-full flex flex-col items-center justify-center bg-white rounded shadow text-gray-400 border border-dashed border-gray-300">
                 <FileText size={48} className="mb-4 text-gray-300" />

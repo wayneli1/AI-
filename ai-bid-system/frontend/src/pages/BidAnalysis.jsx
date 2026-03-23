@@ -601,7 +601,7 @@ const BidAnalysis = () => {
                     
                     <p className="font-medium text-gray-900 mb-2">选择标书文件</p>
                     <p className="text-gray-500 text-sm mb-6">
-                      支持 PDF、DOC、DOCX 格式，最大 50MB
+                      支持 PDF、DOCX 格式，最大 50MB
                     </p>
                     
                     <div>
@@ -609,7 +609,7 @@ const BidAnalysis = () => {
     id="bid-upload-input"
     type="file"
     className="hidden"
-    accept=".pdf,.doc,.docx"
+    accept=".pdf,.docx"
     onChange={(e) => {
       const file = e.target.files?.[0];
       if (file) handleFileSelect(file);
