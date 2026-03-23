@@ -5,8 +5,6 @@ import { Tabs, Spin, Button, Anchor, message } from 'antd';
 import { ArrowLeft, Download, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import DocViewer, { DocViewerRenderers } from "@cyntler/react-doc-viewer";
-import "@cyntler/react-doc-viewer/dist/index.css";
 
 const { TabPane } = Tabs;
 
@@ -104,6 +102,61 @@ const BidDetail = () => {
     thead: ({node, ...props}) => <thead className="bg-[#f5f7fa] border-b border-[#e4e7ed]" {...props} />,
     th: ({node, ...props}) => <th className="px-6 py-4 text-sm font-bold text-[#333] border-r border-[#e4e7ed] last:border-0 whitespace-nowrap" {...props} />,
     td: ({node, ...props}) => <td className="px-6 py-4 text-sm text-[#606266] border-r border-b border-[#e4e7ed] last:border-r-0 hover:bg-blue-50/50 transition-colors align-top leading-relaxed" {...props} />,
+   };
+
+  // 下载函数
+  const downloadReport = () => {
+    if (!project?.analysis_report) {
+      message.warning('深度解析报告内容为空');
+      return;
+    }
+    const text = project.analysis_report.replace(/\\n/g, '\n');
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${project.project_name}_深度解析报告.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    message.success('深度解析报告下载开始');
+  };
+
+  const downloadFramework = () => {
+    if (!project?.framework_content) {
+      message.warning('投标文件完整框架内容为空');
+      return;
+    }
+    const text = project.framework_content.replace(/\\n/g, '\n');
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${project.project_name}_投标文件完整框架.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    message.success('投标文件完整框架下载开始');
+  };
+
+  const downloadChecklist = () => {
+    if (!project?.checklist_content) {
+      message.warning('商务资料清单内容为空');
+      return;
+    }
+    const text = project.checklist_content.replace(/\\n/g, '\n');
+    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${project.project_name}_商务资料清单.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    message.success('商务资料清单下载开始');
   };
 
   if (loading) {
@@ -135,9 +188,17 @@ const BidDetail = () => {
             </div>
           </div>
         </div>
-        <Button type="primary" icon={<Download size={16} />} className="bg-purple-600">
-          导出本页报告
-        </Button>
+        <div className="flex space-x-2">
+          <Button type="primary" icon={<Download size={16} />} onClick={downloadReport} className="bg-purple-600">
+            深度解析报告
+          </Button>
+          <Button type="primary" icon={<Download size={16} />} onClick={downloadFramework} className="bg-green-600">
+            投标文件完整框架
+          </Button>
+          <Button type="primary" icon={<Download size={16} />} onClick={downloadChecklist} className="bg-blue-600">
+            商务资料清单
+          </Button>
+        </div>
       </div>
 
       {/* 主体分栏区域 */}
