@@ -3,6 +3,7 @@ import { Image as ImageIcon, Upload, Trash2, Download, Eye, FileImage, Loader2, 
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { message, Modal, Input, Tabs } from 'antd';
+import { extractTextFromImage } from '../utils/ocr';
 
 const { TabPane } = Tabs;
 
@@ -248,7 +249,17 @@ const ImageLibrary = () => {
 
       for (const file of validFiles) {
         try {
-          const filePath = `${user.id}/${Date.now()}_${file.name}`;
+          // 生成安全的文件名（避免中文等特殊字符）
+          const timestamp = Date.now();
+          const randomStr = Math.random().toString(36).substring(2, 9);
+          const lastDotIndex = file.name.lastIndexOf('.');
+          let ext = lastDotIndex !== -1 ? file.name.substring(lastDotIndex).toLowerCase() : '';
+          // 过滤扩展名，只保留字母、数字和点号
+          if (ext) {
+            ext = ext.replace(/[^a-z0-9.]/g, '_');
+          }
+          const safeFileName = `${timestamp}_${randomStr}${ext}`;
+          const filePath = `${user.id}/${safeFileName}`;
           const { error: uploadError } = await supabase.storage
             .from('images')
             .upload(filePath, file, {
@@ -276,7 +287,8 @@ const ImageLibrary = () => {
             image_url: imageUrl,
             file_size: file.size,
             file_type: file.type,
-            category_id: selectedCategory === 'uncategorized' ? null : selectedCategory
+            category_id: selectedCategory === 'uncategorized' ? null : selectedCategory,
+            ocr_status: 'pending'
           };
 
           const { data: insertDataResult, error: insertError } = await supabase
@@ -303,6 +315,24 @@ const ImageLibrary = () => {
                          categories.find(cat => cat.id === selectedCategory)?.name || '',
             image_url: imageUrl
           });
+
+          // 异步触发OCR文字提取
+          (async () => {
+            try {
+              const text = await extractTextFromImage(file);
+              await supabase
+                .from('images')
+                .update({ ocr_content: text, ocr_status: 'completed' })
+                .eq('id', insertDataResult.id);
+            } catch (ocrError) {
+              console.error(`OCR提取失败（图片ID: ${insertDataResult.id}）:`, ocrError);
+              // 更新状态为失败
+              await supabase
+                .from('images')
+                .update({ ocr_status: 'failed' })
+                .eq('id', insertDataResult.id);
+            }
+          })();
 
         } catch (fileError) {
           console.error(`上传文件 ${file.name} 失败:`, fileError);

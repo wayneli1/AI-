@@ -12,6 +12,11 @@ export default defineConfig({
         target: process.env.VITE_DIFY_TARGET || 'http://localhost', // 你的 Dify 后端真实地址
         changeOrigin: true
         // 删掉 rewrite！什么都不写，原汁原味转发！
+      },
+      '/baidu-api': {
+        target: 'https://aip.baidubce.com',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/baidu-api/, '')
       }
     }
   }
