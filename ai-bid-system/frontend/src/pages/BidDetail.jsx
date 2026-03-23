@@ -5,6 +5,7 @@ import { Tabs, Spin, Button, Anchor, message } from 'antd';
 import { ArrowLeft, Download, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { Document, Packer, Paragraph, TextRun } from 'docx';
 
 const { TabPane } = Tabs;
 
@@ -105,58 +106,119 @@ const BidDetail = () => {
    };
 
   // 下载函数
-  const downloadReport = () => {
+  const downloadReport = async () => {
     if (!project?.analysis_report) {
       message.warning('深度解析报告内容为空');
       return;
     }
-    const text = project.analysis_report.replace(/\\n/g, '\n');
-    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${project.project_name}_深度解析报告.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    message.success('深度解析报告下载开始');
+    try {
+      const text = project.analysis_report.replace(/\\n/g, '\n');
+      
+      // 创建文档段落
+      const paragraphs = text.split('\n').map(line => 
+        new Paragraph({
+          children: [new TextRun(line)],
+          spacing: { after: 100 } // 段落间距
+        })
+      );
+      
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: paragraphs,
+        }],
+      });
+      
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project.project_name}_深度解析报告.docx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      message.success('深度解析报告下载开始');
+    } catch (error) {
+      console.error('生成DOCX失败:', error);
+      message.error('生成DOCX文件失败，请检查docx库是否已安装');
+    }
   };
 
-  const downloadFramework = () => {
+  const downloadFramework = async () => {
     if (!project?.framework_content) {
       message.warning('投标文件完整框架内容为空');
       return;
     }
-    const text = project.framework_content.replace(/\\n/g, '\n');
-    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${project.project_name}_投标文件完整框架.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    message.success('投标文件完整框架下载开始');
+    try {
+      const text = project.framework_content.replace(/\\n/g, '\n');
+      
+      const paragraphs = text.split('\n').map(line => 
+        new Paragraph({
+          children: [new TextRun(line)],
+          spacing: { after: 100 }
+        })
+      );
+      
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: paragraphs,
+        }],
+      });
+      
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project.project_name}_投标文件完整框架.docx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      message.success('投标文件完整框架下载开始');
+    } catch (error) {
+      console.error('生成DOCX失败:', error);
+      message.error('生成DOCX文件失败，请检查docx库是否已安装');
+    }
   };
 
-  const downloadChecklist = () => {
+  const downloadChecklist = async () => {
     if (!project?.checklist_content) {
       message.warning('商务资料清单内容为空');
       return;
     }
-    const text = project.checklist_content.replace(/\\n/g, '\n');
-    const blob = new Blob([text], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${project.project_name}_商务资料清单.md`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    message.success('商务资料清单下载开始');
+    try {
+      const text = project.checklist_content.replace(/\\n/g, '\n');
+      
+      const paragraphs = text.split('\n').map(line => 
+        new Paragraph({
+          children: [new TextRun(line)],
+          spacing: { after: 100 }
+        })
+      );
+      
+      const doc = new Document({
+        sections: [{
+          properties: {},
+          children: paragraphs,
+        }],
+      });
+      
+      const blob = await Packer.toBlob(doc);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project.project_name}_商务资料清单.docx`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      message.success('商务资料清单下载开始');
+    } catch (error) {
+      console.error('生成DOCX失败:', error);
+      message.error('生成DOCX文件失败，请检查docx库是否已安装');
+    }
   };
 
   if (loading) {
