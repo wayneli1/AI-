@@ -5,7 +5,6 @@ import { Tabs, Spin, Button, Anchor, message } from 'antd';
 import { ArrowLeft, Download, FileText } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Document, Packer, Paragraph, TextRun } from 'docx';
 
 const { TabPane } = Tabs;
 
@@ -105,6 +104,237 @@ const BidDetail = () => {
     td: ({node, ...props}) => <td className="px-6 py-4 text-sm text-[#606266] border-r border-b border-[#e4e7ed] last:border-r-0 hover:bg-blue-50/50 transition-colors align-top leading-relaxed" {...props} />,
    };
 
+  // Markdown 转 HTML 函数
+  const markdownToHtml = (markdown) => {
+    if (!markdown) return '';
+    
+    let html = markdown.replace(/\\n/g, '\n');
+    
+    // 处理标题
+    html = html.replace(/^# (.*$)/gm, '<h1>$1</h1>');
+    html = html.replace(/^## (.*$)/gm, '<h2>$1</h2>');
+    html = html.replace(/^### (.*$)/gm, '<h3>$1</h3>');
+    html = html.replace(/^#### (.*$)/gm, '<h4>$1</h4>');
+    
+    // 处理加粗和斜体
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    
+    // 处理列表
+    html = html.replace(/^\s*[-*+] (.*$)/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>\n?)+/g, (match) => {
+      return '<ul>' + match + '</ul>';
+    });
+    
+    // 处理数字列表
+    html = html.replace(/^\s*\d+\. (.*$)/gm, '<li>$1</li>');
+    html = html.replace(/(<li>.*<\/li>\n?)+/g, (match) => {
+      return '<ol>' + match + '</ol>';
+    });
+    
+    // 处理表格 - 增强的表格支持
+    // 先按行分割
+    const lines = html.split('\n');
+    let inTable = false;
+    let tableRows = [];
+    let processedLines = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // 检测表格行（包含管道符）
+      if (line.includes('|') && !line.startsWith('<') && !line.startsWith('#')) {
+        // 检查下一行是否是分隔线
+        const nextLine = lines[i + 1] || '';
+        const isHeader = nextLine.includes('|') && /^[\s\|:-]+$/.test(nextLine.replace(/\|/g, '').trim());
+        
+        if (!inTable) {
+          inTable = true;
+          processedLines.push('<table>');
+        }
+        
+        // 解析单元格
+        const cells = line.split('|').filter(cell => cell.trim() !== '');
+        const cellTag = isHeader ? 'th' : 'td';
+        const rowHtml = '<tr>' + cells.map(cell => `<${cellTag}>${cell.trim()}</${cellTag}>`).join('') + '</tr>';
+        
+        if (isHeader) {
+          processedLines.push('<thead>' + rowHtml + '</thead><tbody>');
+          i++; // 跳过分隔线
+        } else {
+          processedLines.push(rowHtml);
+        }
+      } else {
+        if (inTable) {
+          inTable = false;
+          processedLines.push('</tbody></table>');
+        }
+        processedLines.push(line);
+      }
+    }
+    
+    if (inTable) {
+      processedLines.push('</tbody></table>');
+    }
+    
+    html = processedLines.join('\n');
+    
+    // 处理引用块
+    html = html.replace(/^> (.*$)/gm, '<blockquote>$1</blockquote>');
+    
+    // 处理代码块
+    html = html.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
+    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    
+    // 处理段落 - 将剩余的行转换为段落
+    html = html.replace(/^(?!<[a-z]|<\/[a-z]|$)(.+)$/gm, '<p>$1</p>');
+    
+    // 创建完整的 HTML 文档
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>标书解析报告</title>
+<style>
+/* 全局样式 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  font-family: 'Microsoft YaHei', 'SimSun', sans-serif;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #333333;
+  padding: 40px;
+  background: #ffffff;
+  max-width: 210mm;
+  margin: 0 auto;
+}
+
+/* 段落样式 */
+p {
+  margin-bottom: 16px;
+  text-align: justify;
+  text-justify: inter-ideograph;
+}
+
+/* 标题样式 */
+h1 {
+  font-size: 24px;
+  font-weight: bold;
+  color: #111827;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 12px;
+  margin-bottom: 24px;
+  margin-top: 32px;
+}
+
+h2 {
+  font-size: 18px;
+  font-weight: bold;
+  color: #6d28d9;
+  margin-top: 28px;
+  margin-bottom: 16px;
+}
+
+h3 {
+  font-size: 16px;
+  font-weight: bold;
+  color: #374151;
+  margin-top: 24px;
+  margin-bottom: 12px;
+}
+
+/* 表格样式 */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 20px 0;
+  font-size: 14px;
+}
+
+thead {
+  background-color: #f8fafc;
+}
+
+th {
+  font-weight: bold;
+  color: #1e293b;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  text-align: left;
+  vertical-align: top;
+}
+
+td {
+  color: #475569;
+  padding: 10px 12px;
+  border: 1px solid #cbd5e1;
+  vertical-align: top;
+}
+
+/* 列表样式 */
+ul, ol {
+  margin-left: 24px;
+  margin-bottom: 16px;
+  margin-top: 8px;
+}
+
+li {
+  margin-bottom: 8px;
+  text-align: justify;
+}
+
+/* 引用块样式 */
+blockquote {
+  border-left: 4px solid #8b5cf6;
+  background-color: #f5f3ff;
+  color: #64748b;
+  padding: 12px;
+  margin: 16px 0;
+  border-radius: 0 4px 4px 0;
+}
+
+/* 代码样式 */
+pre {
+  background-color: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  padding: 16px;
+  margin: 16px 0;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+code {
+  font-family: 'Consolas', 'Monaco', monospace;
+  background-color: #f1f5f9;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 14px;
+}
+
+/* 链接样式 */
+a {
+  color: #2563eb;
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+</style>
+</head>
+<body>
+${html}
+</body>
+</html>
+    `;
+  };
+
   // 下载函数
   const downloadReport = async () => {
     if (!project?.analysis_report) {
@@ -112,36 +342,20 @@ const BidDetail = () => {
       return;
     }
     try {
-      const text = project.analysis_report.replace(/\\n/g, '\n');
-      
-      // 创建文档段落
-      const paragraphs = text.split('\n').map(line => 
-        new Paragraph({
-          children: [new TextRun(line)],
-          spacing: { after: 100 } // 段落间距
-        })
-      );
-      
-      const doc = new Document({
-        sections: [{
-          properties: {},
-          children: paragraphs,
-        }],
-      });
-      
-      const blob = await Packer.toBlob(doc);
+      const html = markdownToHtml(project.analysis_report);
+      const blob = new Blob([html], { type: 'application/msword' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${project.project_name}_深度解析报告.docx`;
+      a.download = `${project.project_name}_深度解析报告.doc`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       message.success('深度解析报告下载开始');
     } catch (error) {
-      console.error('生成DOCX失败:', error);
-      message.error('生成DOCX文件失败，请检查docx库是否已安装');
+      console.error('生成文档失败:', error);
+      message.error('生成文档失败，请重试');
     }
   };
 
@@ -151,35 +365,20 @@ const BidDetail = () => {
       return;
     }
     try {
-      const text = project.framework_content.replace(/\\n/g, '\n');
-      
-      const paragraphs = text.split('\n').map(line => 
-        new Paragraph({
-          children: [new TextRun(line)],
-          spacing: { after: 100 }
-        })
-      );
-      
-      const doc = new Document({
-        sections: [{
-          properties: {},
-          children: paragraphs,
-        }],
-      });
-      
-      const blob = await Packer.toBlob(doc);
+      const html = markdownToHtml(project.framework_content);
+      const blob = new Blob([html], { type: 'application/msword' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${project.project_name}_投标文件完整框架.docx`;
+      a.download = `${project.project_name}_投标文件完整框架.doc`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       message.success('投标文件完整框架下载开始');
     } catch (error) {
-      console.error('生成DOCX失败:', error);
-      message.error('生成DOCX文件失败，请检查docx库是否已安装');
+      console.error('生成文档失败:', error);
+      message.error('生成文档失败，请重试');
     }
   };
 
@@ -189,35 +388,20 @@ const BidDetail = () => {
       return;
     }
     try {
-      const text = project.checklist_content.replace(/\\n/g, '\n');
-      
-      const paragraphs = text.split('\n').map(line => 
-        new Paragraph({
-          children: [new TextRun(line)],
-          spacing: { after: 100 }
-        })
-      );
-      
-      const doc = new Document({
-        sections: [{
-          properties: {},
-          children: paragraphs,
-        }],
-      });
-      
-      const blob = await Packer.toBlob(doc);
+      const html = markdownToHtml(project.checklist_content);
+      const blob = new Blob([html], { type: 'application/msword' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${project.project_name}_商务资料清单.docx`;
+      a.download = `${project.project_name}_商务资料清单.doc`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       message.success('商务资料清单下载开始');
     } catch (error) {
-      console.error('生成DOCX失败:', error);
-      message.error('生成DOCX文件失败，请检查docx库是否已安装');
+      console.error('生成文档失败:', error);
+      message.error('生成文档失败，请重试');
     }
   };
 
