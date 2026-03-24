@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.99.2",
+    "@tailwindcss/typography": "^0.5.19",
     "antd": "^5.16.0",
     "lucide-react": "^0.577.0",
     "mammoth": "^1.12.0",

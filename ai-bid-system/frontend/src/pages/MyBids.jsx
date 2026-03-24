@@ -53,10 +53,20 @@ const MyBids = () => {
     return () => clearInterval(interval);
   }, [fetchProjects]);
 
-  // 删除逻辑
+  // 🗑️ 删除逻辑 (加入了 Storage 源文件删除闭环)
   const handleDeleteProject = async () => {
     if (!projectToDelete || !user) return;
     try {
+      // 1. 如果有源文件，先从 Storage 删除源文件
+      if (projectToDelete.file_url) {
+        const urlParts = projectToDelete.file_url.split('documents/');
+        if (urlParts.length > 1) {
+          const filePath = urlParts[1];
+          await supabase.storage.from('documents').remove([filePath]);
+        }
+      }
+
+      // 2. 从数据库删除记录
       const { error } = await supabase
         .from('bidding_projects')
         .delete()
@@ -64,7 +74,7 @@ const MyBids = () => {
         .eq('user_id', user.id);
 
       if (error) throw error;
-      message.success('标书已删除');
+      message.success('标书已永久删除');
       fetchProjects();
     } catch (error) {
       console.error('删除标书失败:', error);
@@ -94,7 +104,7 @@ const MyBids = () => {
         </>
       );
     } else if (status === 'processing') {
-      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-600 border border-purple-100">正文部分预览中...</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-600 border border-purple-100">正文生成中...</span>;
     } else {
       return <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-50 text-red-600 border border-red-100">解析失败</span>;
     }
@@ -108,7 +118,7 @@ const MyBids = () => {
           <Button 
             type="primary" 
             className="bg-[#7C3AED] hover:bg-[#6D28D9] border-0 rounded-full px-6 h-9 shadow-sm"
-            onClick={() => navigate('/bid-analysis')}
+            onClick={() => navigate('/create-bid')} 
           >
             新建标书
           </Button>
@@ -166,6 +176,12 @@ const MyBids = () => {
                 <div className="flex items-center text-xs text-gray-400 space-x-6">
                   <span>创建时间：{new Date(project.created_at).toLocaleString('zh-CN')}</span>
                   <span>创建人：{user?.phone || user?.email || '系统用户'}</span>
+                  {/* 查看原始文件链接 */}
+                  {project.file_url && (
+                    <a href={project.file_url} target="_blank" rel="noreferrer" className="text-purple-500 hover:underline">
+                      查看原始招标文件
+                    </a>
+                  )}
                 </div>
               </div>
               
@@ -176,7 +192,7 @@ const MyBids = () => {
                     items: [
                       {
                         key: 'view',
-                        label: '查看报告',
+                        label: '查看并编辑报告',
                         disabled: project.status !== 'completed',
                         onClick: () => navigate(`/bid-analysis/${project.id}`)
                       },
@@ -214,7 +230,7 @@ const MyBids = () => {
         cancelText="取消"
         okButtonProps={{ danger: true }}
       >
-        <p className="py-4 text-gray-600">确定要永久删除标书 <strong>{projectToDelete?.project_name}</strong> 吗？此操作不可恢复。</p>
+        <p className="py-4 text-gray-600">确定要永久删除标书 <strong>{projectToDelete?.project_name}</strong> 吗？<br/><span className="text-xs text-red-500">相关源文件也会被同时删除，此操作不可恢复。</span></p>
       </Modal>
     </div>
   );
