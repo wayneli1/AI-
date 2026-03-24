@@ -232,7 +232,7 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
           className="border-2 border-dashed border-indigo-300 hover:border-indigo-500 rounded-2xl p-24 bg-white shadow-sm cursor-pointer flex flex-col items-center group transition-all"
         >
           <UploadCloud size={64} className="text-indigo-400 group-hover:text-indigo-600 mb-6 transition-transform group-hover:scale-110" />
-          <h3 className="text-2xl font-bold text-gray-800 mb-2">上传采购文件，AI 智能提取响应大纲</h3>
+          <h3 className="text-2xl font-bold text-gray-800 mb-2">上传招标文件，AI 智能提取响应大纲</h3>
           <p className="text-gray-500">支持 PDF、Word 格式，上传后自动进入大纲审查台</p>
         </div>
       </div>
