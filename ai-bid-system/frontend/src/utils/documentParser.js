@@ -2,8 +2,10 @@
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
 
-// 配置 pdf.js 的 worker（极其重要，否则会报错）
-pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+// 【魔法修复】：使用 Vite 的 ?url 语法，把本地的 worker 文件当做静态资源引入
+// 这样既不需要外网，也不会报 Invalid type 的错！
+import workerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
 /**
  * 智能提取 PDF 或 Word 文档纯文本
@@ -16,7 +18,7 @@ export const extractTextFromDocument = async (file) => {
   try {
     if (fileExt === 'pdf') {
       return await parsePDF(file);
-    } else if (fileExt === 'docx' || fileExt === 'doc') {
+    } else if (fileExt === 'docx') {
       return await parseWord(file);
     } else {
       throw new Error('不支持的文件格式，仅支持 PDF 和 Word');
@@ -30,7 +32,12 @@ export const extractTextFromDocument = async (file) => {
 // --- 解析 PDF 的核心逻辑 ---
 const parsePDF = async (file) => {
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  
+  // 【修复】：去掉你刚才加的 worker: null，让它正常运转
+  const pdf = await pdfjsLib.getDocument({ 
+    data: arrayBuffer
+  }).promise;
+  
   let fullText = '';
   
   // 遍历每一页提取文字

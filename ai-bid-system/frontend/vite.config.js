@@ -19,5 +19,8 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/baidu-api/, '')
       }
     }
+  },
+  optimizeDeps: {
+    include: ['pdfjs-dist', 'mammoth']
   }
 })
