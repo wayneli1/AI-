@@ -1,12 +1,18 @@
 import React, { useState } from 'react';
 import { Button, Input, message, Spin } from 'antd';
-import { UploadCloud, ArrowLeft, Save, Download, Search, Wand2, ChevronRight, FileText, Lock, Unlock, Edit3, ListTree } from 'lucide-react';
+import { UploadCloud, ArrowLeft, Download, Search, ChevronRight, Edit3, ListTree } from 'lucide-react';
+// ⚠️ 极其关键：引入我们写好的 Dify 呼叫对讲机
+import { generateBidContent } from '../utils/difyWorkflow';
+
 export default function CreateBid() {
   // 核心步骤状态：'upload' -> 'outline' -> 'generating' -> 'document'
   const [step, setStep] = useState('upload');
   
   // ==================== 状态：大纲审查台 ====================
   const [activeNodeId, setActiveNodeId] = useState(1);
+  // 💡 新增状态：本次投标的目标公司名称
+  const [targetCompany, setTargetCompany] = useState('');
+  
   const originalText = `招标文件\n\n项目名称：山东第一医科大学第一附属医院邮件系统运维项目\n\n1.5 技术评分标准\n1. 应急响应措施（30分）\n2. 维保服务方案（25分）\n3. 本项目重点、难点（20分）\n4. 人员配置（15分）\n\n1.6 废标条款\n未实质性响应招标要求将作废标处理。`;
   
   const [outline, setOutline] = useState([
@@ -18,22 +24,7 @@ export default function CreateBid() {
 
   // ==================== 状态：最终文档编辑器 ====================
   const [activeChapterId, setActiveChapterId] = useState('1-1');
-  const [documentContent, setDocumentContent] = useState(`第一章 应急响应措施
-
-第一节 应急响应组织架构与职责分工
-
-一、应急响应组织架构设计
-
-1. 应急响应组织架构设计目标
-本项目应急响应组织架构的设计目标是确保系统故障能够半小时内响应、2小时内上门，普通故障4小时内解决。同时，架构需覆盖邮件系统功能部署、Bug修复、扩容、维护以及安全防护等各类服务需求，保障内外收发顺畅且延迟不超过30分钟，满足采购人的严密评审要求。
-
-针对上述目标，应急响应组织架构将采用分层管理模式，明确各层级责任及协作机制，确保信息传递高效且责任分明。
-
-2. 岗位设置方案
-根据项目的具体需求和实施特点，应急响应组织架构中包含以下关键岗位：
-(1) 技术支持工程师：负责邮件系统故障响应、日常运维及问题排查等技术支持工作；
-(2) 系统运维工程师：承担邮件系统部署、配置、扩容及性能优化等工作；
-(3) 安全运维工程师：专注于邮件系统的安全防护、漏洞修复及安全事件处理；`);
+  const [documentContent, setDocumentContent] = useState('');
 
   // 模拟目录树结构
   const [directory, setDirectory] = useState([
@@ -56,12 +47,40 @@ export default function CreateBid() {
   ]);
 
   // ==================== 操作方法 ====================
-  const handleGenerateDocument = () => {
+  
+  // 🚀 核心逻辑：真实调用 Dify 引擎生成标书
+  const handleGenerateDocument = async () => {
+    if (!targetCompany.trim()) {
+      return message.warning('老板，请先在下方输入本次投标的主体公司名称！');
+    }
+
     setStep('generating');
-    setTimeout(() => {
-      message.success('标书生成完毕！共计 320 页，已自动排版。');
+    try {
+      // 1. 拼接霸气的“锁死”指令
+      const promptText = `
+【重要前提指令】：你现在的身份是【${targetCompany}】的资深投标代表。
+请你务必、严格地只使用内部知识库中与【${targetCompany}】相关的历史资质、项目经验和公司信息。如果知识库检索到了其他无关公司的信息，请绝对忽略！
+
+以下是本次投标响应大纲及具体编写要求，请逐条扩写为专业的标书正文：
+${outline.map(node => `\n### 章节：【${node.title}】\n具体要求：${node.detail}`).join('\n')}
+`;
+      
+      console.log("🚀 正在呼叫 Dify 大脑，发送指令：", promptText);
+      
+      // 2. 真实请求我们在 difyWorkflow.js 里写的接口
+      const generatedText = await generateBidContent(promptText);
+      
+      // 3. 把大模型写出来的东西塞进 A4 纸
+      setDocumentContent(generatedText);
+      
+      message.success('标书生成完毕！已根据知识库为您精准填报。');
       setStep('document');
-    }, 3000); // 模拟3秒的AI生成过程
+      
+    } catch (error) {
+      console.error('生成标书失败:', error);
+      message.error(`生成失败: ${error.message}，请检查 Dify 工作流配置`);
+      setStep('outline'); // 失败了就退回来
+    }
   };
 
   const toggleDir = (id) => {
@@ -99,8 +118,8 @@ export default function CreateBid() {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-white">
         <Spin size="large" />
-        <h2 className="text-2xl font-bold text-gray-800 mt-8 mb-2">正在全力撰写标书正文...</h2>
-        <p className="text-gray-500">AI 正在根据 12 个评分项为您逐条响应，预计需要 1-2 分钟</p>
+        <h2 className="text-2xl font-bold text-gray-800 mt-8 mb-2">🧠 正在连接企业知识库...</h2>
+        <p className="text-gray-500">DeepSeek 正在根据【{targetCompany}】的专属资料，逐条响应评分项，预计需要数十秒</p>
       </div>
     );
   }
@@ -113,12 +132,12 @@ export default function CreateBid() {
         <div className="h-14 bg-white border-b border-gray-200 flex items-center justify-between px-6 shrink-0">
           <div className="flex items-center">
             <Button type="text" icon={<ArrowLeft size={18} />} onClick={() => setStep('outline')} className="mr-2 text-indigo-600 font-medium">
-              返回
+              返回大纲
             </Button>
             <h1 className="text-base font-bold text-gray-900">山东第一医科大学第一附属医院邮件系统运维项目</h1>
           </div>
           <div className="flex items-center space-x-4 text-sm text-gray-600">
-            <Button type="primary" className="bg-indigo-500 hover:bg-indigo-600 rounded-full px-6 border-0">下载</Button>
+            <Button type="primary" className="bg-indigo-500 hover:bg-indigo-600 rounded-full px-6 border-0">下载为 Word</Button>
           </div>
         </div>
 
@@ -165,13 +184,12 @@ export default function CreateBid() {
           {/* 右侧：A4 纸编辑器 */}
           <div className="flex-1 overflow-y-auto p-8 flex justify-center bg-[#F2F3F5]">
             <div className="w-[800px] bg-white shadow-sm border border-gray-200 min-h-[1000px] flex flex-col">
-              
-              
-              {/* 富文本编辑区 */}
+              {/* 富文本编辑区：暂时用 textarea 承接 AI 吐出的 Markdown 代码 */}
               <textarea
                 value={documentContent}
                 onChange={(e) => setDocumentContent(e.target.value)}
-                className="flex-1 w-full p-12 resize-none outline-none text-gray-800 leading-loose text-[15px] font-serif"
+                className="flex-1 w-full p-12 resize-none outline-none text-gray-800 leading-loose text-[15px] font-mono"
+                placeholder="AI 正在赶来填满这张纸..."
               />
             </div>
           </div>
@@ -257,9 +275,18 @@ export default function CreateBid() {
               />
             </div>
           </div>
-          {/* 底部巨大的紫蓝色生成按钮 */}
+          
+          {/* 💡 底部操作区：新增了公司输入框和生成按钮 */}
           <div className="h-20 border-t border-gray-100 bg-white flex items-center justify-end px-8 shadow-[0_-10px_30px_rgba(0,0,0,0.02)]">
-            <span className="text-sm text-gray-500 mr-6">请确认所有响应大纲无误后，点击生成最终正文</span>
+            <div className="flex items-center mr-6">
+              <span className="text-sm text-gray-700 font-bold mr-3">本次投标主体：</span>
+              <Input 
+                placeholder="请输入您要代表的公司名称" 
+                value={targetCompany}
+                onChange={(e) => setTargetCompany(e.target.value)}
+                className="w-64 rounded-lg h-10 border-indigo-200 focus:border-indigo-500"
+              />
+            </div>
             <Button
               type="primary"
               onClick={handleGenerateDocument}
@@ -268,6 +295,7 @@ export default function CreateBid() {
               确认完毕，生成标书正文
             </Button>
           </div>
+          
         </div>
       </div>
     </div>
