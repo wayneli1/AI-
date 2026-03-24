@@ -1,14 +1,14 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Button, Input, message, Spin, Modal, Tag, Empty } from 'antd';
 import { 
   UploadCloud, ArrowLeft, Download, Search, 
   ChevronRight, Edit3, ListTree, Database, Building2, Eye, PenTool, FileText, CheckCircle2
 } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-// 💡 引入了双引擎！
 import { generateBidContent, generateBidOutline } from '../utils/difyWorkflow';
 import { supabase } from '../lib/supabase'; 
 import { useAuth } from '../contexts/AuthContext';
@@ -17,66 +17,115 @@ import { extractTextFromDocument } from '../utils/documentParser';
 export default function CreateBid() {
   const { user } = useAuth();
   
+  const [searchParams] = useSearchParams();
+  const urlProjectId = searchParams.get('id');
+
   const [step, setStep] = useState('upload');
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const fileInputRef = useRef(null);
 
   // ==================== 状态：大纲审查台 ====================
   const [originalText, setOriginalText] = useState('');
-  const [activeNodeId, setActiveNodeId] = useState(null); // 初始为空
+  const [activeNodeId, setActiveNodeId] = useState(null); 
   const [targetCompany, setTargetCompany] = useState('');
   const [isCompanyModalVisible, setIsCompanyModalVisible] = useState(false);
   const [companyList, setCompanyList] = useState([]);
   const [fetchingCompanies, setFetchingCompanies] = useState(false);
-  
-  // 结构化大纲状态
   const [outline, setOutline] = useState([]);
 
   // ==================== 状态：最终文档编辑器 ====================
   const [documentContent, setDocumentContent] = useState('');
   const [viewMode, setViewMode] = useState('preview'); 
 
+  // 🚀 读取已有项目
+  useEffect(() => {
+    if (urlProjectId && user) {
+      loadExistingProject(urlProjectId);
+    }
+  }, [urlProjectId, user]);
+
+  const loadExistingProject = async (id) => {
+    try {
+      message.loading({ content: '正在为您加载标书...', key: 'load' });
+      const { data, error } = await supabase
+        .from('bidding_projects')
+        .select('*')
+        .eq('id', id)
+        .single();
+
+      if (error) throw error;
+
+      if (data) {
+        setCurrentProjectId(data.id);
+        
+        // 🛡️ 核心防弹衣：加入 try...catch 防止非标准 JSON 搞崩页面
+        if (data.framework_content) {
+          try {
+            const parsedOutline = JSON.parse(data.framework_content);
+            if (Array.isArray(parsedOutline)) {
+              setOutline(parsedOutline);
+            } else {
+              throw new Error("解析出的内容不是数组");
+            }
+          } catch (parseError) {
+            console.warn("⚠️ 大纲解析为 JSON 失败，启用容错模式:", parseError);
+            setOutline([
+              { 
+                id: 1, 
+                title: '旧版本/异常报告', 
+                detail: '系统检测到此记录为旧版纯文本或异常格式，建议在“标书解读”页面查看。' 
+              }
+            ]);
+          }
+        }
+        
+        if (data.analysis_report && data.status === 'completed') {
+          setDocumentContent(data.analysis_report);
+          setStep('document'); 
+          setViewMode('preview');
+        } else if (data.framework_content) {
+          setStep('outline'); 
+        }
+        message.success({ content: '标书加载成功！', key: 'load' });
+      }
+    } catch (err) {
+      console.error(err);
+      message.error({ content: '读取标书失败，可能已被删除', key: 'load' });
+    }
+  };
+
   // ==================== 逻辑方法 ====================
 
-  // 🚀 1. 真实上传、提取文本、并调用 AI 生成结构化大纲
   const handleRealUpload = async (event) => {
     const file = event.target.files[0];
     if (!file || !user) return message.error("请先登录！");
 
     try {
-      message.loading({ content: '正在上传文件并召唤 AI 提取大纲，请耐心等待（约需十几秒）...', key: 'upload', duration: 0 });
+      message.loading({ content: '正在上传文件并召唤 AI 提取大纲...', key: 'upload', duration: 0 });
       
       const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
       const safeFileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${fileExtension}`;
       const filePath = `${user.id}/${safeFileName}`;
 
-      // a. 上传源文件
       await supabase.storage.from('documents').upload(filePath, file);
       const fileUrl = `${supabase.supabaseUrl}/storage/v1/object/documents/${filePath}`;
 
-      // b. 提取文本内容展示在左侧
       const extractedText = await extractTextFromDocument(file);
-      setOriginalText(extractedText || `无法读取文件文字，仅支持可提取文本的 PDF/Word。\n文件名：${file.name}`);
+      setOriginalText(extractedText || `无法读取文件文字，文件名：${file.name}`);
 
-      // 💡 c. 核心突破！呼叫 引擎 1，提取真正的 AI 大纲！
       let dynamicOutline = [];
       try {
-        // 截取前 20000 字防止超出模型限制（标书一般前面是要求）
         const textForAi = extractedText ? extractedText.substring(0, 20000) : file.name; 
         dynamicOutline = await generateBidOutline(textForAi);
       } catch (aiError) {
         console.error("AI 提取大纲失败:", aiError);
-        message.warning({ content: 'AI 解析大纲失败，已启用备用模板，请手动修改。', key: 'upload', duration: 3 });
-        // 如果 AI 报错或超时，给一个保底的空骨架，防止页面崩溃
-        dynamicOutline = [
-          { id: 1, title: '第一章 项目需求响应', detail: `请根据上传的【${file.name}】手动输入需响应的详细要点...` }
-        ];
+        message.warning({ content: 'AI 解析大纲失败，已启用备用模板。', key: 'upload', duration: 3 });
+        dynamicOutline = [{ id: 1, title: '第一章 项目需求响应', detail: `请手动输入...` }];
       }
 
       setOutline(dynamicOutline);
-      setActiveNodeId(dynamicOutline[0]?.id); // 默认选中第一项
+      setActiveNodeId(dynamicOutline[0]?.id);
 
-      // d. 创建数据库记录
       const { data: project, error } = await supabase
         .from('bidding_projects')
         .insert({
@@ -91,19 +140,19 @@ export default function CreateBid() {
 
       if (error) throw error;
       setCurrentProjectId(project.id);
+      
+      window.history.replaceState(null, '', `/create-bid?id=${project.id}`);
 
-      message.success({ content: 'AI 解析完毕！大纲已为您自动提取，请审查。', key: 'upload' });
+      message.success({ content: 'AI 解析完毕！大纲已为您自动提取。', key: 'upload' });
       setStep('outline');
 
     } catch (error) {
-      console.error('上传解析失败:', error);
       message.error({ content: '流程中断: ' + error.message, key: 'upload' });
     } finally {
       if (event.target) event.target.value = '';
     }
   };
 
-  // 🏛️ 获取公司列表弹窗用
   const fetchCompanyList = async () => {
     try {
       setFetchingCompanies(true);
@@ -121,7 +170,6 @@ export default function CreateBid() {
     fetchCompanyList();
   };
 
-  // 🚀 2. 确认大纲并调用 AI 生成标书正文
   const handleGenerateDocument = async () => {
     if (!targetCompany.trim()) return message.warning('请先输入或选择本次投标的主体公司！');
 
@@ -136,10 +184,9 @@ export default function CreateBid() {
 
       const promptText = `
 【重要前提指令】：你现在的身份是【${targetCompany}】的资深投标代表。
-请你务必、严格地只使用内部知识库中与【${targetCompany}】相关的历史资质、项目经验和公司信息。如果在知识库中匹配到了带有Markdown格式的图片链接，请务必直接在正文中输出图片代码。
+请严格使用内部知识库中与【${targetCompany}】相关的历史资质、项目经验。若匹配到Markdown图片链接，请务必直接输出图片代码。
 
-以下是经过人工最终确认的【标书撰写大纲】及每个章节的具体撰写要求，请你严格按照此大纲逐章输出极具专业度的标书正文：
-
+以下是经确认的大纲，请逐章输出正文：
 ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\n`).join('\n')}
 `;
       
@@ -167,7 +214,7 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `${targetCompany}_投标方案正文.md`;
+    link.download = `${targetCompany || '标书方案'}_正文.md`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -258,7 +305,6 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
     );
   }
 
-  // 视图 4: 结构化大纲审查台
   const activeNode = outline.find(node => node.id === activeNodeId) || outline[0] || { title: '', detail: '' };
   
   return (
@@ -268,23 +314,25 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
           <Tag color="purple" className="mr-3 text-sm py-1 px-3 rounded-full border-0 font-bold">🎯 智能分析完毕</Tag>
           <h1 className="text-lg font-bold text-gray-800">技术/服务方案大纲确认并编辑</h1>
         </div>
-        <Button onClick={() => setStep('upload')} className="text-gray-500 border-gray-300 hover:text-indigo-600 hover:border-indigo-400">重新上传</Button>
+        <Button onClick={() => {
+            window.history.replaceState(null, '', `/create-bid`);
+            setStep('upload');
+            setOutline([]);
+        }} className="text-gray-500 border-gray-300 hover:text-indigo-600 hover:border-indigo-400">重新上传</Button>
       </div>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* 左栏: 原文对照 */}
         <div className="w-1/3 bg-white border-r border-gray-200 flex flex-col shrink-0">
           <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center">
             <span className="font-bold text-gray-700 flex items-center"><FileText size={16} className="mr-2 text-indigo-500"/> 招标原文提取</span>
           </div>
           <div className="flex-1 overflow-y-auto p-6">
             <div className="text-sm leading-loose whitespace-pre-wrap text-gray-600 font-serif">
-              {originalText || <div className="text-center text-gray-400 mt-20">原文解析中...</div>}
+              {originalText || <div className="text-center text-gray-400 mt-20">原文不在此环境显示</div>}
             </div>
           </div>
         </div>
 
-        {/* 中栏: 大纲目录树 */}
         <div className="w-80 bg-gray-50 border-r border-gray-200 flex flex-col shrink-0">
           <div className="p-4 border-b border-gray-200 bg-white">
             <span className="font-bold text-gray-800">目录结构</span>
@@ -313,7 +361,6 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
           </div>
         </div>
 
-        {/* 右栏: 详细撰写要求编辑区 */}
         <div className="flex-1 bg-white flex flex-col relative">
           <div className="p-8 pb-6 border-b border-gray-100 flex justify-between items-start">
             <div>
@@ -337,12 +384,10 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
                 onChange={(e) => {
                   setOutline(outline.map(n => n.id === activeNodeId ? { ...n, detail: e.target.value } : n));
                 }}
-                placeholder="请输入本章节需要 AI 响应的具体内容和重点..."
               />
             </div>
           </div>
 
-          {/* 底部悬浮操作台 */}
           <div className="h-24 bg-white border-t border-gray-200 flex items-center justify-end px-8 shadow-[0_-10px_40px_rgba(0,0,0,0.04)] shrink-0 relative z-20">
             <div className="flex flex-col items-end mr-8">
               <div className="flex items-center">
@@ -364,16 +409,12 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
                   </Button>
                 </div>
               </div>
-              <div className="text-[11px] text-gray-400 mt-2 flex items-center">
-                <Building2 size={12} className="mr-1 text-indigo-400"/> 
-                知识库引擎将只检索与该公司相关的资质和业绩方案
-              </div>
             </div>
 
             <Button
               type="primary"
               onClick={handleGenerateDocument}
-              className="h-12 px-10 bg-indigo-600 hover:bg-indigo-700 rounded-full font-bold text-lg shadow-lg shadow-indigo-200 hover:shadow-indigo-300 hover:-translate-y-0.5 transition-all border-0"
+              className="h-12 px-10 bg-indigo-600 hover:bg-indigo-700 rounded-full font-bold text-lg shadow-lg shadow-indigo-200 hover:-translate-y-0.5 transition-all border-0"
             >
               确认大纲，生成正文
             </Button>
@@ -381,7 +422,6 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
         </div>
       </div>
 
-      {/* 🏢 公司选择弹窗 */}
       <Modal
         title={<div className="flex items-center space-x-2 pb-2"><div className="w-8 h-8 bg-indigo-100 rounded-lg flex items-center justify-center"><Building2 size={18} className="text-indigo-600" /></div><span className="text-lg">选择投标主体</span></div>}
         open={isCompanyModalVisible}
@@ -389,7 +429,6 @@ ${outline.map(node => `### 【${node.title}】\n撰写要求：\n${node.detail}\
         footer={null}
         centered
         width={540}
-        styles={{ body: { padding: '24px' } }}
       >
         {fetchingCompanies ? (
           <div className="flex flex-col items-center py-12"><Spin /><span className="mt-4 text-gray-400">正在检索资产库...</span></div>

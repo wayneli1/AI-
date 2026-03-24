@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Search, MoreHorizontal } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
-import { message, Modal, Dropdown, Button, Tag, Input } from 'antd';
+import { message, Modal, Dropdown, Button, Input } from 'antd';
 import { useNavigate } from 'react-router-dom';
 
 const MyBids = () => {
@@ -11,14 +11,12 @@ const MyBids = () => {
   
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState('all'); // all, completed, uncompleted
+  const [activeTab, setActiveTab] = useState('all'); 
   const [searchText, setSearchText] = useState('');
   
-  // 删除相关状态
   const [isDeleteModalVisible, setIsDeleteModalVisible] = useState(false);
   const [projectToDelete, setProjectToDelete] = useState(null);
 
-  // 获取标书项目列表
   const fetchProjects = useCallback(async () => {
     if (!user) return;
     try {
@@ -32,20 +30,19 @@ const MyBids = () => {
       if (error) throw error;
       setProjects(data || []);
     } catch (error) {
-      console.error('获取标书项目失败:', error);
-      message.error('获取标书项目失败');
+      console.error('获取项目失败:', error);
+      message.error('获取项目失败');
     } finally {
       setLoading(false);
     }
   }, [user]);
 
-  // 初始化与轮询（针对处理中的项目）
   useEffect(() => {
     fetchProjects();
     const interval = setInterval(() => {
       setProjects(current => {
         if (current.some(p => p.status === 'processing')) {
-          fetchProjects(); // 如果有正在处理的，每10秒刷一次
+          fetchProjects(); 
         }
         return current;
       });
@@ -53,11 +50,9 @@ const MyBids = () => {
     return () => clearInterval(interval);
   }, [fetchProjects]);
 
-  // 🗑️ 删除逻辑 (加入了 Storage 源文件删除闭环)
   const handleDeleteProject = async () => {
     if (!projectToDelete || !user) return;
     try {
-      // 1. 如果有源文件，先从 Storage 删除源文件
       if (projectToDelete.file_url) {
         const urlParts = projectToDelete.file_url.split('documents/');
         if (urlParts.length > 1) {
@@ -65,8 +60,6 @@ const MyBids = () => {
           await supabase.storage.from('documents').remove([filePath]);
         }
       }
-
-      // 2. 从数据库删除记录
       const { error } = await supabase
         .from('bidding_projects')
         .delete()
@@ -74,10 +67,9 @@ const MyBids = () => {
         .eq('user_id', user.id);
 
       if (error) throw error;
-      message.success('标书已永久删除');
+      message.success('已永久删除');
       fetchProjects();
     } catch (error) {
-      console.error('删除标书失败:', error);
       message.error('删除失败，请重试');
     } finally {
       setIsDeleteModalVisible(false);
@@ -85,40 +77,82 @@ const MyBids = () => {
     }
   };
 
-  // 过滤逻辑
+  // 🧠 智能路由分拣器：判断该去哪个页面
+  const handleProjectClick = (project) => {
+    if (project.status !== 'completed') return;
+    try {
+      if (project.framework_content) {
+        const parsed = JSON.parse(project.framework_content);
+        if (Array.isArray(parsed)) {
+          navigate(`/create-bid?id=${project.id}`);
+          return;
+        }
+      }
+    } catch (e) {
+      // 解析报错说明是旧版 Markdown 纯文本解读报告
+    }
+    // 默认跳去解读报告页
+    navigate(`/bid-analysis/${project.id}`);
+  };
+
   const filteredProjects = projects.filter(project => {
-    const matchesSearch = project.project_name.toLowerCase().includes(searchText.toLowerCase());
+    const matchesSearch = project.project_name?.toLowerCase().includes(searchText.toLowerCase());
     if (!matchesSearch) return false;
     if (activeTab === 'completed') return project.status === 'completed';
     if (activeTab === 'uncompleted') return project.status !== 'completed';
     return true;
   });
 
-  // 获取状态标签 UI
-  const getStatusTags = (status) => {
-    if (status === 'completed') {
-      return (
-        <>
-          <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-600 mr-2 border border-indigo-100">大纲已生成</span>
-          <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-600 border border-blue-100">完整方案</span>
-        </>
-      );
-    } else if (status === 'processing') {
-      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-600 border border-purple-100">正文生成中...</span>;
+  // 🎨 核心修复：智能 UI 标签分拣器
+  const getStatusTags = (project) => {
+    let isNewGenerationFlow = false;
+    
+    // 1. 判断是哪种业务类型
+    try {
+      if (project.framework_content) {
+        const parsed = JSON.parse(project.framework_content);
+        if (Array.isArray(parsed)) {
+          isNewGenerationFlow = true; // 是“新建标书”流程
+        }
+      }
+    } catch (e) {
+      isNewGenerationFlow = false; // 报错了，说明是“标书解读”流程
+    }
+
+    // 2. 根据类型渲染不同标签，完全还原您的截图设计
+    if (isNewGenerationFlow) {
+      // 【新建标书流程】的标签
+      if (project.status === 'completed') {
+        return (
+          <>
+            <span className="px-3 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-600 mr-2 border border-purple-100">大纲已生成</span>
+            <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-600 border border-blue-100">完整方案</span>
+          </>
+        );
+      } else {
+        return <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-600 border border-indigo-100">正文生成中...</span>;
+      }
     } else {
-      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-50 text-red-600 border border-red-100">解析失败</span>;
+      // 【标书解读流程】的标签
+      if (project.status === 'completed') {
+        return (
+          <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-500 border border-blue-100">招标文件解读报告</span>
+        );
+      } else {
+        return <span className="px-3 py-1 rounded-full text-xs font-medium bg-orange-50 text-orange-500 border border-orange-100">文件解读中...</span>;
+      }
     }
   };
 
   return (
     <div className="min-h-screen bg-white p-8">
-      {/* 顶部工具栏 (完美对标图2) */}
+      {/* 顶部工具栏 */}
       <div className="flex items-center justify-between mb-8 pb-4 border-b border-gray-100">
         <div className="flex items-center space-x-6">
           <Button 
             type="primary" 
             className="bg-[#7C3AED] hover:bg-[#6D28D9] border-0 rounded-full px-6 h-9 shadow-sm"
-            onClick={() => navigate('/create-bid')} 
+            onClick={() => navigate('/create-bid')}
           >
             新建标书
           </Button>
@@ -128,7 +162,7 @@ const MyBids = () => {
               onClick={() => setActiveTab('all')}
               className={`cursor-pointer pb-1 transition-colors ${activeTab === 'all' ? 'text-gray-900 font-bold border-b-2 border-[#7C3AED]' : 'text-gray-500 hover:text-gray-900'}`}
             >
-              全部标书
+              全部记录
             </span>
             <span 
               onClick={() => setActiveTab('completed')}
@@ -147,7 +181,7 @@ const MyBids = () => {
 
         <div className="relative w-72">
           <Input
-            placeholder="请输入方案名称"
+            placeholder="请输入方案或报告名称"
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
             className="rounded-full bg-gray-50 border-gray-200 hover:border-purple-300 focus:border-purple-500 h-9 pr-10"
@@ -156,27 +190,27 @@ const MyBids = () => {
         </div>
       </div>
 
-      {/* 极简列表渲染 */}
+      {/* 列表渲染 */}
       <div className="space-y-0">
         {loading ? (
-          <div className="text-center py-20 text-gray-500">正在加载您的标书资产...</div>
+          <div className="text-center py-20 text-gray-500">正在加载您的资产...</div>
         ) : filteredProjects.length === 0 ? (
-          <div className="text-center py-20 text-gray-400">暂无符合条件的标书数据</div>
+          <div className="text-center py-20 text-gray-400">暂无符合条件的数据</div>
         ) : (
           filteredProjects.map((project) => (
             <div key={project.id} className="flex items-center justify-between py-5 border-b border-gray-50 hover:bg-gray-50/50 transition-colors px-4 group">
               <div className="flex-1">
                 <div className="flex items-center mb-2">
                   <h3 className="text-base font-medium text-gray-900 mr-4 cursor-pointer hover:text-purple-600 transition-colors"
-                      onClick={() => project.status === 'completed' && navigate(`/bid-analysis/${project.id}`)}>
-                    {project.project_name}
+                      onClick={() => handleProjectClick(project)}>
+                    {project.project_name || '未命名项目'}
                   </h3>
-                  {getStatusTags(project.status)}
+                  {/* 💡 这里传入整个 project 给标签生成器 */}
+                  {getStatusTags(project)}
                 </div>
                 <div className="flex items-center text-xs text-gray-400 space-x-6">
                   <span>创建时间：{new Date(project.created_at).toLocaleString('zh-CN')}</span>
                   <span>创建人：{user?.phone || user?.email || '系统用户'}</span>
-                  {/* 查看原始文件链接 */}
                   {project.file_url && (
                     <a href={project.file_url} target="_blank" rel="noreferrer" className="text-purple-500 hover:underline">
                       查看原始招标文件
@@ -192,13 +226,13 @@ const MyBids = () => {
                     items: [
                       {
                         key: 'view',
-                        label: '查看并编辑报告',
+                        label: '查看并编辑',
                         disabled: project.status !== 'completed',
-                        onClick: () => navigate(`/bid-analysis/${project.id}`)
+                        onClick: () => handleProjectClick(project)
                       },
                       {
                         key: 'delete',
-                        label: <span className="text-red-500">删除标书</span>,
+                        label: <span className="text-red-500">永久删除</span>,
                         onClick: () => {
                           setProjectToDelete(project);
                           setIsDeleteModalVisible(true);
@@ -219,7 +253,7 @@ const MyBids = () => {
 
       {/* 删除确认弹窗 */}
       <Modal
-        title="删除标书"
+        title="永久删除确认"
         open={isDeleteModalVisible}
         onOk={handleDeleteProject}
         onCancel={() => {
@@ -230,7 +264,7 @@ const MyBids = () => {
         cancelText="取消"
         okButtonProps={{ danger: true }}
       >
-        <p className="py-4 text-gray-600">确定要永久删除标书 <strong>{projectToDelete?.project_name}</strong> 吗？<br/><span className="text-xs text-red-500">相关源文件也会被同时删除，此操作不可恢复。</span></p>
+        <p className="py-4 text-gray-600">确定要永久删除 <strong>{projectToDelete?.project_name}</strong> 吗？<br/><span className="text-xs text-red-500">此操作将清空AI生成的全部内容及源文件。</span></p>
       </Modal>
     </div>
   );
