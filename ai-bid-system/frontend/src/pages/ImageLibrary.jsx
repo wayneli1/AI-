@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { message, Modal, Input, Tabs } from 'antd';
 import { extractTextFromImage } from '../utils/ocr';
-import { syncTextToDify } from '../utils/difySync';
+import { syncTextToDify, deleteDocumentFromDify } from '../utils/difySync';
 
 const { TabPane } = Tabs;
 
@@ -90,7 +90,8 @@ const ImageLibrary = () => {
         fileType: img.file_type || 'image/jpeg',
         category_id: img.category_id,
         category_name: img.image_categories?.name || '未分类',
-        image_url: img.image_url
+        image_url: img.image_url,
+        dify_document_id: img.dify_document_id // ✅ 获取 Dify ID
       }));
 
       setImages(formattedImages);
@@ -313,24 +314,44 @@ const ImageLibrary = () => {
             fileType: file.type,
             category_id: insertDataResult.category_id,
             category_name: selectedCategory === 'uncategorized' ? '未分类' : 
-                         categories.find(cat => cat.id === selectedCategory)?.name || '',
-            image_url: imageUrl
+                          categories.find(cat => cat.id === selectedCategory)?.name || '',
+            image_url: imageUrl,
+            dify_document_id: null // 初始暂空
           });
 
            // 异步触发OCR文字提取
            (async () => {
              try {
                const text = await extractTextFromImage(file);
+               
+               // ✅ 补丁：图片 OCR 文字需拼接公网 URL 后，再传给 Dify！
+               const contentForDify = `【图片资产名称：${file.name}】\n图片内解析文字内容：${text}\n原图公网访问地址（请在标书中直接以Markdown格式插入此链接展示图片）：![${file.name}](${imageUrl})`;
+
                await supabase
                  .from('images')
                  .update({ ocr_content: text, ocr_status: 'completed' })
                  .eq('id', insertDataResult.id);
-               // 同步到Dify知识库
-               try {
-                 await syncTextToDify(file.name, text);
-               } catch (syncError) {
-                 console.error('同步到Dify失败:', syncError);
-               }
+                 
+                // 同步到Dify知识库
+                let finalDifyId = null;
+                try {
+                  finalDifyId = await syncTextToDify(file.name, contentForDify);
+                  if (finalDifyId) {
+                    // 将 Dify 文档 ID 保存到数据库
+                    await supabase
+                      .from('images')
+                      .update({ dify_document_id: finalDifyId })
+                      .eq('id', insertDataResult.id);
+                  }
+                } catch (syncError) {
+                  console.error('同步到Dify失败:', syncError);
+                }
+                
+                // ✅ 补丁：将 Dify ID 注入本地 State
+                setImages(prev => prev.map(img => 
+                  img.id === insertDataResult.id ? { ...img, dify_document_id: finalDifyId } : img
+                ));
+
              } catch (ocrError) {
                console.error(`OCR提取失败（图片ID: ${insertDataResult.id}）:`, ocrError);
                // 更新状态为失败
@@ -348,9 +369,9 @@ const ImageLibrary = () => {
       }
 
       if (uploadedImages.length > 0) {
-        setImages(prev => [...prev, ...uploadedImages]);
+        // 先把未完全处理的放进视图
+        setImages(prev => [...uploadedImages, ...prev]);
         message.success(`成功上传 ${uploadedImages.length} 张图片到"${selectedCategoryName}"`);
-        fetchImages(); // 刷新图片列表
       }
 
     } catch (error) {
@@ -362,7 +383,7 @@ const ImageLibrary = () => {
         event.target.value = '';
       }
     }
-  }, [user, selectedCategory, selectedCategoryName, categories, fetchImages]);
+  }, [user, selectedCategory, selectedCategoryName, categories]); // 去除 fetchImages 依赖防止死循环
 
   // 拖拽上传事件处理
   useEffect(() => {
@@ -389,7 +410,14 @@ const ImageLibrary = () => {
       e.preventDefault();
       e.stopPropagation();
       setIsDragging(false);
-      handleFileUpload(e);
+      
+      // 创建模拟的event对象
+      const dataTransfer = e.dataTransfer;
+      const files = dataTransfer.files;
+      if (files.length > 0) {
+        const mockEvent = { target: { files } };
+        handleFileUpload(mockEvent);
+      }
     };
 
     const dropZone = dropZoneRef.current;
@@ -410,14 +438,25 @@ const ImageLibrary = () => {
     };
   }, [handleFileUpload]);
 
-  // 图片操作函数
+  // ✅ 核心修复：图片操作函数加入 Dify 删除联动
   const handleDeleteImage = async (imageId) => {
-    if (!window.confirm('确定要删除这张图片吗？') || !user) return;
-
     const imageToDelete = images.find(img => img.id === imageId);
-    if (!imageToDelete) return;
+    if (!imageToDelete || !user) return;
+
+    if (!window.confirm('确定要删除这张图片吗？关联的 AI 知识库内容也将被同步清除。')) return;
 
     try {
+      // 1. 如果存在 Dify 文档 ID，则从 Dify 知识库删除
+      if (imageToDelete.dify_document_id) {
+        try {
+          await deleteDocumentFromDify(imageToDelete.dify_document_id);
+        } catch (difyError) {
+          console.error('从 Dify 知识库删除图片数据失败:', difyError);
+          message.warning('图片已从本地删除，但 Dify 知识库文档删除失败，请手动清理');
+        }
+      }
+
+      // 2. 从 Storage 删除
       const urlParts = imageToDelete.image_url?.split('/');
       const fileName = urlParts?.[urlParts.length - 1];
       const filePath = `${user.id}/${fileName}`;
@@ -430,6 +469,7 @@ const ImageLibrary = () => {
         if (storageError) throw storageError;
       }
 
+      // 3. 从数据库记录删除
       const { error: dbError } = await supabase
         .from('images')
         .delete()
@@ -438,8 +478,9 @@ const ImageLibrary = () => {
 
       if (dbError) throw dbError;
 
+      // 4. 更新前端状态
       setImages(prev => prev.filter(img => img.id !== imageId));
-      message.success('图片删除成功');
+      message.success('图片及 AI 记忆删除成功');
     } catch (error) {
       console.error('删除失败:', error);
       message.error('删除失败，请重试');
@@ -504,9 +545,6 @@ const ImageLibrary = () => {
                 title="新建分类"
               >
                 <FolderPlus size={18} />
-
-
-                
               </button>
             </div>
             

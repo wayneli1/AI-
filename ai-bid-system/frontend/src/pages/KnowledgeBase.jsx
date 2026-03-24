@@ -4,7 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { message, Modal, Input } from 'antd';
 import { extractTextFromDocument } from '../utils/documentParser';
-import { syncTextToDify } from '../utils/difySync';
+import { syncTextToDify, deleteDocumentFromDify } from '../utils/difySync';
 
 const KnowledgeBase = () => {
   const { user } = useAuth();
@@ -87,7 +87,8 @@ const KnowledgeBase = () => {
         date: new Date(doc.created_at).toLocaleDateString('zh-CN'),
         status: doc.ocr_status === 'completed' ? 'processed' : doc.ocr_status === 'pending' ? 'processing' : 'processed',
         file_url: doc.file_url,
-        category_id: doc.category_id
+        category_id: doc.category_id,
+        dify_document_id: doc.dify_document_id
       }));
 
       setFiles(formattedFiles);
@@ -297,7 +298,8 @@ const KnowledgeBase = () => {
         date: new Date().toLocaleDateString('zh-CN'),
         status: 'processing',
         file_url: fileUrl,
-        category_id: insertDataResult.category_id
+        category_id: insertDataResult.category_id,
+        dify_document_id: null // 初始为空，稍后更新
       };
 
       setUploadedFile(newFile);
@@ -309,35 +311,45 @@ const KnowledgeBase = () => {
       // 8. 刷新列表
       fetchDocuments();
 
-       // 9. 异步触发OCR文字提取
-       (async () => {
-         try {
-           const text = await extractTextFromDocument(file);
-           await supabase
-             .from('documents')
-             .update({ ocr_content: text, ocr_status: 'completed' })
-             .eq('id', insertDataResult.id);
-           
-           // 同步到Dify知识库
-           try {
-             await syncTextToDify(file.name, text);
-           } catch (syncError) {
-             console.error('同步到Dify失败:', syncError);
-           }
-           
-           // 更新本地状态为已处理
-           setFiles(prev => prev.map(f => 
-             f.id === insertDataResult.id ? { ...f, status: 'processed' } : f
-           ));
-         } catch (ocrError) {
-           console.error(`OCR提取失败（文档ID: ${insertDataResult.id}）:`, ocrError);
-           // 更新状态为失败
-           await supabase
-             .from('documents')
-             .update({ ocr_status: 'failed' })
-             .eq('id', insertDataResult.id);
-         }
-       })();
+      // 9. 异步触发OCR文字提取和Dify同步
+      (async () => {
+        try {
+          const text = await extractTextFromDocument(file);
+          let finalDifyId = null;
+
+          // 更新状态为已完成
+          await supabase
+            .from('documents')
+            .update({ ocr_content: text, ocr_status: 'completed' })
+            .eq('id', insertDataResult.id);
+            
+          // 同步到Dify知识库
+          try {
+            finalDifyId = await syncTextToDify(file.name, text);
+            if (finalDifyId) {
+              // 将 Dify 文档 ID 保存到数据库
+              await supabase
+                .from('documents')
+                .update({ dify_document_id: finalDifyId })
+                .eq('id', insertDataResult.id);
+            }
+          } catch (syncError) {
+            console.error('同步到Dify失败:', syncError);
+          }
+            
+          // 🚀 核心修复：更新本地状态为已处理，并注入 Dify ID，确保立刻能删
+          setFiles(prev => prev.map(f => 
+            f.id === insertDataResult.id ? { ...f, status: 'processed', dify_document_id: finalDifyId } : f
+          ));
+        } catch (ocrError) {
+          console.error(`OCR提取失败（文档ID: ${insertDataResult.id}）:`, ocrError);
+          // 更新状态为失败
+          await supabase
+            .from('documents')
+            .update({ ocr_status: 'failed' })
+            .eq('id', insertDataResult.id);
+        }
+      })();
 
     } catch (error) {
       console.error('上传失败:', error);
@@ -350,7 +362,7 @@ const KnowledgeBase = () => {
     } finally {
       setUploading(false);
       // 清空input值，允许重复上传同一文件
-      event.target.value = '';
+      if (event.target) event.target.value = '';
     }
   }, [user, selectedCategory, fetchDocuments]);
 
@@ -364,14 +376,25 @@ const KnowledgeBase = () => {
       const fileName = urlParts?.[urlParts.length - 1];
       const filePath = `${user.id}/${fileName}`;
       
-      // 1. 从Storage删除文件
-      const { error: storageError } = await supabase.storage
-        .from('documents')
-        .remove([filePath]);
+      // 1. 如果存在 Dify 文档 ID，则从 Dify 知识库删除
+      if (fileToDelete.dify_document_id) {
+        try {
+          await deleteDocumentFromDify(fileToDelete.dify_document_id);
+        } catch (difyError) {
+          console.error('从 Dify 知识库删除文档失败:', difyError);
+          message.warning('文件已从本地删除，但 Dify 知识库文档删除失败，请手动清理');
+        }
+      }
+      
+      // 2. 从Storage删除文件
+      if (filePath) {
+        const { error: storageError } = await supabase.storage
+          .from('documents')
+          .remove([filePath]);
+        if (storageError) throw storageError;
+      }
 
-      if (storageError) throw storageError;
-
-      // 2. 从数据库删除记录
+      // 3. 从数据库删除记录
       const { error: dbError } = await supabase
         .from('documents')
         .delete()
@@ -380,7 +403,7 @@ const KnowledgeBase = () => {
 
       if (dbError) throw dbError;
 
-      // 3. 更新本地状态
+      // 4. 更新本地状态
       setFiles(files.filter(file => file.id !== id));
       if (uploadedFile?.id === id) {
         setUploadedFile(null);
