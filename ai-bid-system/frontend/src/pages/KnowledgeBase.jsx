@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { message, Modal, Input } from 'antd';
 import { extractTextFromDocument } from '../utils/documentParser';
+import { syncTextToDify } from '../utils/difySync';
 
 const KnowledgeBase = () => {
   const { user } = useAuth();
@@ -308,28 +309,35 @@ const KnowledgeBase = () => {
       // 8. 刷新列表
       fetchDocuments();
 
-      // 9. 异步触发OCR文字提取
-      (async () => {
-        try {
-          const text = await extractTextFromDocument(file);
-          await supabase
-            .from('documents')
-            .update({ ocr_content: text, ocr_status: 'completed' })
-            .eq('id', insertDataResult.id);
-          
-          // 更新本地状态为已处理
-          setFiles(prev => prev.map(f => 
-            f.id === insertDataResult.id ? { ...f, status: 'processed' } : f
-          ));
-        } catch (ocrError) {
-          console.error(`OCR提取失败（文档ID: ${insertDataResult.id}）:`, ocrError);
-          // 更新状态为失败
-          await supabase
-            .from('documents')
-            .update({ ocr_status: 'failed' })
-            .eq('id', insertDataResult.id);
-        }
-      })();
+       // 9. 异步触发OCR文字提取
+       (async () => {
+         try {
+           const text = await extractTextFromDocument(file);
+           await supabase
+             .from('documents')
+             .update({ ocr_content: text, ocr_status: 'completed' })
+             .eq('id', insertDataResult.id);
+           
+           // 同步到Dify知识库
+           try {
+             await syncTextToDify(file.name, text);
+           } catch (syncError) {
+             console.error('同步到Dify失败:', syncError);
+           }
+           
+           // 更新本地状态为已处理
+           setFiles(prev => prev.map(f => 
+             f.id === insertDataResult.id ? { ...f, status: 'processed' } : f
+           ));
+         } catch (ocrError) {
+           console.error(`OCR提取失败（文档ID: ${insertDataResult.id}）:`, ocrError);
+           // 更新状态为失败
+           await supabase
+             .from('documents')
+             .update({ ocr_status: 'failed' })
+             .eq('id', insertDataResult.id);
+         }
+       })();
 
     } catch (error) {
       console.error('上传失败:', error);

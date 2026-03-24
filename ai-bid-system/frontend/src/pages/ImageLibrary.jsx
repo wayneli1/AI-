@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import { message, Modal, Input, Tabs } from 'antd';
 import { extractTextFromImage } from '../utils/ocr';
+import { syncTextToDify } from '../utils/difySync';
 
 const { TabPane } = Tabs;
 
@@ -316,23 +317,29 @@ const ImageLibrary = () => {
             image_url: imageUrl
           });
 
-          // 异步触发OCR文字提取
-          (async () => {
-            try {
-              const text = await extractTextFromImage(file);
-              await supabase
-                .from('images')
-                .update({ ocr_content: text, ocr_status: 'completed' })
-                .eq('id', insertDataResult.id);
-            } catch (ocrError) {
-              console.error(`OCR提取失败（图片ID: ${insertDataResult.id}）:`, ocrError);
-              // 更新状态为失败
-              await supabase
-                .from('images')
-                .update({ ocr_status: 'failed' })
-                .eq('id', insertDataResult.id);
-            }
-          })();
+           // 异步触发OCR文字提取
+           (async () => {
+             try {
+               const text = await extractTextFromImage(file);
+               await supabase
+                 .from('images')
+                 .update({ ocr_content: text, ocr_status: 'completed' })
+                 .eq('id', insertDataResult.id);
+               // 同步到Dify知识库
+               try {
+                 await syncTextToDify(file.name, text);
+               } catch (syncError) {
+                 console.error('同步到Dify失败:', syncError);
+               }
+             } catch (ocrError) {
+               console.error(`OCR提取失败（图片ID: ${insertDataResult.id}）:`, ocrError);
+               // 更新状态为失败
+               await supabase
+                 .from('images')
+                 .update({ ocr_status: 'failed' })
+                 .eq('id', insertDataResult.id);
+             }
+           })();
 
         } catch (fileError) {
           console.error(`上传文件 ${file.name} 失败:`, fileError);
