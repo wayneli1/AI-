@@ -325,8 +325,7 @@ const KnowledgeBase = () => {
             
           // 同步到Dify知识库
           try {
-            finalDifyId = await syncTextToDify(file.name, text);
-            if (finalDifyId) {
+              finalDifyId = await syncTextToDify(file.name, text, selectedCategoryName);            if (finalDifyId) {
               // 将 Dify 文档 ID 保存到数据库
               await supabase
                 .from('documents')

@@ -335,7 +335,7 @@ const ImageLibrary = () => {
                 // 同步到Dify知识库
                 let finalDifyId = null;
                 try {
-                  finalDifyId = await syncTextToDify(file.name, contentForDify);
+                  finalDifyId = await syncTextToDify(file.name, contentForDify,selectedCategoryName);
                   if (finalDifyId) {
                     // 将 Dify 文档 ID 保存到数据库
                     await supabase

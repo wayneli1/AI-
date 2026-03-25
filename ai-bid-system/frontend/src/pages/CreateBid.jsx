@@ -247,12 +247,13 @@ export default function CreateBid() {
 
         const promptText = `
 【重要前提指令】：你现在的身份是【${targetCompany}】的资深投标代表。
+【绝对跨界禁区】：如果检索到的内容带有其他具体主体公司的标识（既不是 {{targetCompany}}，也不是 未分类/通用），请立即触发警报并丢弃，**绝不可**将其写入本文！
 请严格使用内部知识库中与【${targetCompany}】相关的历史资质、项目经验。若匹配到Markdown图片链接，请务必直接输出图片代码。
-
+【通用白名单】：对于通用的技术方案、培训服务、实施方法论等，如果检索到带有“【所属主体：未分类】”或“【所属主体：通用】”标识的资料，**允许且必须作为通用标准资产使用**！
 【当前撰写任务】：
 当前章节：### 【${node.id} ${node.title}】
 撰写要求：
-${node.requirement || '请结合上下文，按照专业公文标准，详细扩充本节的技术/管理方案。'}
+${node.requirement || '请结合上下文与内部知识库，按照专业公文标准，详细扩充本节的技术/管理方案。'}
 请直接输出本节的 Markdown 正文，行文必须高度专业严谨。首行请以该章节的标题开头。`;
         
         const chunkText = await generateBidContent(promptText);
