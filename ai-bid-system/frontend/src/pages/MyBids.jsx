@@ -77,9 +77,8 @@ const MyBids = () => {
     }
   };
 
-  // 🧠 智能路由分拣器：判断该去哪个页面
+  // 🧠 智能路由分拣器：判断该去哪个页面 (💡 修复：去掉了状态判断，随时可进)
   const handleProjectClick = (project) => {
-    if (project.status !== 'completed') return;
     try {
       if (project.framework_content) {
         const parsed = JSON.parse(project.framework_content);
@@ -103,37 +102,32 @@ const MyBids = () => {
     return true;
   });
 
-  // 🎨 核心修复：智能 UI 标签分拣器
   const getStatusTags = (project) => {
     let isNewGenerationFlow = false;
     
-    // 1. 判断是哪种业务类型
     try {
       if (project.framework_content) {
         const parsed = JSON.parse(project.framework_content);
         if (Array.isArray(parsed)) {
-          isNewGenerationFlow = true; // 是“新建标书”流程
+          isNewGenerationFlow = true; 
         }
       }
     } catch (e) {
-      isNewGenerationFlow = false; // 报错了，说明是“标书解读”流程
+      isNewGenerationFlow = false; 
     }
 
-    // 2. 根据类型渲染不同标签，完全还原您的截图设计
     if (isNewGenerationFlow) {
-      // 【新建标书流程】的标签
       if (project.status === 'completed') {
         return (
           <>
-            <span className="px-3 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-600 mr-2 border border-purple-100">大纲已生成</span>
+            <span className="px-3 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-600 mr-2 border border-purple-100">大纲已确认</span>
             <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-600 border border-blue-100">完整方案</span>
           </>
         );
       } else {
-        return <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-600 border border-indigo-100">正文生成中...</span>;
+        return <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-600 border border-indigo-100">大纲已生成 / 待生成正文</span>;
       }
     } else {
-      // 【标书解读流程】的标签
       if (project.status === 'completed') {
         return (
           <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-500 border border-blue-100">招标文件解读报告</span>
@@ -146,7 +140,6 @@ const MyBids = () => {
 
   return (
     <div className="min-h-screen bg-white p-8">
-      {/* 顶部工具栏 */}
       <div className="flex items-center justify-between mb-8 pb-4 border-b border-gray-100">
         <div className="flex items-center space-x-6">
           <Button 
@@ -158,39 +151,18 @@ const MyBids = () => {
           </Button>
           
           <div className="flex space-x-6 text-sm">
-            <span 
-              onClick={() => setActiveTab('all')}
-              className={`cursor-pointer pb-1 transition-colors ${activeTab === 'all' ? 'text-gray-900 font-bold border-b-2 border-[#7C3AED]' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-              全部记录
-            </span>
-            <span 
-              onClick={() => setActiveTab('completed')}
-              className={`cursor-pointer pb-1 transition-colors ${activeTab === 'completed' ? 'text-gray-900 font-bold border-b-2 border-[#7C3AED]' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-              已完成
-            </span>
-            <span 
-              onClick={() => setActiveTab('uncompleted')}
-              className={`cursor-pointer pb-1 transition-colors ${activeTab === 'uncompleted' ? 'text-gray-900 font-bold border-b-2 border-[#7C3AED]' : 'text-gray-500 hover:text-gray-900'}`}
-            >
-              未完成
-            </span>
+            <span onClick={() => setActiveTab('all')} className={`cursor-pointer pb-1 transition-colors ${activeTab === 'all' ? 'text-gray-900 font-bold border-b-2 border-[#7C3AED]' : 'text-gray-500 hover:text-gray-900'}`}>全部记录</span>
+            <span onClick={() => setActiveTab('completed')} className={`cursor-pointer pb-1 transition-colors ${activeTab === 'completed' ? 'text-gray-900 font-bold border-b-2 border-[#7C3AED]' : 'text-gray-500 hover:text-gray-900'}`}>已完成</span>
+            <span onClick={() => setActiveTab('uncompleted')} className={`cursor-pointer pb-1 transition-colors ${activeTab === 'uncompleted' ? 'text-gray-900 font-bold border-b-2 border-[#7C3AED]' : 'text-gray-500 hover:text-gray-900'}`}>未完成</span>
           </div>
         </div>
 
         <div className="relative w-72">
-          <Input
-            placeholder="请输入方案或报告名称"
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            className="rounded-full bg-gray-50 border-gray-200 hover:border-purple-300 focus:border-purple-500 h-9 pr-10"
-          />
+          <Input placeholder="请输入方案或报告名称" value={searchText} onChange={(e) => setSearchText(e.target.value)} className="rounded-full bg-gray-50 border-gray-200 hover:border-purple-300 focus:border-purple-500 h-9 pr-10" />
           <Search size={16} className="absolute right-3 top-2.5 text-gray-400" />
         </div>
       </div>
 
-      {/* 列表渲染 */}
       <div className="space-y-0">
         {loading ? (
           <div className="text-center py-20 text-gray-500">正在加载您的资产...</div>
@@ -205,21 +177,17 @@ const MyBids = () => {
                       onClick={() => handleProjectClick(project)}>
                     {project.project_name || '未命名项目'}
                   </h3>
-                  {/* 💡 这里传入整个 project 给标签生成器 */}
                   {getStatusTags(project)}
                 </div>
                 <div className="flex items-center text-xs text-gray-400 space-x-6">
                   <span>创建时间：{new Date(project.created_at).toLocaleString('zh-CN')}</span>
                   <span>创建人：{user?.phone || user?.email || '系统用户'}</span>
                   {project.file_url && (
-                    <a href={project.file_url} target="_blank" rel="noreferrer" className="text-purple-500 hover:underline">
-                      查看原始招标文件
-                    </a>
+                    <a href={project.file_url} target="_blank" rel="noreferrer" className="text-purple-500 hover:underline">查看原始招标文件</a>
                   )}
                 </div>
               </div>
               
-              {/* 右侧操作菜单 */}
               <div className="opacity-0 group-hover:opacity-100 transition-opacity">
                 <Dropdown
                   menu={{
@@ -227,16 +195,13 @@ const MyBids = () => {
                       {
                         key: 'view',
                         label: '查看并编辑',
-                        disabled: project.status !== 'completed',
+                        // 💡 修复：去掉了 disabled 限制
                         onClick: () => handleProjectClick(project)
                       },
                       {
                         key: 'delete',
                         label: <span className="text-red-500">永久删除</span>,
-                        onClick: () => {
-                          setProjectToDelete(project);
-                          setIsDeleteModalVisible(true);
-                        }
+                        onClick: () => { setProjectToDelete(project); setIsDeleteModalVisible(true); }
                       }
                     ]
                   }}
@@ -251,19 +216,7 @@ const MyBids = () => {
         )}
       </div>
 
-      {/* 删除确认弹窗 */}
-      <Modal
-        title="永久删除确认"
-        open={isDeleteModalVisible}
-        onOk={handleDeleteProject}
-        onCancel={() => {
-          setIsDeleteModalVisible(false);
-          setProjectToDelete(null);
-        }}
-        okText="确认删除"
-        cancelText="取消"
-        okButtonProps={{ danger: true }}
-      >
+      <Modal title="永久删除确认" open={isDeleteModalVisible} onOk={handleDeleteProject} onCancel={() => { setIsDeleteModalVisible(false); setProjectToDelete(null); }} okText="确认删除" cancelText="取消" okButtonProps={{ danger: true }}>
         <p className="py-4 text-gray-600">确定要永久删除 <strong>{projectToDelete?.project_name}</strong> 吗？<br/><span className="text-xs text-red-500">此操作将清空AI生成的全部内容及源文件。</span></p>
       </Modal>
     </div>
