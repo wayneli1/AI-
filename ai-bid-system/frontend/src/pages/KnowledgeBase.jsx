@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Upload, Inbox, FileText, Download, Eye, Trash2, CheckCircle, X, Loader2, Folder, FolderPlus, FolderOpen } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { message, Modal, Input } from 'antd';
+import { message, Modal, Input, notification, Spin } from 'antd';
 import { extractTextFromDocument } from '../utils/documentParser';
 import { syncTextToDify, deleteDocumentFromDify } from '../utils/difySync';
 
@@ -206,14 +206,14 @@ const KnowledgeBase = () => {
     const file = event.target.files[0];
     if (!file || !user) return;
 
-    // 检查是否选择了分类（除了全部文档和未分类）
+    if (event.target) event.target.value = '';
+
     if (selectedCategory === 'all') {
       message.warning('请先选择一个分类，或者切换到"未分类"');
       return;
     }
 
-    // 检查文件类型
-    const allowedTypes = ['.pdf',  '.docx'];
+    const allowedTypes = ['.pdf', '.docx'];
     const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
     
     if (!allowedTypes.includes(fileExtension)) {
@@ -221,112 +221,108 @@ const KnowledgeBase = () => {
       return;
     }
 
-    // 检查文件大小（最大300MB）
-    const maxSize = 300 * 1024 * 1024; // 300MB
+    const maxSize = 300 * 1024 * 1024;
     if (file.size > maxSize) {
       message.error('文件大小不能超过300MB');
       return;
     }
 
-    try {
-      setUploading(true);
-      
-      // 1. 生成安全的文件名（避免中文等特殊字符）
-      const timestamp = Date.now();
-      const randomStr = Math.random().toString(36).substring(2, 8);
-      const safeFileName = `${timestamp}_${randomStr}${fileExtension}`;
-      const filePath = `${user.id}/${safeFileName}`;
-      
-      // 2. 上传文件到 Storage
-      const { error: uploadError } = await supabase.storage
-        .from('documents')
-        .upload(filePath, file, {
-          cacheControl: '3600',
-          upsert: false
+    const taskKey = `upload-${Date.now()}`;
+    
+    notification.info({
+      key: taskKey,
+      message: '文件处理中',
+      description: '正在将文件安全上传至本地服务器...',
+      placement: 'bottomRight',
+      duration: 0,
+      icon: <Spin />
+    });
+
+    (async () => {
+      try {
+        const timestamp = Date.now();
+        const randomStr = Math.random().toString(36).substring(2, 8);
+        const safeFileName = `${timestamp}_${randomStr}${fileExtension}`;
+        const filePath = `${user.id}/${safeFileName}`;
+        
+        const { error: uploadError } = await supabase.storage
+          .from('documents')
+          .upload(filePath, file, {
+            cacheControl: '3600',
+            upsert: false
+          });
+
+        if (uploadError) throw uploadError;
+
+        const fileUrl = `${supabase.supabaseUrl}/storage/v1/object/documents/${filePath}`;
+
+        await supabase
+          .from('profiles')
+          .upsert({
+            id: user.id,
+            username: user.email?.split('@')[0] || 'user',
+            company_name: '未设置'
+          }, {
+            onConflict: 'id'
+          })
+          .select()
+          .single();
+
+        const insertData = {
+          user_id: user.id,
+          file_name: file.name,
+          file_url: fileUrl,
+          file_size: file.size,
+          file_type: fileExtension.replace('.', ''),
+          category_id: selectedCategory === 'uncategorized' ? null : selectedCategory,
+          ocr_status: 'pending'
+        };
+
+        const { data: insertDataResult, error: insertError } = await supabase
+          .from('documents')
+          .insert(insertData)
+          .select()
+          .single();
+
+        if (insertError) throw insertError;
+
+        const newFile = {
+          id: insertDataResult.id,
+          name: file.name,
+          size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
+          type: fileExtension.replace('.', '').toUpperCase(),
+          date: new Date().toLocaleDateString('zh-CN'),
+          status: 'processing',
+          file_url: fileUrl,
+          category_id: insertDataResult.category_id,
+          dify_document_id: null
+        };
+
+        setUploadedFile(newFile);
+        setFiles(prev => [newFile, ...prev]);
+        fetchDocuments();
+
+        notification.info({
+          key: taskKey,
+          message: 'AI 大脑学习中',
+          description: '文件已就绪，正在交由 AI 引擎进行向量化切片与知识同步，请稍候...',
+          placement: 'bottomRight',
+          duration: 0,
+          icon: <Spin />
         });
 
-      if (uploadError) throw uploadError;
-
-      // 3. 构建文件访问URL（私有桶）
-      const fileUrl = `${supabase.supabaseUrl}/storage/v1/object/documents/${filePath}`;
-
-      // 4. 首先确保用户在profiles表中有记录
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .upsert({
-          id: user.id,
-          username: user.email?.split('@')[0] || 'user',
-          company_name: '未设置'
-        }, {
-          onConflict: 'id'
-        })
-        .select()
-        .single();
-
-      if (profileError) {
-        console.error('创建/更新用户profile失败:', profileError);
-      }
-
-      // 5. 写入数据库，包含category_id和ocr_status
-      const insertData = {
-        user_id: user.id,
-        file_name: file.name,
-        file_url: fileUrl,
-        file_size: file.size,
-        file_type: fileExtension.replace('.', ''),
-        category_id: selectedCategory === 'uncategorized' ? null : selectedCategory,
-        ocr_status: 'pending'
-      };
-
-      const { data: insertDataResult, error: insertError } = await supabase
-        .from('documents')
-        .insert(insertData)
-        .select()
-        .single();
-
-      if (insertError) {
-        console.error('数据库插入错误:', insertError);
-        throw insertError;
-      }
-
-      // 6. 更新本地状态
-      const newFile = {
-        id: insertDataResult.id,
-        name: file.name,
-        size: `${(file.size / 1024 / 1024).toFixed(2)} MB`,
-        type: fileExtension.replace('.', '').toUpperCase(),
-        date: new Date().toLocaleDateString('zh-CN'),
-        status: 'processing',
-        file_url: fileUrl,
-        category_id: insertDataResult.category_id,
-        dify_document_id: null // 初始为空，稍后更新
-      };
-
-      setUploadedFile(newFile);
-      setFiles(prev => [newFile, ...prev]);
-      
-      // 7. 显示成功消息
-      message.success(`${file.name} 上传成功！`);
-      
-      // 8. 刷新列表
-      fetchDocuments();
-
-      // 9. 异步触发OCR文字提取和Dify同步
-      (async () => {
         try {
           const text = await extractTextFromDocument(file);
           let finalDifyId = null;
 
-          // 更新状态为已完成
           await supabase
             .from('documents')
             .update({ ocr_content: text, ocr_status: 'completed' })
             .eq('id', insertDataResult.id);
             
-          // 同步到Dify知识库
           try {
-              finalDifyId = await syncTextToDify(file.name, text, selectedCategoryName);            if (finalDifyId) {
-              // 将 Dify 文档 ID 保存到数据库
+            finalDifyId = await syncTextToDify(file.name, text, selectedCategoryName);
+            if (finalDifyId) {
               await supabase
                 .from('documents')
                 .update({ dify_document_id: finalDifyId })
@@ -336,34 +332,48 @@ const KnowledgeBase = () => {
             console.error('同步到Dify失败:', syncError);
           }
             
-          // 🚀 核心修复：更新本地状态为已处理，并注入 Dify ID，确保立刻能删
           setFiles(prev => prev.map(f => 
             f.id === insertDataResult.id ? { ...f, status: 'processed', dify_document_id: finalDifyId } : f
           ));
+
+          notification.success({
+            key: taskKey,
+            message: 'AI 学习完成',
+            description: `文件「${file.name}」已成功同步至知识库，可立即用于标书生成！`,
+            placement: 'bottomRight',
+            duration: 4
+          });
         } catch (ocrError) {
           console.error(`OCR提取失败（文档ID: ${insertDataResult.id}）:`, ocrError);
-          // 更新状态为失败
           await supabase
             .from('documents')
             .update({ ocr_status: 'failed' })
             .eq('id', insertDataResult.id);
+          
+          notification.error({
+            key: taskKey,
+            message: '同步中断',
+            description: 'AI 处理过程中发生错误，请稍后重试。',
+            placement: 'bottomRight',
+            duration: 5
+          });
         }
-      })();
 
-    } catch (error) {
-      console.error('上传失败:', error);
-      
-      if (error.message.includes('duplicate')) {
-        message.error('文件已存在，请重命名后重新上传');
-      } else {
-        message.error('上传失败，请重试');
+      } catch (error) {
+        console.error('上传失败:', error);
+        
+        notification.error({
+          key: taskKey,
+          message: '上传失败',
+          description: error.message.includes('duplicate') 
+            ? '文件已存在，请重命名后重新上传' 
+            : '上传过程中发生错误，请稍后重试。',
+          placement: 'bottomRight',
+          duration: 5
+        });
       }
-    } finally {
-      setUploading(false);
-      // 清空input值，允许重复上传同一文件
-      if (event.target) event.target.value = '';
-    }
-  }, [user, selectedCategory, fetchDocuments]);
+    })();
+  }, [user, selectedCategory, fetchDocuments, selectedCategoryName]);
 
   const deleteFile = async (id) => {
     const fileToDelete = files.find(file => file.id === id);

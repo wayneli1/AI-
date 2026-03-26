@@ -156,7 +156,7 @@ export default function CreateBid() {
   const loadExistingProject = async (id) => {
     try {
       message.loading({ content: '正在加载标书...', key: 'load' });
-      const { data, error } = await supabase.from('bidding_projects').select('*').eq('id', id).single();
+      const { data, error } = await supabase.from('bidding_projects').select('*').eq('id', id).maybeSingle();
       if (error) throw error;
       if (data) {
         setCurrentProjectId(data.id);
@@ -307,8 +307,10 @@ export default function CreateBid() {
           .eq('id', currentProjectId);
       }
       
-      message.loading({ content: `正在从本地数据库提取【${targetCompany}】的图片资产...`, key: 'fetch-img' });
-      let localImageAssets = '';
+      // 步骤1：生成前查库，提取图片字典
+      message.loading({ content: `正在从数据库提取【${targetCompany}】的图片资产...`, key: 'fetch-img' });
+      const imageDictionary = [];
+      
       try {
         const { data: catData } = await supabase
           .from('image_categories')
@@ -324,15 +326,43 @@ export default function CreateBid() {
             .eq('category_id', catData.id);
             
           if (imgData && imgData.length > 0) {
-            localImageAssets = imgData.map(img => 
-              `- 图片名称：${img.image_name}\n  请直接复制此代码插入：![${img.image_name}](${img.image_url})`
-            ).join('\n\n');
+            imgData.forEach(img => {
+              imageDictionary.push({
+                name: img.image_name,
+                url: img.image_url
+              });
+            });
           }
         }
       } catch (e) {
-        console.warn("获取本地图片库失败，可能该公司暂无专属图片");
+        console.warn("获取图片库失败，可能该公司暂无专属图片");
       }
-      message.success({ content: '本地专属图片提取完毕！', key: 'fetch-img' });
+      
+      // 查询"未分类"通用图片（category_id 为 null 的图片）
+      try {
+        const { data: uncategorizedImg } = await supabase
+          .from('images')
+          .select('image_name, image_url')
+          .is('category_id', null);
+          
+        if (uncategorizedImg && uncategorizedImg.length > 0) {
+          uncategorizedImg.forEach(img => {
+            if (!imageDictionary.find(i => i.name === img.image_name)) {
+              imageDictionary.push({
+                name: img.image_name,
+                url: img.image_url
+              });
+            }
+          });
+        }
+      } catch (e) {
+        console.warn("获取未分类图片失败");
+      }
+      
+      message.success({ content: `图片字典构建完毕，共 ${imageDictionary.length} 张可用图片`, key: 'fetch-img' });
+      
+      // 步骤2：构建图片名称列表用于 prompt
+      const imageNamesList = imageDictionary.map(img => `- ${img.name}`).join('\n');
       
       let fullGeneratedText = '';
       
@@ -348,16 +378,41 @@ export default function CreateBid() {
 撰写要求：
 ${node.requirement || '请结合上下文与内部知识库，详细扩充本节的技术或管理方案。'}
 
-【🚨 数据库直供的 100% 真实图片资产】
-以下图片由前端数据库直接提供，绝无虚假！如果本节内容需要插入图片（如营业执照、架构图等），**请从下面的列表中寻找，并完整复制对应的 Markdown 代码，绝对不允许擅自修改网址！** 如果下面没给出相关图片，就只写文字，不要输出图片。
----
-${localImageAssets || '（当前主体无专属图片）'}
----
+【🚨 图片插入极度严格规范（防滥用死命令）】
+如需插入图片，你只能从以下可用图片列表中选择，并严格输出占位符格式：{{IMG_图片名称}}
 
-注意：首行请严格以 “### ${node.id} ${node.title}” 标准 Markdown 格式开头，不要使用任何 HTML 标签。
+可用图片列表：
+${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
+
+⚠️ 核心使用纪律（违规将导致废标）：
+1. 绝对禁止输出任何 URL 或 ![]() 语法，只能输出形如 {{IMG_营业执照}} 的占位符
+2. 严禁在标书的签字、盖章、落款、日期声明处（如"投标人名称："、"法定代表人签字："）插入营业执照或任何图片
+3. 除非本章节的大纲要求明确指明需要提供某项资质或截图，否则绝对不允许擅自加戏插入图片
+4. 营业执照等核心资质图片，通常仅在【资格证明材料】或【公司简介】章节展示一次，严禁在业务响应方案中反复滥用
+
+注意：首行请严格以 "### ${node.id} ${node.title}" 标准 Markdown 格式开头，不要使用任何 HTML 标签。
         `.trim();
         
-        const chunkText = await generateBidContent(targetCompany, frameworkText, queryText);
+        // 调用大模型生成内容
+        let chunkText = await generateBidContent(targetCompany, frameworkText, queryText);
+        
+        // 步骤3：精准替换占位符为真实 Markdown 语法
+        imageDictionary.forEach(img => {
+          const placeholder = `{{IMG_${img.name}}}`;
+          const realMarkdown = `![${img.name}](${img.url})`;
+          // 使用 split + join 进行全局替换，避免正则特殊字符问题
+          chunkText = chunkText.split(placeholder).join(realMarkdown);
+        });
+        
+        // 兼容处理：也支持 {{IMG_图片名称}} 格式中可能存在的空格
+        chunkText = chunkText.replace(/\{\{IMG_\s*([^}]+?)\s*\}\}/g, (match, imgName) => {
+          const trimmedName = imgName.trim();
+          const foundImg = imageDictionary.find(img => img.name === trimmedName);
+          if (foundImg) {
+            return `![${foundImg.name}](${foundImg.url})`;
+          }
+          return match;
+        });
         
         fullGeneratedText += chunkText + '\n\n';
         setDocumentContent(fullGeneratedText);

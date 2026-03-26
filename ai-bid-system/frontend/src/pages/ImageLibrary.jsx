@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Image as ImageIcon, Upload, Trash2, Download, Eye, FileImage, Loader2, X, Folder, FolderPlus, FolderOpen } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { message, Modal, Input, Tabs } from 'antd';
+import { message, Modal, Input, Tabs, notification, Spin } from 'antd';
 import { extractTextFromImage } from '../utils/ocr';
 import { syncTextToDify, deleteDocumentFromDify } from '../utils/difySync';
 
@@ -204,12 +204,13 @@ const ImageLibrary = () => {
     }
   };
 
-  // 处理文件上传
+  // 处理文件上传 - 后台静默处理
   const handleFileUpload = useCallback(async (event) => {
     const files = Array.from(event.target.files || event.dataTransfer?.files || []);
     if (!files.length || !user) return;
 
-    // 检查是否选择了分类（除了全部图片和未分类）
+    if (event.target) event.target.value = '';
+
     if (selectedCategory === 'all') {
       message.warning('请先选择一个分类，或者切换到"未分类"');
       return;
@@ -240,28 +241,37 @@ const ImageLibrary = () => {
     });
 
     if (invalidFiles.length > 0) {
-      message.error(`以下文件上传失败：\n${invalidFiles.map(f => `${f.name}: ${f.reason}`).join('\n')}`);
+      message.error(`以下文件上传失败: ${invalidFiles.map(f => `${f.name}: ${f.reason}`).join('\n')}`);
     }
 
     if (validFiles.length === 0) return;
 
-    try {
-      setUploading(true);
-      const uploadedImages = [];
+    // 后台静默处理每个文件
+    validFiles.forEach(file => {
+      const taskKey = `upload-img-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
+      
+      notification.info({
+        key: taskKey,
+        message: '图片处理中',
+        description: `正在上传「${file.name}」到本地服务器...`,
+        placement: 'bottomRight',
+        duration: 0,
+        icon: <Spin />
+      });
 
-      for (const file of validFiles) {
+      // 异步后台处理
+      (async () => {
         try {
-          // 生成安全的文件名（避免中文等特殊字符）
           const timestamp = Date.now();
           const randomStr = Math.random().toString(36).substring(2, 9);
           const lastDotIndex = file.name.lastIndexOf('.');
           let ext = lastDotIndex !== -1 ? file.name.substring(lastDotIndex).toLowerCase() : '';
-          // 过滤扩展名，只保留字母、数字和点号
           if (ext) {
             ext = ext.replace(/[^a-z0-9.]/g, '_');
           }
           const safeFileName = `${timestamp}_${randomStr}${ext}`;
           const filePath = `${user.id}/${safeFileName}`;
+
           const { error: uploadError } = await supabase.storage
             .from('images')
             .upload(filePath, file, {
@@ -271,7 +281,14 @@ const ImageLibrary = () => {
 
           if (uploadError) {
             if (uploadError.message.includes('duplicate')) {
-              throw new Error(`文件 "${file.name}" 已存在，请重命名后重新上传`);
+              notification.error({
+                key: taskKey,
+                message: '上传失败',
+                description: `文件「${file.name}」已存在，请重命名后重新上传`,
+                placement: 'bottomRight',
+                duration: 5
+              });
+              return;
             }
             throw uploadError;
           }
@@ -282,7 +299,15 @@ const ImageLibrary = () => {
 
           const imageUrl = publicUrlData.publicUrl;
 
-          // 准备插入数据，包含category_id（如果是未分类则为null）
+          notification.info({
+            key: taskKey,
+            message: 'AI 大脑学习中',
+            description: `图片已就绪，正在进行 OCR 文字识别与知识库同步...`,
+            placement: 'bottomRight',
+            duration: 0,
+            icon: <Spin />
+          });
+
           const insertData = {
             user_id: user.id,
             image_name: file.name,
@@ -300,11 +325,18 @@ const ImageLibrary = () => {
             .single();
 
           if (insertError) {
+            notification.error({
+              key: taskKey,
+              message: '同步中断',
+              description: '数据库写入失败，请稍后重试',
+              placement: 'bottomRight',
+              duration: 5
+            });
             console.error('数据库插入错误:', insertError);
-            throw insertError;
+            return;
           }
 
-          uploadedImages.push({
+          const newImage = {
             id: insertDataResult.id,
             name: file.name,
             size: `${(file.size / (1024 * 1024)).toFixed(1)} MB`,
@@ -316,74 +348,75 @@ const ImageLibrary = () => {
             category_name: selectedCategory === 'uncategorized' ? '未分类' : 
                           categories.find(cat => cat.id === selectedCategory)?.name || '',
             image_url: imageUrl,
-            dify_document_id: null // 初始暂空
-          });
+            dify_document_id: null
+          };
+          
+          setImages(prev => [newImage, ...prev]);
+          
+          try {
+            const text = await extractTextFromImage(file);
+            
+            const contentForDify = `【图片资产名称：${file.name}】\n图片内解析文字内容：${text}\n原图公网访问地址（请在标书中直接以Markdown格式插入此链接展示图片）：![${file.name}](${imageUrl})`;
+            
+            await supabase
+              .from('images')
+              .update({ ocr_content: text, ocr_status: 'completed' })
+              .eq('id', insertDataResult.id);
+            
+            let finalDifyId = null;
+            try {
+              finalDifyId = await syncTextToDify(file.name, contentForDify, selectedCategoryName);
+              if (finalDifyId) {
+                await supabase
+                  .from('images')
+                  .update({ dify_document_id: finalDifyId })
+                  .eq('id', insertDataResult.id);
+              }
+            } catch (syncError) {
+              console.error('同步到Dify失败:', syncError);
+            }
+            
+            setImages(prev => prev.map(img => 
+              img.id === insertDataResult.id ? { ...img, dify_document_id: finalDifyId } : img
+            ));
 
-           // 异步触发OCR文字提取
-           (async () => {
-             try {
-               const text = await extractTextFromImage(file);
-               
-               // ✅ 补丁：图片 OCR 文字需拼接公网 URL 后，再传给 Dify！
-               const contentForDify = `【图片资产名称：${file.name}】\n图片内解析文字内容：${text}\n原图公网访问地址（请在标书中直接以Markdown格式插入此链接展示图片）：![${file.name}](${imageUrl})`;
-
-               await supabase
-                 .from('images')
-                 .update({ ocr_content: text, ocr_status: 'completed' })
-                 .eq('id', insertDataResult.id);
-                 
-                // 同步到Dify知识库
-                let finalDifyId = null;
-                try {
-                  finalDifyId = await syncTextToDify(file.name, contentForDify,selectedCategoryName);
-                  if (finalDifyId) {
-                    // 将 Dify 文档 ID 保存到数据库
-                    await supabase
-                      .from('images')
-                      .update({ dify_document_id: finalDifyId })
-                      .eq('id', insertDataResult.id);
-                  }
-                } catch (syncError) {
-                  console.error('同步到Dify失败:', syncError);
-                }
-                
-                // ✅ 补丁：将 Dify ID 注入本地 State
-                setImages(prev => prev.map(img => 
-                  img.id === insertDataResult.id ? { ...img, dify_document_id: finalDifyId } : img
-                ));
-
-             } catch (ocrError) {
-               console.error(`OCR提取失败（图片ID: ${insertDataResult.id}）:`, ocrError);
-               // 更新状态为失败
-               await supabase
-                 .from('images')
-                 .update({ ocr_status: 'failed' })
-                 .eq('id', insertDataResult.id);
-             }
-           })();
-
+            notification.success({
+              key: taskKey,
+              message: 'AI 学习完成',
+              description: `图片「${file.name}」已成功同步至知识库！`,
+              placement: 'bottomRight',
+              duration: 4
+            });
+          } catch (ocrError) {
+            console.error(`OCR提取失败（图片ID: ${insertDataResult.id}）:`, ocrError);
+            await supabase
+              .from('images')
+              .update({ ocr_status: 'failed' })
+              .eq('id', insertDataResult.id);
+            
+            notification.error({
+              key: taskKey,
+              message: '同步中断',
+              description: `图片「${file.name}」OCR处理失败，请检查图片格式或大小`,
+              placement: 'bottomRight',
+              duration: 5
+            });
+          }
         } catch (fileError) {
           console.error(`上传文件 ${file.name} 失败:`, fileError);
-          message.error(`文件 "${file.name}" 上传失败: ${fileError.message}`);
+          notification.error({
+            key: taskKey,
+            message: '上传失败',
+            description: `${file.name}: ${fileError.message}`,
+            placement: 'bottomRight',
+            duration: 5
+          });
         }
-      }
-
-      if (uploadedImages.length > 0) {
-        // 先把未完全处理的放进视图
-        setImages(prev => [...uploadedImages, ...prev]);
-        message.success(`成功上传 ${uploadedImages.length} 张图片到"${selectedCategoryName}"`);
-      }
-
-    } catch (error) {
-      console.error('上传过程中发生错误:', error);
-      message.error('上传失败，请重试');
-    } finally {
-      setUploading(false);
-      if (event.target) {
-        event.target.value = '';
-      }
-    }
-  }, [user, selectedCategory, selectedCategoryName, categories]); // 去除 fetchImages 依赖防止死循环
+      })();
+    });
+    
+    fetchImages();
+  }, [user, selectedCategory, selectedCategoryName, categories, fetchImages]);
 
   // 拖拽上传事件处理
   useEffect(() => {
