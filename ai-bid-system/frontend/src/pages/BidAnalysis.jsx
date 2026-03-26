@@ -143,7 +143,7 @@ const BidAnalysis = () => {
                 </div>
               </div>
               
-              <p className="font-semibold text-gray-900 mb-6 text-lg">支持 (.doc/.docx/.pdf) 格式招标文件</p>
+              <p className="font-semibold text-gray-900 mb-6 text-lg">支持 (.docx/.pdf) 格式招标文件</p>
               
               <button className="bg-[#8B5CF6] hover:bg-[#7C3AED] text-white px-10 py-3.5 rounded-full font-bold shadow-lg shadow-purple-200 transition-all hover:scale-105 pointer-events-none">
                 点击上传招标文件

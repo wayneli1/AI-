@@ -9,7 +9,6 @@ import ForgotPassword from './pages/ForgotPassword';
 import CreateBid from './pages/CreateBid';
 import MyBids from './pages/MyBids';
 import BidAnalysis from './pages/BidAnalysis';
-import BidReview from './pages/BidReview';
 import ImageLibrary from './pages/ImageLibrary';
 import KnowledgeBase from './pages/KnowledgeBase';
 import Profile from './pages/Profile';
@@ -36,7 +35,6 @@ const App = () => {
             <Route path="my-bids" element={<MyBids />} />
             <Route path="bid-analysis" element={<BidAnalysis />} />
             <Route path="bid-analysis/:id" element={<BidDetail />} />
-            <Route path="bid-review" element={<BidReview />} />
             <Route path="image-library" element={<ImageLibrary />} />
             <Route path="knowledge-base" element={<KnowledgeBase />} />
             <Route path="profile" element={<Profile />} />

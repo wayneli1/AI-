@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
-  FilePlus, FileText, Compass, ShieldCheck, 
+  FilePlus, FileText, Compass, 
   Image, BookOpen, LogOut, User
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -16,7 +16,6 @@ const Sidebar = () => {
     { name: '新建标书', icon: <FilePlus size={18} />, path: '/create-bid' },
     { name: '我的标书', icon: <FileText size={18} />, path: '/my-bids' },
     { name: '招标解读', icon: <Compass size={18} />, path: '/bid-analysis' },
-    { name: '标书审查', icon: <ShieldCheck size={18} />, path: '/bid-review' },
   ];
 
   const libraryNav = [
@@ -81,7 +80,7 @@ const Sidebar = () => {
         <div className="w-8 h-8 bg-gradient-to-br from-purple-600 to-indigo-500 rounded-lg flex items-center justify-center text-white mr-3 shadow-md shadow-purple-100">
           <span className="font-bold text-lg">X</span>
         </div>
-        <span className="font-bold text-lg tracking-tight">标书AI</span>
+        <span className="font-bold text-lg tracking-tight">销管部AI标书工具</span>
       </div>
 
       {/* 导航菜单 */}
