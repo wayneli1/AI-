@@ -213,7 +213,7 @@ const KnowledgeBase = () => {
     }
 
     // 检查文件类型
-    const allowedTypes = ['.pdf', '.doc', '.docx'];
+    const allowedTypes = ['.pdf',  '.docx'];
     const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
     
     if (!allowedTypes.includes(fileExtension)) {
