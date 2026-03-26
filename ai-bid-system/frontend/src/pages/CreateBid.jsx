@@ -3,17 +3,56 @@ import { Button, Input, message, Spin, Modal, Tag, Empty, Tree, Progress, Popcon
 import { 
   UploadCloud, ArrowLeft, Download, Search, 
   ChevronRight, Edit3, ListTree, Database, Building2, Eye, PenTool, FileText, CheckCircle2,
-  Cpu, Plus, Trash2
+  Cpu, Plus, Trash2, Maximize2, Minimize2
 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+// 💡 核心升级 1：引入真正的双栏编辑器
+import MDEditor from '@uiw/react-md-editor';
+// 💡 核心升级 2：引入真正的 Word 导出库
+import { asBlob } from 'html-docx-js-typescript';
 
 import { generateBidContent, generateBidOutline } from '../utils/difyWorkflow';
 import { supabase } from '../lib/supabase'; 
 import { useAuth } from '../contexts/AuthContext';
 import { extractTextFromDocument } from '../utils/documentParser';
+
+// ==========================================
+// 🚀 性能狂飙隔离仓：专为超大文本优化的 Markdown 编辑器
+// ==========================================
+const PerformanceEditor = React.memo(({ initialContent, onContentChange, viewMode }) => {
+  const [localContent, setLocalContent] = React.useState(initialContent);
+
+  React.useEffect(() => {
+    setLocalContent(initialContent);
+  }, [initialContent]);
+
+  React.useEffect(() => {
+    const timer = setTimeout(() => {
+      onContentChange(localContent);
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [localContent, onContentChange]);
+
+  return (
+    // 💡 彻底修复白屏与排版塌陷：强制 flex 布局满铺，恢复拖拽条
+    <div className="flex-1 w-full h-full flex flex-col min-h-0" data-color-mode="light">
+      <MDEditor
+        value={localContent}
+        onChange={setLocalContent}
+        height="100%"
+        preview={viewMode === 'preview' ? 'live' : 'edit'}
+        hideToolbar={viewMode === 'edit'}
+        enableScroll={true}
+        visibleDragbar={true} // 🚀 拖拽条复活！可自由调节左右宽度比例
+        style={{ flex: 1, height: '100%', overflow: 'hidden', borderRadius: '0.75rem' }}
+        textareaProps={{
+          style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
+        }}
+      />
+    </div>
+  );
+});
 
 // ==================== 树结构操作辅助函数 ====================
 const getLeafNodes = (nodes) => {
@@ -89,7 +128,7 @@ export default function CreateBid() {
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const fileInputRef = useRef(null);
 
-  const [fileUrl, setFileUrl] = useState(''); // 💡 新增：专门存文件的下载/预览链接
+  const [fileUrl, setFileUrl] = useState(''); 
   const [originalText, setOriginalText] = useState('');
   const [activeNodeId, setActiveNodeId] = useState(null); 
   const [targetCompany, setTargetCompany] = useState('');
@@ -103,6 +142,11 @@ export default function CreateBid() {
   const [generationProgress, setGenerationProgress] = useState(0);
   const [currentGeneratingNode, setCurrentGeneratingNode] = useState('');
 
+  // 💡 界面控制状态
+  const [showOriginal, setShowOriginal] = useState(true);
+
+  const editorRef = useRef(null);
+  
   useEffect(() => {
     if (urlProjectId && user) {
       loadExistingProject(urlProjectId);
@@ -116,7 +160,7 @@ export default function CreateBid() {
       if (error) throw error;
       if (data) {
         setCurrentProjectId(data.id);
-        setFileUrl(data.file_url); // 💡 新增：把数据库里的文件链接存入状态
+        setFileUrl(data.file_url); 
 
         if (data.framework_content) {
           try {
@@ -142,7 +186,30 @@ export default function CreateBid() {
     }
   };
 
-  // 🚀 防抖自动保存引擎 (Auto-Save)
+  // 💡 Markdown 正文实时防抖自动保存
+  useEffect(() => {
+    if (step !== 'document' || !currentProjectId || !documentContent) return;
+
+    const autoSaveDocumentToDatabase = async () => {
+      try {
+        await supabase
+          .from('bidding_projects')
+          .update({ analysis_report: documentContent }) 
+          .eq('id', currentProjectId);
+        console.log('✨ 标书正文已自动静默保存！');
+      } catch (error) {
+        console.error('正文自动保存失败:', error);
+      }
+    };
+
+    const debounceTimer = setTimeout(() => {
+      autoSaveDocumentToDatabase();
+    }, 1500);
+
+    return () => clearTimeout(debounceTimer);
+  }, [documentContent, currentProjectId, step]);
+
+  // 💡 大纲实时防抖自动保存
   useEffect(() => {
     if (!currentProjectId || outline.length === 0) return;
 
@@ -152,10 +219,7 @@ export default function CreateBid() {
           .from('bidding_projects')
           .update({ framework_content: JSON.stringify(outline) })
           .eq('id', currentProjectId);
-        console.log('✨ 大纲已自动静默保存');
-      } catch (error) {
-        console.error('自动保存失败:', error);
-      }
+      } catch (error) {}
     };
 
     const debounceTimer = setTimeout(() => {
@@ -178,7 +242,7 @@ export default function CreateBid() {
       await supabase.storage.from('documents').upload(filePath, file);
       const uploadedFileUrl = `${supabase.supabaseUrl}/storage/v1/object/documents/${filePath}`;
       
-      setFileUrl(uploadedFileUrl); // 💡 新增：刚上传完也立刻设置预览链接
+      setFileUrl(uploadedFileUrl); 
 
       const extractedText = await extractTextFromDocument(file);
       setOriginalText(extractedText || `无法读取文件文字`);
@@ -237,63 +301,168 @@ export default function CreateBid() {
     
     try {
       if (currentProjectId) {
-        await supabase.from('bidding_projects').update({ framework_content: JSON.stringify(outline) }).eq('id', currentProjectId);
+        await supabase
+          .from('bidding_projects')
+          .update({ framework_content: JSON.stringify(outline) })
+          .eq('id', currentProjectId);
       }
+      
+      message.loading({ content: `正在从本地数据库提取【${targetCompany}】的图片资产...`, key: 'fetch-img' });
+      let localImageAssets = '';
+      try {
+        const { data: catData } = await supabase
+          .from('image_categories')
+          .select('id')
+          .eq('name', targetCompany)
+          .eq('user_id', user.id)
+          .single();
+          
+        if (catData) {
+          const { data: imgData } = await supabase
+            .from('images')
+            .select('image_name, image_url')
+            .eq('category_id', catData.id);
+            
+          if (imgData && imgData.length > 0) {
+            localImageAssets = imgData.map(img => 
+              `- 图片名称：${img.image_name}\n  请直接复制此代码插入：![${img.image_name}](${img.image_url})`
+            ).join('\n\n');
+          }
+        }
+      } catch (e) {
+        console.warn("获取本地图片库失败，可能该公司暂无专属图片");
+      }
+      message.success({ content: '本地专属图片提取完毕！', key: 'fetch-img' });
+      
       let fullGeneratedText = '';
+      
       for (let i = 0; i < leafNodes.length; i++) {
         const node = leafNodes[i];
+        
         setCurrentGeneratingNode(`[${node.id}] ${node.title}`);
         setGenerationProgress(Math.round((i / leafNodes.length) * 100));
 
-        const promptText = `
-【重要前提指令】：你现在的身份是【${targetCompany}】的资深投标代表。
-【绝对跨界禁区】：如果检索到的内容带有其他具体主体公司的标识（既不是 {{targetCompany}}，也不是 未分类/通用），请立即触发警报并丢弃，**绝不可**将其写入本文！
-请严格使用内部知识库中与【${targetCompany}】相关的历史资质、项目经验。若匹配到Markdown图片链接，请务必直接输出图片代码。
-【通用白名单】：对于通用的技术方案、培训服务、实施方法论等，如果检索到带有“【所属主体：未分类】”或“【所属主体：通用】”标识的资料，**允许且必须作为通用标准资产使用**！
-【当前撰写任务】：
-当前章节：### 【${node.id} ${node.title}】
+        const queryText = `${targetCompany} ${node.title} ${node.requirement || ''}`.substring(0, 100);
+        const frameworkText = `
+当前章节：### ${node.id} ${node.title}
 撰写要求：
-${node.requirement || '请结合上下文与内部知识库，按照专业公文标准，详细扩充本节的技术/管理方案。'}
-请直接输出本节的 Markdown 正文，行文必须高度专业严谨。首行请以该章节的标题开头。`;
+${node.requirement || '请结合上下文与内部知识库，详细扩充本节的技术或管理方案。'}
+
+【🚨 数据库直供的 100% 真实图片资产】
+以下图片由前端数据库直接提供，绝无虚假！如果本节内容需要插入图片（如营业执照、架构图等），**请从下面的列表中寻找，并完整复制对应的 Markdown 代码，绝对不允许擅自修改网址！** 如果下面没给出相关图片，就只写文字，不要输出图片。
+---
+${localImageAssets || '（当前主体无专属图片）'}
+---
+
+注意：首行请严格以 “### ${node.id} ${node.title}” 标准 Markdown 格式开头，不要使用任何 HTML 标签。
+        `.trim();
         
-        const chunkText = await generateBidContent(promptText);
+        const chunkText = await generateBidContent(targetCompany, frameworkText, queryText);
+        
         fullGeneratedText += chunkText + '\n\n';
         setDocumentContent(fullGeneratedText);
       }
 
       setGenerationProgress(100);
       if (currentProjectId) {
-        await supabase.from('bidding_projects').update({ analysis_report: fullGeneratedText, status: 'completed' }).eq('id', currentProjectId);
+        await supabase
+          .from('bidding_projects')
+          .update({ analysis_report: fullGeneratedText, status: 'completed' })
+          .eq('id', currentProjectId);
       }
-      message.success('全部分块生成完毕！');
+      
+      message.success('全部分块流水线生成完毕！');
       setStep('document');
       setViewMode('preview');
+      
     } catch (error) {
+      console.error("生成报错:", error);
       message.error(`生成过程中断: ${error.message}`);
       setStep('document'); 
-      setViewMode('edit');
+      setViewMode('edit'); 
     }
   };
 
-  const handleDownloadWord = () => {
-    const blob = new Blob([documentContent], { type: 'text/markdown;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${targetCompany || '标书方案'}_正文.md`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    message.success("已导出文档！");
+  const handleDownloadWord = async () => {
+    try {
+      message.loading({ content: '正在打包 Word 文档...', key: 'export' });
+      
+      const htmlContent = document.querySelector('.wmde-markdown').innerHTML;
+      
+      const sourceHTML = `
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8">
+            <title>${targetCompany || '标书正文'}</title>
+            <style>
+              body { font-family: 'SimSun', '宋体', sans-serif; font-size: 14pt; line-height: 1.5; }
+              table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
+              table, th, td { border: 1px solid black; padding: 8px; }
+              img { max-width: 100%; height: auto; display: block; margin: 10px auto; }
+              h1, h2, h3 { color: #333; }
+            </style>
+          </head>
+          <body>
+            ${htmlContent}
+          </body>
+        </html>
+      `;
+
+      const blob = await asBlob(sourceHTML, { orientation: 'portrait', margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 }});
+      
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${targetCompany || '投标文件'}_正文.docx`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      message.success({ content: 'Word 文档导出成功！', key: 'export' });
+    } catch (err) {
+      console.error(err);
+      message.error({ content: '导出失败，请重试', key: 'export' });
+    }
   };
 
-  const mapOutlineToTreeData = (nodes) => {
+  const scrollToAnchor = (nodeId, nodeTitle) => {
+    const headings = document.querySelectorAll('.w-md-editor-preview h1, .w-md-editor-preview h2, .w-md-editor-preview h3, .w-md-editor-preview h4, .w-md-editor-preview h5, .w-md-editor-preview h6');
+    let targetElement = null;
+
+    for (let i = 0; i < headings.length; i++) {
+      const text = headings[i].textContent;
+      if (text.includes(nodeId) || text.includes(nodeTitle)) {
+        targetElement = headings[i];
+        break;
+      }
+    }
+
+    if (targetElement) {
+      targetElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else {
+      message.warning('尚未生成该章节内容，或正在生成中...');
+    }
+  };
+
+  const mapOutlineToTreeData = (nodes, isDocumentView = false) => {
     return nodes.map(node => ({
-      title: <span className={`text-[13px] ${activeNodeId === node.id ? 'font-bold text-indigo-600' : 'text-gray-700'}`}>{node.id} {node.title}</span>,
+      title: (
+        <span 
+          className={`text-[13px] ${activeNodeId === node.id ? 'font-bold text-indigo-600' : 'text-gray-700'} cursor-pointer hover:text-indigo-500`}
+          onClick={() => isDocumentView ? scrollToAnchor(node.id, node.title) : null}
+        >
+          {node.id} {node.title}
+        </span>
+      ),
       key: node.id,
-      children: node.children ? mapOutlineToTreeData(node.children) : []
+      children: node.children ? mapOutlineToTreeData(node.children, isDocumentView) : []
     }));
   };
+
+  // ==========================================
+  // UI 渲染逻辑
+  // ==========================================
 
   if (step === 'upload') {
     return (
@@ -323,33 +492,60 @@ ${node.requirement || '请结合上下文与内部知识库，按照专业公文
     );
   }
 
+  // 💡 宽屏沉浸视图 (生成完毕后的编辑/导出界面)
   if (step === 'document') {
     return (
-      <div className="h-screen flex flex-col bg-[#F2F3F5]">
+      <div className="h-screen flex flex-col bg-[#F2F3F5] overflow-hidden">
+        {/* 顶部控制栏 */}
         <div className="h-16 bg-white border-b flex items-center justify-between px-6 shadow-sm z-10 shrink-0">
-          <Button type="text" icon={<ArrowLeft size={18} />} onClick={() => setStep('outline')} className="text-gray-600 hover:text-indigo-600 font-medium">返回大纲</Button>
+          <Button type="text" icon={<ArrowLeft size={18} />} onClick={() => setStep('outline')} className="text-gray-600 hover:text-indigo-600 font-medium">
+            返回大纲配置
+          </Button>
+          
           <div className="flex bg-gray-100 p-1 rounded-lg">
-            <button onClick={() => setViewMode('preview')} className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-all ${viewMode === 'preview' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}><Eye size={16} className="mr-2" /> 沉浸预览</button>
-            <button onClick={() => setViewMode('edit')} className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-all ${viewMode === 'edit' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}><PenTool size={16} className="mr-2" /> 源码编辑</button>
+            <button onClick={() => setViewMode('preview')} className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-all ${viewMode === 'preview' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}>
+              <Eye size={16} className="mr-2" /> 双栏对照
+            </button>
+            <button onClick={() => setViewMode('edit')} className={`flex items-center px-4 py-1.5 rounded-md text-sm font-medium transition-all ${viewMode === 'edit' ? 'bg-white shadow-sm text-indigo-600' : 'text-gray-500 hover:text-gray-700'}`}>
+              <PenTool size={16} className="mr-2" /> 沉浸纯排版
+            </button>
           </div>
-          <Button type="primary" icon={<Download size={16}/>} onClick={handleDownloadWord} className="bg-indigo-600 hover:bg-indigo-700 rounded-full px-6 border-0">导出文档</Button>
+          
+          <Button type="primary" icon={<Download size={16}/>} onClick={handleDownloadWord} className="bg-indigo-600 hover:bg-indigo-700 rounded-full px-6 border-0">
+            导出 Word (.docx)
+          </Button>
         </div>
-        <div className="flex-1 flex overflow-hidden">
-          <div className="w-80 bg-white border-r border-gray-200 p-6 overflow-y-auto shrink-0">
-            <p className="font-bold text-gray-800 mb-6 flex items-center"><ListTree size={18} className="mr-2 text-indigo-500"/> 方案大纲视图</p>
-            <Tree treeData={mapOutlineToTreeData(outline)} defaultExpandAll selectable={false} className="bg-transparent" />
-          </div>
-          <div className="flex-1 p-8 overflow-y-auto flex justify-center">
-            <div className="w-[850px] bg-white shadow-lg border border-gray-200 min-h-[1050px] p-16 pb-32">
-              {viewMode === 'preview' ? (
-                <div className="prose prose-indigo prose-lg max-w-none prose-img:rounded-xl prose-img:shadow-md prose-headings:font-bold prose-a:text-indigo-600">
-                  {documentContent ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{documentContent}</ReactMarkdown> : <Empty description="暂无生成内容" />}
-                </div>
-              ) : (
-                <textarea className="w-full h-full min-h-[800px] resize-none outline-none font-mono text-[15px] leading-loose text-gray-700 bg-gray-50 p-6 rounded-xl border border-gray-200 focus:border-indigo-400 focus:bg-white transition-colors" value={documentContent} onChange={(e) => setDocumentContent(e.target.value)} />
-              )}
+
+        {/* 💡 宽屏工作区 */}
+        <div className="flex-1 flex overflow-hidden p-4 gap-4">
+          
+          {/* 左侧：可收缩的目录树 (占宽 1/4) */}
+          <div className="w-1/4 max-w-[320px] bg-white rounded-xl shadow-sm border border-gray-200 p-5 overflow-y-auto flex flex-col min-h-0">
+            <p className="font-bold text-gray-800 mb-4 flex items-center shrink-0">
+              <ListTree size={18} className="mr-2 text-indigo-500"/> 
+              点击目录跳转原文
+            </p>
+            <div className="flex-1 overflow-y-auto custom-scrollbar">
+              <Tree 
+                treeData={mapOutlineToTreeData(outline, true)} 
+                defaultExpandAll 
+                selectable={false} 
+                className="bg-transparent" 
+              />
             </div>
           </div>
+          
+          {/* 右侧：火力全开撑满全屏的编辑器 (占宽 3/4) */}
+          <div className="flex-1 bg-white shadow-lg border border-gray-200 rounded-xl overflow-hidden flex flex-col min-h-0" ref={editorRef} data-color-mode="light">
+              <div className="flex-1 p-2 bg-[#fafafa] flex flex-col min-h-0">
+                <PerformanceEditor 
+                  initialContent={documentContent} 
+                  onContentChange={setDocumentContent} 
+                  viewMode={viewMode} 
+                />
+              </div>
+          </div>
+          
         </div>
       </div>
     );
@@ -357,70 +553,85 @@ ${node.requirement || '请结合上下文与内部知识库，按照专业公文
 
   const activeNode = activeNodeId ? findNodeById(outline, activeNodeId) : null;
   
+  // 💡 大纲配置视图 (生成前)
   return (
-    <div className="h-screen flex flex-col bg-[#F8F9FA]">
-      <div className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 shrink-0 shadow-sm">
+    <div className="h-screen flex flex-col bg-[#F8F9FA] overflow-hidden">
+      <div className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 shrink-0 shadow-sm z-20">
         <div className="flex items-center">
           <Tag color="purple" className="mr-3 text-sm py-1 px-3 rounded-full border-0 font-bold">🎯 多级树状分析</Tag>
           <h1 className="text-lg font-bold text-gray-800">树状大纲确认与细化</h1>
         </div>
-        <Button onClick={() => {
-            window.history.replaceState(null, '', `/create-bid`);
-            setStep('upload');
-            setOutline([]);
-            setFileUrl('');
-        }} className="text-gray-500 border-gray-300 hover:text-indigo-600 hover:border-indigo-400">重新上传</Button>
+        <div className="flex items-center space-x-4">
+          <Button 
+            onClick={() => setShowOriginal(!showOriginal)} 
+            type="text"
+            icon={showOriginal ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+            className="text-indigo-600 bg-indigo-50 hover:bg-indigo-100 font-medium"
+          >
+            {showOriginal ? '收起原文区' : '展开原文区'}
+          </Button>
+          <Button onClick={() => {
+              window.history.replaceState(null, '', `/create-bid`);
+              setStep('upload');
+              setOutline([]);
+              setFileUrl('');
+          }} className="text-gray-500 border-gray-300 hover:text-indigo-600 hover:border-indigo-400">
+            重新上传
+          </Button>
+        </div>
       </div>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* 左侧：原文预览对照区 */}
-        <div className="w-1/3 bg-white border-r border-gray-200 flex flex-col shrink-0">
-          <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center shadow-sm z-10">
-            <span className="font-bold text-gray-700 flex items-center">
-              <FileText size={16} className="mr-2 text-indigo-500"/> 招标原文对照
-            </span>
-            {fileUrl && (
-              <a 
-                href={fileUrl} 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="text-xs px-3 py-1 bg-white border border-gray-200 rounded-full text-indigo-600 hover:bg-indigo-50 hover:border-indigo-300 transition-colors"
-              >
-                在新窗口放大查看
-              </a>
-            )}
-          </div>
-          <div className="flex-1 bg-[#525659] overflow-hidden flex items-center justify-center relative">
-            {fileUrl ? (
-              fileUrl.toLowerCase().includes('.pdf') ? (
-                <iframe 
-                  src={`${fileUrl}#toolbar=0&navpanes=0`} 
-                  className="w-full h-full border-0" 
-                  title="Document Preview"
-                />
-              ) : (
-                <div className="flex flex-col items-center justify-center p-8 bg-white m-8 rounded-2xl shadow-lg w-3/4 text-center">
-                  <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-4">
-                    <FileText size={32} className="text-blue-500" />
+        {/* 左侧：原文预览对照区 (可折叠) */}
+        {showOriginal && (
+          <div className="w-1/3 bg-white border-r border-gray-200 flex flex-col shrink-0 transition-all duration-300 min-h-0">
+            <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center shadow-sm z-10">
+              <span className="font-bold text-gray-700 flex items-center">
+                <FileText size={16} className="mr-2 text-indigo-500"/> 招标原文对照
+              </span>
+              {fileUrl && (
+                <a 
+                  href={fileUrl} 
+                  target="_blank" 
+                  rel="noopener noreferrer" 
+                  className="text-xs px-3 py-1 bg-white border border-gray-200 rounded-full text-indigo-600 hover:bg-indigo-50 hover:border-indigo-300 transition-colors"
+                >
+                  在新窗口放大查看
+                </a>
+              )}
+            </div>
+            <div className="flex-1 bg-[#525659] overflow-hidden flex items-center justify-center relative">
+              {fileUrl ? (
+                fileUrl.toLowerCase().includes('.pdf') ? (
+                  <iframe 
+                    src={`${fileUrl}#toolbar=0&navpanes=0`} 
+                    className="w-full h-full border-0" 
+                    title="Document Preview"
+                  />
+                ) : (
+                  <div className="flex flex-col items-center justify-center p-8 bg-white m-8 rounded-2xl shadow-lg w-3/4 text-center">
+                    <div className="w-16 h-16 bg-blue-50 rounded-2xl flex items-center justify-center mb-4">
+                      <FileText size={32} className="text-blue-500" />
+                    </div>
+                    <h3 className="text-lg font-bold text-gray-800 mb-2">Word 文档已妥善保存</h3>
+                    <p className="text-sm text-gray-500 mb-6">浏览器暂不支持直接内嵌预览 Word 格式，请下载后对照查看。</p>
+                    <Button type="primary" href={fileUrl} target="_blank" className="bg-indigo-600 rounded-full px-8">
+                      点击下载原文件
+                    </Button>
                   </div>
-                  <h3 className="text-lg font-bold text-gray-800 mb-2">Word 文档已妥善保存</h3>
-                  <p className="text-sm text-gray-500 mb-6">浏览器暂不支持直接内嵌预览 Word 格式，请下载后对照查看。</p>
-                  <Button type="primary" href={fileUrl} target="_blank" className="bg-indigo-600 rounded-full px-8">
-                    点击下载原文件
-                  </Button>
+                )
+              ) : (
+                <div className="text-center">
+                  <FileText size={48} className="mx-auto text-gray-400 mb-4 opacity-50" />
+                  <div className="text-gray-400 font-medium">暂无原文件，可能为旧版历史数据</div>
                 </div>
-              )
-            ) : (
-              <div className="text-center">
-                <FileText size={48} className="mx-auto text-gray-400 mb-4 opacity-50" />
-                <div className="text-gray-400 font-medium">暂无原文件，可能为旧版历史数据</div>
-              </div>
-            )}
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* 中间：Ant Design 树状目录 */}
-        <div className="w-[350px] bg-gray-50 border-r border-gray-200 flex flex-col shrink-0">
+        <div className={`${showOriginal ? 'w-[300px]' : 'w-1/3'} bg-gray-50 border-r border-gray-200 flex flex-col shrink-0 transition-all duration-300 min-h-0`}>
           <div className="p-4 border-b border-gray-200 bg-white">
             <span className="font-bold text-gray-800">树状目录结构</span>
             <div className="text-xs text-gray-400 mt-1">系统将逐一生成最底层的叶子节点</div>
@@ -443,21 +654,21 @@ ${node.requirement || '请结合上下文与内部知识库，按照专业公文
         </div>
 
         {/* 右侧：节点要求编辑器 */}
-        <div className="flex-1 bg-white flex flex-col relative">
+        <div className="flex-1 bg-white flex flex-col relative min-w-0 min-h-0">
           {activeNode ? (
             <>
               <div className="p-8 pb-6 border-b border-gray-100 flex flex-col items-start bg-indigo-50/30">
                 <div className="flex items-center w-full justify-between mb-4">
-                  <div className="flex items-center w-2/3">
+                  <div className="flex items-center flex-1 mr-4 min-w-0">
                     <span className="text-xl font-bold text-indigo-600 mr-3 shrink-0">{activeNode.id}</span>
                     <Input 
                       value={activeNode.title}
                       onChange={(e) => setOutline(updateNodeTitle(outline, activeNodeId, e.target.value))}
-                      className="text-xl font-bold text-gray-900 border-transparent hover:border-indigo-300 focus:border-indigo-500 bg-transparent px-2 py-1 shadow-none"
+                      className="text-xl font-bold text-gray-900 border-transparent hover:border-indigo-300 focus:border-indigo-500 bg-transparent px-2 py-1 shadow-none w-full"
                     />
                   </div>
                   
-                  <div className="flex space-x-2">
+                  <div className="flex space-x-2 shrink-0">
                     <Button 
                       type="dashed" 
                       icon={<Plus size={14} />} 
@@ -488,7 +699,7 @@ ${node.requirement || '请结合上下文与内部知识库，按照专业公文
                 </p>
               </div>
               
-              <div className="flex-1 overflow-y-auto p-8 bg-[#F8F9FA]">
+              <div className="flex-1 overflow-y-auto p-6 lg:p-10 bg-[#F8F9FA]">
                 <div className="bg-white rounded-2xl shadow-sm border border-gray-200 h-full flex flex-col overflow-hidden">
                   <div className="p-4 bg-gray-50 border-b border-gray-100 flex items-center text-gray-600 text-sm font-medium">
                     <Edit3 size={16} className="mr-2 text-indigo-500"/>
@@ -509,8 +720,8 @@ ${node.requirement || '请结合上下文与内部知识库，按照专业公文
             </div>
           )}
 
-          <div className="h-24 bg-white border-t border-gray-200 flex items-center justify-end px-8 shadow-[0_-10px_40px_rgba(0,0,0,0.04)] shrink-0 relative z-20">
-            <div className="flex flex-col items-end mr-8">
+          <div className="h-24 bg-white border-t border-gray-200 flex items-center justify-between px-8 shadow-[0_-10px_40px_rgba(0,0,0,0.04)] shrink-0 relative z-20">
+            <div className="flex flex-col items-start">
               <div className="flex items-center">
                 <span className="text-sm font-bold text-gray-700 mr-3">本次投标主体：</span>
                 <div className="flex items-center shadow-sm rounded-lg overflow-hidden border border-indigo-200 bg-gray-50">
