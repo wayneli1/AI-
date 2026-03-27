@@ -307,7 +307,7 @@ export default function CreateBid() {
           .eq('id', currentProjectId);
       }
       
-      // 步骤1：生成前查库，提取图片字典
+      // 步骤1：生成前查库（全员共享)
       message.loading({ content: `正在从数据库提取【${targetCompany}】的图片资产...`, key: 'fetch-img' });
       const imageDictionary = [];
       
@@ -316,7 +316,6 @@ export default function CreateBid() {
           .from('image_categories')
           .select('id')
           .eq('name', targetCompany)
-          .eq('user_id', user.id)
           .single();
           
         if (catData) {

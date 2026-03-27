@@ -31,7 +31,7 @@ const KnowledgeBase = () => {
   const fileInputRef = useRef(null);
   const dropZoneRef = useRef(null);
 
-  // 获取分类列表
+// 获取分类列表（全员共享）
   const fetchCategories = useCallback(async () => {
     if (!user) return;
     
@@ -39,7 +39,6 @@ const KnowledgeBase = () => {
       const { data, error } = await supabase
         .from('document_categories')
         .select('*')
-        .eq('user_id', user.id)
         .order('name', { ascending: true });
 
       if (error) throw error;
@@ -51,7 +50,7 @@ const KnowledgeBase = () => {
     }
   }, [user]);
 
-  // 获取文档列表（支持分类筛选）
+  // 获取文档列表（全员共享）
   const fetchDocuments = useCallback(async () => {
     if (!user) return;
     
@@ -60,10 +59,8 @@ const KnowledgeBase = () => {
       let query = supabase
         .from('documents')
         .select('*')
-        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
-      // 根据选中的分类筛选文档
       if (selectedCategory === 'uncategorized') {
         query = query.is('category_id', null);
       } else if (selectedCategory !== 'all') {
@@ -74,7 +71,6 @@ const KnowledgeBase = () => {
 
       if (error) {
         console.error('获取文档失败:', error);
-        // 如果获取失败，返回空数组
         setFiles([]);
         return;
       }
@@ -159,7 +155,7 @@ const KnowledgeBase = () => {
     }
   };
 
-  // 删除分类
+ // 删除分类（全员共享）
   const handleDeleteCategory = async () => {
     if (!categoryToDelete || !user) return;
 
@@ -182,14 +178,12 @@ const KnowledgeBase = () => {
         .from('document_categories')
         .delete()
         .eq('id', categoryToDelete.id)
-        .eq('user_id', user.id);
 
       if (error) throw error;
 
       message.success('分类删除成功');
       setCategories(prev => prev.filter(cat => cat.id !== categoryToDelete.id));
       
-      // 如果删除的是当前选中的分类，切换到全部文档
       if (selectedCategory === categoryToDelete.id) {
         handleCategorySelect('all');
       }
@@ -407,8 +401,7 @@ const KnowledgeBase = () => {
       const { error: dbError } = await supabase
         .from('documents')
         .delete()
-        .eq('id', id)
-        .eq('user_id', user.id);
+        .eq('id', id);
 
       if (dbError) throw dbError;
 

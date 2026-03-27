@@ -34,7 +34,7 @@ const ImageLibrary = () => {
   const fileInputRef = useRef(null);
   const dropZoneRef = useRef(null);
 
-  // 获取分类列表
+  // 获取分类列表（全员共享）
   const fetchCategories = useCallback(async () => {
     if (!user) return;
     
@@ -43,7 +43,6 @@ const ImageLibrary = () => {
       const { data, error } = await supabase
         .from('image_categories')
         .select('*')
-        .eq('user_id', user.id)
         .order('name', { ascending: true });
 
       if (error) throw error;
@@ -57,7 +56,7 @@ const ImageLibrary = () => {
     }
   }, [user]);
 
-  // 获取图片列表（支持分类筛选）
+  // 获取图片列表（全员共享）
   const fetchImages = useCallback(async () => {
     if (!user) return;
     
@@ -66,10 +65,8 @@ const ImageLibrary = () => {
       let query = supabase
         .from('images')
         .select('*, image_categories(name)')
-        .eq('user_id', user.id)
         .order('created_at', { ascending: false });
 
-      // 根据选中的分类筛选图片
       if (selectedCategory === 'uncategorized') {
         query = query.is('category_id', null);
       } else if (selectedCategory !== 'all') {
@@ -77,7 +74,6 @@ const ImageLibrary = () => {
       }
 
       const { data, error } = await query;
-
       if (error) throw error;
 
       const formattedImages = data.map(img => ({
@@ -91,7 +87,7 @@ const ImageLibrary = () => {
         category_id: img.category_id,
         category_name: img.image_categories?.name || '未分类',
         image_url: img.image_url,
-        dify_document_id: img.dify_document_id // ✅ 获取 Dify ID
+        dify_document_id: img.dify_document_id
       }));
 
       setImages(formattedImages);
@@ -161,7 +157,7 @@ const ImageLibrary = () => {
     }
   };
 
-  // 删除分类
+ // 删除分类（全员共享）
   const handleDeleteCategory = async () => {
     if (!categoryToDelete || !user) return;
 
@@ -183,8 +179,7 @@ const ImageLibrary = () => {
       const { error } = await supabase
         .from('image_categories')
         .delete()
-        .eq('id', categoryToDelete.id)
-        .eq('user_id', user.id);
+        .eq('id', categoryToDelete.id);
 
       if (error) throw error;
 
@@ -471,7 +466,7 @@ const ImageLibrary = () => {
     };
   }, [handleFileUpload]);
 
-  // ✅ 核心修复：图片操作函数加入 Dify 删除联动
+  // 图片删除函数（全员共享）
   const handleDeleteImage = async (imageId) => {
     const imageToDelete = images.find(img => img.id === imageId);
     if (!imageToDelete || !user) return;
@@ -506,8 +501,7 @@ const ImageLibrary = () => {
       const { error: dbError } = await supabase
         .from('images')
         .delete()
-        .eq('id', imageId)
-        .eq('user_id', user.id);
+        .eq('id', imageId);
 
       if (dbError) throw dbError;
 
