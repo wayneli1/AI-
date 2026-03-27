@@ -7,18 +7,17 @@ import {
 } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 
-// 💡 核心升级 1：引入真正的双栏编辑器
 import MDEditor from '@uiw/react-md-editor';
-// 💡 核心升级 2：引入真正的 Word 导出库
 import { asBlob } from 'html-docx-js-typescript';
 
-import { generateBidContent, generateBidOutline } from '../utils/difyWorkflow';
+// 💡 引入了全新的 parseTemplateToOutline
+import { generateBidContent, generateBidOutline, parseTemplateToOutline } from '../utils/difyWorkflow';
 import { supabase } from '../lib/supabase'; 
 import { useAuth } from '../contexts/AuthContext';
 import { extractTextFromDocument } from '../utils/documentParser';
 
 // ==========================================
-// 🚀 性能狂飙隔离仓：专为超大文本优化的 Markdown 编辑器
+// 🚀 性能狂飙隔离仓
 // ==========================================
 const PerformanceEditor = React.memo(({ initialContent, onContentChange, viewMode }) => {
   const [localContent, setLocalContent] = React.useState(initialContent);
@@ -35,7 +34,6 @@ const PerformanceEditor = React.memo(({ initialContent, onContentChange, viewMod
   }, [localContent, onContentChange]);
 
   return (
-    // 💡 彻底修复白屏与排版塌陷：强制 flex 布局满铺，恢复拖拽条
     <div className="flex-1 w-full h-full flex flex-col min-h-0" data-color-mode="light">
       <MDEditor
         value={localContent}
@@ -44,7 +42,7 @@ const PerformanceEditor = React.memo(({ initialContent, onContentChange, viewMod
         preview={viewMode === 'preview' ? 'live' : 'edit'}
         hideToolbar={viewMode === 'edit'}
         enableScroll={true}
-        visibleDragbar={true} // 🚀 拖拽条复活！可自由调节左右宽度比例
+        visibleDragbar={true} 
         style={{ flex: 1, height: '100%', overflow: 'hidden', borderRadius: '0.75rem' }}
         textareaProps={{
           style: { whiteSpace: 'pre-wrap', wordBreak: 'break-word' }
@@ -142,11 +140,19 @@ export default function CreateBid() {
   const [generationProgress, setGenerationProgress] = useState(0);
   const [currentGeneratingNode, setCurrentGeneratingNode] = useState('');
 
-  // 💡 界面控制状态
+  // 💡 专家模式相关状态
+  const [isTemplateModalVisible, setIsTemplateModalVisible] = useState(false);
+  const [pastedTemplate, setPastedTemplate] = useState('');
+  const [isParsingTemplate, setIsParsingTemplate] = useState(false);
+// 💡 新增：用户自定义的模板标书名称
+  const [templateProjectName, setTemplateProjectName] = useState('');
   const [showOriginal, setShowOriginal] = useState(true);
 
   const editorRef = useRef(null);
-  
+  // 💡 新增：用于模板上传的 ref 和解析状态
+  const templateFileInputRef = useRef(null);
+  const [isExtractingTemplate, setIsExtractingTemplate] = useState(false);
+
   useEffect(() => {
     if (urlProjectId && user) {
       loadExistingProject(urlProjectId);
@@ -186,7 +192,7 @@ export default function CreateBid() {
     }
   };
 
-  // 💡 Markdown 正文实时防抖自动保存
+  // 💡 正文防抖保存
   useEffect(() => {
     if (step !== 'document' || !currentProjectId || !documentContent) return;
 
@@ -196,7 +202,6 @@ export default function CreateBid() {
           .from('bidding_projects')
           .update({ analysis_report: documentContent }) 
           .eq('id', currentProjectId);
-        console.log('✨ 标书正文已自动静默保存！');
       } catch (error) {
         console.error('正文自动保存失败:', error);
       }
@@ -209,7 +214,7 @@ export default function CreateBid() {
     return () => clearTimeout(debounceTimer);
   }, [documentContent, currentProjectId, step]);
 
-  // 💡 大纲实时防抖自动保存
+  // 💡 大纲防抖保存
   useEffect(() => {
     if (!currentProjectId || outline.length === 0) return;
 
@@ -229,6 +234,9 @@ export default function CreateBid() {
     return () => clearTimeout(debounceTimer);
   }, [outline, currentProjectId]);
 
+  // ==========================================
+  // 事件处理：上传文件 (自动挡)
+  // ==========================================
   const handleRealUpload = async (event) => {
     const file = event.target.files[0];
     if (!file || !user) return message.error("请先登录！");
@@ -273,6 +281,107 @@ export default function CreateBid() {
       if (event.target) event.target.value = '';
     }
   };
+// 💡 新增：处理模板文件上传并自动提取文字
+  const handleTemplateFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    if (!templateProjectName) {
+      setTemplateProjectName(file.name.replace(/\.[^/.]+$/, ''));
+    }
+    try {
+      setIsExtractingTemplate(true);
+      message.loading({ content: `正在从 ${file.name} 中提取文字...`, key: 'extractTemplate', duration: 0 });
+      
+      // 复用您现成的文档提取神仙函数
+      const extractedText = await extractTextFromDocument(file);
+      
+      if (!extractedText || extractedText.trim() === '') {
+        throw new Error("未能提取到有效文字，请检查文件格式或尝试手动复制粘贴。");
+      }
+
+      // 把提取出来的文字直接塞进文本框，让用户可以预览和二次编辑
+      setPastedTemplate(extractedText);
+      message.success({ content: '文字提取成功！请核对下方内容后，点击 AI 洗数据。', key: 'extractTemplate' });
+      
+    } catch (error) {
+      message.error({ content: '提取失败: ' + error.message, key: 'extractTemplate' });
+    } finally {
+      setIsExtractingTemplate(false);
+      // 清空 input，允许重复上传同一个文件
+      if (event.target) event.target.value = ''; 
+    }
+  };
+
+
+  // ==========================================
+  // 事件处理：专家模式粘贴模板 (手动挡)
+  // ==========================================
+  // ==========================================
+  // 事件处理：专家模式粘贴模板 (手动挡)
+  // ==========================================
+  const handleImportTemplate = async () => {
+    // 1. 前置拦截校验
+    if (!templateProjectName.trim()) {
+      return message.warning('请先为这份标书命名！'); // 强制要求用户输入名字
+    }
+    if (!pastedTemplate.trim()) {
+      return message.warning('请粘贴或上传模板内容！');
+    }
+    if (!user) {
+      return message.error("请先登录！");
+    }
+
+    setIsParsingTemplate(true);
+    try {
+      message.loading({ 
+        content: `正在通过 AI 清洗【${templateProjectName}】的目录结构...`, 
+        key: 'importTemplate', 
+        duration: 0 
+      });
+
+      // 2. 调用专用 AI 极速清洗乱码模板
+      const dynamicOutline = await parseTemplateToOutline(pastedTemplate);
+
+      // 3. 数据入库，生成草稿记录 (这里的 project_name 直接使用用户输入的名称)
+      const { data: project, error } = await supabase.from('bidding_projects').insert({
+        user_id: user.id,
+        project_name: templateProjectName.trim(), // 💡 使用用户自定义的名字入库！
+        file_url: null, // 专家模式目前不保存源文件 URL
+        framework_content: JSON.stringify(dynamicOutline),
+        status: 'processing' // 状态标记为处理中/草稿
+      }).select().single();
+
+      if (error) throw error;
+
+      // 4. 状态切换，平滑跳入编辑树界面
+      setCurrentProjectId(project.id);
+      setOutline(dynamicOutline);
+      setActiveNodeId(dynamicOutline[0]?.id || null);
+      setFileUrl(''); 
+      
+      // 更新浏览器 URL，方便刷新不丢失
+      window.history.replaceState(null, '', `/create-bid?id=${project.id}`);
+
+      message.success({ 
+        content: `模板导入成功！标书【${templateProjectName}】已自动保存草稿。`, 
+        key: 'importTemplate' 
+      });
+      
+      // 5. 关闭弹窗并清空状态
+      setStep('outline');
+      setIsTemplateModalVisible(false);
+      setPastedTemplate('');
+      setTemplateProjectName(''); // 清空名称输入框
+      
+    } catch (error) {
+      message.error({ 
+        content: '模板解析失败: ' + error.message, 
+        key: 'importTemplate' 
+      });
+    } finally {
+      setIsParsingTemplate(false);
+    }
+  };
 
   const fetchCompanyList = async () => {
     try {
@@ -307,7 +416,6 @@ export default function CreateBid() {
           .eq('id', currentProjectId);
       }
       
-      // 步骤1：生成前查库（全员共享)
       message.loading({ content: `正在从数据库提取【${targetCompany}】的图片资产...`, key: 'fetch-img' });
       const imageDictionary = [];
       
@@ -326,18 +434,12 @@ export default function CreateBid() {
             
           if (imgData && imgData.length > 0) {
             imgData.forEach(img => {
-              imageDictionary.push({
-                name: img.image_name,
-                url: img.image_url
-              });
+              imageDictionary.push({ name: img.image_name, url: img.image_url });
             });
           }
         }
-      } catch (e) {
-        console.warn("获取图片库失败，可能该公司暂无专属图片");
-      }
+      } catch (e) {}
       
-      // 查询"未分类"通用图片（category_id 为 null 的图片）
       try {
         const { data: uncategorizedImg } = await supabase
           .from('images')
@@ -347,22 +449,15 @@ export default function CreateBid() {
         if (uncategorizedImg && uncategorizedImg.length > 0) {
           uncategorizedImg.forEach(img => {
             if (!imageDictionary.find(i => i.name === img.image_name)) {
-              imageDictionary.push({
-                name: img.image_name,
-                url: img.image_url
-              });
+              imageDictionary.push({ name: img.image_name, url: img.image_url });
             }
           });
         }
-      } catch (e) {
-        console.warn("获取未分类图片失败");
-      }
+      } catch (e) {}
       
       message.success({ content: `图片字典构建完毕，共 ${imageDictionary.length} 张可用图片`, key: 'fetch-img' });
       
-      // 步骤2：构建图片名称列表用于 prompt
       const imageNamesList = imageDictionary.map(img => `- ${img.name}`).join('\n');
-      
       let fullGeneratedText = '';
       
       for (let i = 0; i < leafNodes.length; i++) {
@@ -377,33 +472,28 @@ export default function CreateBid() {
 撰写要求：
 ${node.requirement || '请结合上下文与内部知识库，详细扩充本节的技术或管理方案。'}
 
-【🚨 图片插入极度严格规范（防滥用死命令）】
+【🚨 图片插入极度严格规范】
 如需插入图片，你只能从以下可用图片列表中选择，并严格输出占位符格式：{{IMG_图片名称}}
 
 可用图片列表：
 ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
 
-⚠️ 核心使用纪律（违规将导致废标）：
+⚠️ 核心纪律：
 1. 绝对禁止输出任何 URL 或 ![]() 语法，只能输出形如 {{IMG_营业执照}} 的占位符
-2. 严禁在标书的签字、盖章、落款、日期声明处（如"投标人名称："、"法定代表人签字："）插入营业执照或任何图片
-3. 除非本章节的大纲要求明确指明需要提供某项资质或截图，否则绝对不允许擅自加戏插入图片
-4. 营业执照等核心资质图片，通常仅在【资格证明材料】或【公司简介】章节展示一次，严禁在业务响应方案中反复滥用
+2. 严禁在标书签字、盖章落款处插入图片
+3. 除非大纲明确要求，否则绝对不允许擅自加戏插入图片
 
-注意：首行请严格以 "### ${node.id} ${node.title}" 标准 Markdown 格式开头，不要使用任何 HTML 标签。
+注意：首行请严格以 "### ${node.id} ${node.title}" 标准 Markdown 格式开头。
         `.trim();
         
-        // 调用大模型生成内容
         let chunkText = await generateBidContent(targetCompany, frameworkText, queryText);
         
-        // 步骤3：精准替换占位符为真实 Markdown 语法
         imageDictionary.forEach(img => {
           const placeholder = `{{IMG_${img.name}}}`;
           const realMarkdown = `![${img.name}](${img.url})`;
-          // 使用 split + join 进行全局替换，避免正则特殊字符问题
           chunkText = chunkText.split(placeholder).join(realMarkdown);
         });
         
-        // 兼容处理：也支持 {{IMG_图片名称}} 格式中可能存在的空格
         chunkText = chunkText.replace(/\{\{IMG_\s*([^}]+?)\s*\}\}/g, (match, imgName) => {
           const trimmedName = imgName.trim();
           const foundImg = imageDictionary.find(img => img.name === trimmedName);
@@ -440,7 +530,6 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
   const handleDownloadWord = async () => {
     try {
       message.loading({ content: '正在打包 Word 文档...', key: 'export' });
-      
       const htmlContent = document.querySelector('.wmde-markdown').innerHTML;
       
       const sourceHTML = `
@@ -518,14 +607,142 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
   // UI 渲染逻辑
   // ==========================================
 
+  // 💡 双通道入口 UI 渲染
   if (step === 'upload') {
     return (
-      <div className="h-screen flex flex-col items-center justify-center bg-[#F8F9FA] p-8">
-        <input type="file" ref={fileInputRef} className="hidden" onChange={handleRealUpload} accept=".pdf,.doc,.docx" />
-        <div onClick={() => fileInputRef.current?.click()} className="border-2 border-dashed border-indigo-300 hover:border-indigo-500 rounded-2xl p-24 bg-white shadow-sm cursor-pointer flex flex-col items-center group transition-all">
-          <UploadCloud size={64} className="text-indigo-400 group-hover:text-indigo-600 mb-6 transition-transform group-hover:scale-110" />
-          <h3 className="text-2xl font-bold text-gray-800 mb-2">上传招标文件，AI 智能提取多级大纲</h3>
+      <div className="h-screen flex flex-col items-center justify-center bg-[#F8F9FA] p-8 relative">
+        <h2 className="text-3xl font-bold text-gray-800 mb-12">选择一种方式开始编制标书</h2>
+        
+        <div className="flex gap-8 max-w-5xl w-full justify-center">
+          {/* 自动挡：上传文件 */}
+          <input type="file" ref={fileInputRef} className="hidden" onChange={handleRealUpload} accept=".pdf,.doc,.docx" />
+          <div 
+            onClick={() => fileInputRef.current?.click()} 
+            className="flex-1 max-w-md border-2 border-dashed border-indigo-300 hover:border-indigo-500 rounded-3xl p-12 bg-white shadow-sm hover:shadow-xl cursor-pointer flex flex-col items-center group transition-all duration-300 transform hover:-translate-y-1"
+          >
+            <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+              <UploadCloud size={40} className="text-indigo-500" />
+            </div>
+            <h3 className="text-2xl font-bold text-gray-800 mb-3">上传招标原文件</h3>
+            <p className="text-gray-500 text-center text-sm leading-relaxed">
+              适合新手。系统将自动阅读数十万字原文件，<br/>由 AI 智能提取多级大纲树。
+            </p>
+          </div>
+
+          {/* 手动挡：导入模板 */}
+          <div 
+            onClick={() => setIsTemplateModalVisible(true)} 
+            className="flex-1 max-w-md border-2 border-solid border-emerald-200 hover:border-emerald-400 rounded-3xl p-12 bg-white shadow-sm hover:shadow-xl cursor-pointer flex flex-col items-center group transition-all duration-300 transform hover:-translate-y-1"
+          >
+            <div className="w-20 h-20 bg-emerald-50 rounded-full flex items-center justify-center mb-6 group-hover:scale-110 transition-transform">
+              <FileText size={40} className="text-emerald-500" />
+            </div>
+            <h3 className="text-2xl font-bold text-gray-800 mb-3">导入已有模板 <Tag color="green" className="ml-2">专家模式</Tag></h3>
+            <p className="text-gray-500 text-center text-sm leading-relaxed">
+              适合老手。直接复制粘贴您的祖传模板要求，<br/>AI 将瞬间为您生成可编辑的目录树。
+            </p>
+          </div>
         </div>
+
+        {/* 💡 专家模式输入弹窗 (完整版) */}
+        <Modal
+          title={
+            <div className="flex items-center space-x-2 pb-2">
+              <div className="w-8 h-8 bg-emerald-100 rounded-lg flex items-center justify-center">
+                <FileText size={18} className="text-emerald-600" />
+              </div>
+              <span className="text-lg font-bold">导入标书模板框架</span>
+            </div>
+          }
+          open={isTemplateModalVisible}
+          onCancel={() => {
+            // 💡 取消时清空所有状态
+            setIsTemplateModalVisible(false);
+            setTemplateProjectName('');
+            setPastedTemplate('');
+          }}
+          width={750}
+          centered
+          maskClosable={false} // 防止误触遮罩层关掉导致丢失数据
+          footer={[
+            <Button 
+              key="back" 
+              onClick={() => {
+                setIsTemplateModalVisible(false);
+                setTemplateProjectName('');
+                setPastedTemplate('');
+              }}
+            >
+              取消
+            </Button>,
+            <Button 
+              key="submit" 
+              type="primary" 
+              loading={isParsingTemplate} 
+              onClick={handleImportTemplate}
+              className="bg-emerald-600 hover:bg-emerald-700 border-0 px-8 font-medium"
+            >
+              AI 洗数据并生成大纲
+            </Button>
+          ]}
+        >
+          <div className="py-2 flex flex-col h-[65vh] min-h-[450px]">
+            
+            {/* 1. 标书项目名称输入区 */}
+            <div className="mb-5">
+              <div className="text-sm font-bold text-gray-700 mb-2">
+                标书项目名称 <span className="text-red-500">*</span>
+              </div>
+              <Input
+                placeholder="请输入本次标书的名称（例如：XX医院弱电智能化项目投标文件）"
+                value={templateProjectName}
+                onChange={(e) => setTemplateProjectName(e.target.value)}
+                className="h-11 rounded-lg border-gray-300 focus:border-emerald-400 focus:ring-emerald-100 text-base"
+              />
+            </div>
+
+            {/* 2. 提示语与一键上传按钮区 */}
+            <div className="flex justify-between items-start mb-4 gap-4">
+              <div className="bg-emerald-50 text-emerald-700 p-3.5 rounded-xl text-sm flex-1 leading-relaxed border border-emerald-100">
+                <span className="mr-2 text-base">💡</span>
+                您可以直接粘贴文本，或者 <strong>上传已有模板文件</strong>，系统将自动提取文字并填入下方。无论格式多乱，AI 都会自动为您梳理成层级目录树。
+              </div>
+              
+              {/* 隐藏的文件上传框 */}
+              <input 
+                type="file" 
+                ref={templateFileInputRef} 
+                className="hidden" 
+                onChange={handleTemplateFileUpload} 
+                accept=".pdf,.doc,.docx,.ppt,.pptx" 
+              />
+              
+              {/* 触发上传的按钮 */}
+              <Button 
+                onClick={() => templateFileInputRef.current?.click()} 
+                loading={isExtractingTemplate}
+                className="shrink-0 h-[76px] px-5 border-emerald-300 text-emerald-600 hover:text-emerald-700 hover:border-emerald-500 hover:bg-emerald-50 flex flex-col items-center justify-center rounded-xl transition-all"
+              >
+                <UploadCloud size={20} className="mb-1" />
+                <span className="font-bold text-xs">上传模板文件</span>
+              </Button>
+            </div>
+
+            {/* 3. 核心大文本粘贴区 */}
+            <div className="flex-1 flex flex-col">
+              <div className="text-sm font-bold text-gray-700 mb-2">
+                模板目录内容 <span className="text-red-500">*</span>
+              </div>
+              <Input.TextArea
+                placeholder="提取的文字会显示在这里。您也可以直接在此处粘贴（例如：一、商务部分 1.营业执照...）"
+                value={pastedTemplate}
+                onChange={(e) => setPastedTemplate(e.target.value)}
+                className="flex-1 bg-gray-50 p-4 rounded-xl leading-relaxed text-[14px] border-gray-200 focus:border-emerald-400 focus:ring-emerald-100 resize-none custom-scrollbar"
+              />
+            </div>
+
+          </div>
+        </Modal>
       </div>
     );
   }
@@ -546,11 +763,9 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
     );
   }
 
-  // 💡 宽屏沉浸视图 (生成完毕后的编辑/导出界面)
   if (step === 'document') {
     return (
       <div className="h-screen flex flex-col bg-[#F2F3F5] overflow-hidden">
-        {/* 顶部控制栏 */}
         <div className="h-16 bg-white border-b flex items-center justify-between px-6 shadow-sm z-10 shrink-0">
           <Button type="text" icon={<ArrowLeft size={18} />} onClick={() => setStep('outline')} className="text-gray-600 hover:text-indigo-600 font-medium">
             返回大纲配置
@@ -570,10 +785,7 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
           </Button>
         </div>
 
-        {/* 💡 宽屏工作区 */}
         <div className="flex-1 flex overflow-hidden p-4 gap-4">
-          
-          {/* 左侧：可收缩的目录树 (占宽 1/4) */}
           <div className="w-1/4 max-w-[320px] bg-white rounded-xl shadow-sm border border-gray-200 p-5 overflow-y-auto flex flex-col min-h-0">
             <p className="font-bold text-gray-800 mb-4 flex items-center shrink-0">
               <ListTree size={18} className="mr-2 text-indigo-500"/> 
@@ -589,7 +801,6 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
             </div>
           </div>
           
-          {/* 右侧：火力全开撑满全屏的编辑器 (占宽 3/4) */}
           <div className="flex-1 bg-white shadow-lg border border-gray-200 rounded-xl overflow-hidden flex flex-col min-h-0" ref={editorRef} data-color-mode="light">
               <div className="flex-1 p-2 bg-[#fafafa] flex flex-col min-h-0">
                 <PerformanceEditor 
@@ -599,7 +810,6 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
                 />
               </div>
           </div>
-          
         </div>
       </div>
     );
@@ -607,7 +817,6 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
 
   const activeNode = activeNodeId ? findNodeById(outline, activeNodeId) : null;
   
-  // 💡 大纲配置视图 (生成前)
   return (
     <div className="h-screen flex flex-col bg-[#F8F9FA] overflow-hidden">
       <div className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6 shrink-0 shadow-sm z-20">
@@ -636,7 +845,6 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
       </div>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* 左侧：原文预览对照区 (可折叠) */}
         {showOriginal && (
           <div className="w-1/3 bg-white border-r border-gray-200 flex flex-col shrink-0 transition-all duration-300 min-h-0">
             <div className="p-4 border-b border-gray-100 bg-gray-50/50 flex justify-between items-center shadow-sm z-10">
@@ -677,14 +885,13 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
               ) : (
                 <div className="text-center">
                   <FileText size={48} className="mx-auto text-gray-400 mb-4 opacity-50" />
-                  <div className="text-gray-400 font-medium">暂无原文件，可能为旧版历史数据</div>
+                  <div className="text-gray-400 font-medium">暂无原文件，您正处于模板手工编制模式</div>
                 </div>
               )}
             </div>
           </div>
         )}
 
-        {/* 中间：Ant Design 树状目录 */}
         <div className={`${showOriginal ? 'w-[300px]' : 'w-1/3'} bg-gray-50 border-r border-gray-200 flex flex-col shrink-0 transition-all duration-300 min-h-0`}>
           <div className="p-4 border-b border-gray-200 bg-white">
             <span className="font-bold text-gray-800">树状目录结构</span>
@@ -707,7 +914,6 @@ ${imageNamesList || '（当前无可用图片，请仅输出文字内容）'}
           </div>
         </div>
 
-        {/* 右侧：节点要求编辑器 */}
         <div className="flex-1 bg-white flex flex-col relative min-w-0 min-h-0">
           {activeNode ? (
             <>
