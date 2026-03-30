@@ -489,13 +489,14 @@ export default function CreateBid() {
         setGenerationProgress(Math.round((i / leafNodes.length) * 100));
 
         const queryText = `${targetCompany} ${node.title} ${node.requirement || ''}`.substring(0, 100);
+        
+        // 💡 净化版 frameworkText，排版工作全部交给 Dify 的系统提示词
         const frameworkText = `
 当前章节：### ${node.id} ${node.title}
-撰写要求：
-${node.requirement || '请结合上下文与内部知识库，详细扩充本节的技术或管理方案。'}
+【甲方的强制撰写要求（含原始格式）】：
+${node.requirement || '请结合上下文与内部知识库，详细扩充本节方案。'}
 
-【🚨 图片插入极度严格规范】
-如需插入图片，只能从以下列表中选择，使用 {{IMG_图片名称}} 格式：
+【图片白名单（如需插入，仅限以下列表，格式为 {{IMG_名称}}）】：
 ${imageNamesList || '（无图片）'}
         `.trim();
         
@@ -535,18 +536,113 @@ ${imageNamesList || '（无图片）'}
 
   const handleDownloadWord = async () => {
     try {
-      message.loading({ content: '正在打包 Word 文档...', key: 'export' });
+      message.loading({ content: '正在应用国标公文排版并打包 Word...', key: 'export' });
       const htmlContent = document.querySelector('.wmde-markdown').innerHTML;
+      
+      // 💡 终极国标版 CSS：精确控制宋体、字号、段前段后6磅、1.5倍行距
       const sourceHTML = `
         <!DOCTYPE html><html><head><meta charset="utf-8"><title>${targetCompany || '标书正文'}</title>
         <style>
-          body { font-family: 'SimSun', '宋体', sans-serif; font-size: 14pt; line-height: 1.5; }
-          table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
-          table, th, td { border: 1px solid black; padding: 8px; }
-          img { max-width: 100%; height: auto; display: block; margin: 10px auto; }
+          /* 1. 全局正文：宋体，五号(10.5pt)，段前段后0，行距1.5倍 */
+          body, p, span, div { 
+            font-family: 'SimSun', '宋体', serif; 
+            font-size: 10.5pt; 
+            line-height: 1.5; 
+            color: #000; 
+            margin-top: 0pt; 
+            margin-bottom: 0pt;
+          }
+          
+          /* 正文段落首行缩进2字符 (10.5pt * 2 = 21pt) */
+          p { 
+            text-indent: 21pt; 
+            text-align: justify; 
+          }
+
+          /* 2. 一级标题：宋体，三号(16pt)，段前段后6磅，行距1.5倍 */
+          h1 { 
+            font-family: 'SimSun', '宋体', serif; 
+            font-size: 16pt; 
+            font-weight: bold; 
+            margin-top: 6pt; 
+            margin-bottom: 6pt; 
+            line-height: 1.5;
+            page-break-before: always; /* 默认第一章另起一页，如不需要可删除此行 */
+          }
+
+          /* 3. 二级标题：宋体，小三(15pt)，段前段后6磅，行距1.5倍 */
+          h2 { 
+            font-family: 'SimSun', '宋体', serif; 
+            font-size: 15pt; 
+            font-weight: bold; 
+            margin-top: 6pt; 
+            margin-bottom: 6pt; 
+            line-height: 1.5; 
+          }
+
+          /* 4. 三级标题：宋体，四号(14pt)，段前段后6磅，行距1.5倍 */
+          h3 { 
+            font-family: 'SimSun', '宋体', serif; 
+            font-size: 14pt; 
+            font-weight: bold; 
+            margin-top: 6pt; 
+            margin-bottom: 6pt; 
+            line-height: 1.5;
+          }
+
+          /* 5. 四级至六级标题：宋体，小四(12pt)，段前段后6磅，行距1.5倍 */
+          /* (注：Markdown 和 HTML 原生最多只支持到 h6，所以写到 h6 即可涵盖后续级别) */
+          h4, h5, h6 { 
+            font-family: 'SimSun', '宋体', serif; 
+            font-size: 12pt; 
+            font-weight: bold; 
+            margin-top: 6pt; 
+            margin-bottom: 6pt; 
+            line-height: 1.5;
+          }
+
+          /* 6. 列表与图片格式控制 */
+          ul, ol { margin-left: 21pt; margin-top: 0pt; margin-bottom: 0pt; }
+          li { margin-bottom: 0pt; }
+          img { max-width: 100%; height: auto; display: block; margin: 12pt auto; }
+
+          /* 🔥 7. HTML 表格防弹装甲：支持 colspan/rowspan 完美渲染 */
+          table { 
+            border-collapse: collapse; 
+            width: 100% !important; 
+            margin-top: 12pt;
+            margin-bottom: 12pt;
+            table-layout: fixed; /* 防止表格被长文字撑破 A4 纸 */
+            word-wrap: break-word;
+            font-size: 10.5pt; /* 表格内文字同正文为五号 */
+          }
+          table, th, td { 
+            border: 1px solid #000000; /* 强制纯黑实线 */
+            padding: 4pt 6pt; 
+            vertical-align: middle; 
+          }
+          th { 
+            background-color: #f2f2f2; 
+            font-weight: bold; 
+            text-align: center; 
+          }
+          td { text-align: left; }
         </style></head><body>${htmlContent}</body></html>
       `;
-      const blob = await asBlob(sourceHTML, { orientation: 'portrait', margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 }});
+
+      // 👑 精确的页边距控制 (1英寸 = 1440 twips = 2.54cm)
+      const blob = await asBlob(sourceHTML, { 
+        orientation: 'portrait', 
+        margins: { 
+          top: 1440,       // 上 2.54cm
+          bottom: 1440,    // 下 2.54cm
+          left: 1803,      // 左 3.18cm
+          right: 1803,     // 右 3.18cm
+          header: 850,     // 页眉 1.5cm
+          footer: 850      // 页脚 1.5cm
+        }
+      });
+      
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
@@ -554,12 +650,13 @@ ${imageNamesList || '（无图片）'}
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
-      message.success({ content: 'Word 文档导出成功！', key: 'export' });
+      message.success({ content: '国标排版 Word 文档导出成功！', key: 'export' });
     } catch (err) {
+      console.error(err);
       message.error({ content: '导出失败，请重试', key: 'export' });
     }
   };
-
+  
   const scrollToAnchor = (nodeId, nodeTitle) => {
     const headings = document.querySelectorAll('.w-md-editor-preview h1, .w-md-editor-preview h2, .w-md-editor-preview h3');
     let targetElement = null;
@@ -614,6 +711,20 @@ ${imageNamesList || '（无图片）'}
             <p className="text-gray-500 text-center text-sm leading-relaxed">输入您的模板骨架与招标文件要求，<br/>AI 将精准融合生成无遗漏的专属大纲。</p>
           </div>
         </div>
+                {/* 替换掉最底部那行重复的 h2 */}
+        <div className="mt-12 flex flex-col items-center gap-2">
+        <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border border-amber-200 rounded-lg text-amber-700">
+    {/* 把 AlertCircle 换成下面的 span */}
+        <span className="text-lg">⚠️</span> 
+        <span className="text-sm font-medium">
+      重要提示：截至 2026 年，全球范围内尚无任何人工智能机构（包括 OpenAI, Google, 华为，字节跳动，阿里巴巴等）能够承诺 LLM 生成内容的 100% 事实准确性。AI 辅助生成内容可能存在随机性，不保证 100% 准确，请务必在封标前进行人工复核。
+    </span>
+  </div>
+  <p className="text-xs text-gray-400">
+    本系统仅作为辅助工具
+  </p>
+</div>
+
 
         <Modal
           title={
@@ -678,7 +789,7 @@ ${imageNamesList || '（无图片）'}
               </div>
             </div>
             <div className="mt-3 text-xs text-gray-400 text-center">
-              💡 提示：点击提交后，系统将秒出大纲，并在后台为您自动填充各个章节的详细要求。
+              💡 提示：点击提交后，系统将提取出大纲，并在后台为您自动填充各个章节的详细要求。
             </div>
           </div>
         </Modal>
