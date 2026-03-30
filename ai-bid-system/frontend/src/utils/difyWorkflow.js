@@ -146,3 +146,35 @@ export const parseTemplateToOutline = async (pastedText) => {
     throw error;
   }
 };
+// 💡 新增：专门负责提取单个章节详细要求的函数 (阶段二：填血肉)
+export const fetchRequirementForNode = async (nodeTitle, fullText) => {
+  try {
+    // 请确认您的 Dify API 地址，如果是云端版就是 https://api.dify.ai/v1/workflows/run
+    // 如果是本地私有化部署，请换成您自己的域名/IP
+    const response = await fetch('http://192.168.169.107/v1/workflows/run', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        // 💡 填入了您刚刚生成的专属 API Key
+        'Authorization': `Bearer app-UoXNnj93CKzCPie3gyZw8UbX` 
+      },
+      body: JSON.stringify({
+        inputs: {
+          "node_title": nodeTitle,
+          "full_text": fullText
+        },
+        response_mode: "blocking", // 阻塞模式，等待AI写完一次性返回
+        user: "bid_expert_frontend"
+      })
+    });
+
+    const result = await response.json();
+    if (result.code || result.message) throw new Error(result.message);
+    
+    // 💡 精准获取您的输出变量: text
+    return result.data?.outputs?.text || "请结合上下文与内部知识库，详细扩充本节方案。";
+  } catch (error) {
+    console.error(`提取 [${nodeTitle}] 失败:`, error);
+    return "自动提取超时或失败，请手动输入或重试。";
+  }
+};
