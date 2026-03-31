@@ -12,7 +12,6 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import {
   scanBlanksFromXml,
-  replaceBlanksInXml,
   extractDocumentXml,
   generateFilledDocx,
   extractParagraphsForPreview,
@@ -275,20 +274,19 @@ export default function CreateBid() {
     }
   };
 
-  const handleExportFilledWord = () => {
+  const handleExportFilledWord = async () => {
     if (!originalZip || !originalXml || scannedBlanks.length === 0) {
       return message.error('缺少原始文件数据，请重新上传');
     }
 
     try {
       message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
-      const modifiedXml = replaceBlanksInXml(originalXml, scannedBlanks, manualEdits);
-      const blob = generateFilledDocx(originalZip, modifiedXml);
+      const blob = await generateFilledDocx(originalZip, originalXml, scannedBlanks, manualEdits);
       saveAs(blob, `已填报_${originalFile.name}`);
       message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
     } catch (err) {
       console.error('导出失败:', err);
-      message.error({ content: '导出失败: ' + err.message, key: 'export' });
+      message.error({ content: `导出失败: ${err.message}`, key: 'export' });
     }
   };
 
