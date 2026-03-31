@@ -164,7 +164,7 @@ export default function CreateBid() {
     setIsScanning(true);
 
     try {
-      message.loading({ content: '正在扫描招标文件中的空白位置...', key: 'scan', duration: 0 });
+      message.loading({ content: '正在扫描投标文件中的空白位置...', key: 'scan', duration: 0 });
 
       const { xmlString, zip } = await extractDocumentXml(file);
       setOriginalXml(xmlString);
@@ -386,9 +386,9 @@ export default function CreateBid() {
   if (step === 'upload') {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-[#F8F9FA] p-8 relative">
-        <h2 className="text-3xl font-bold text-gray-800 mb-4">招标文件智能填报</h2>
+        <h2 className="text-3xl font-bold text-gray-800 mb-4">投标文件智能填报</h2>
         <p className="text-gray-500 mb-12 text-center max-w-xl">
-          上传甲方的 .docx 招标文件，系统将自动扫描其中的空白位置（签名栏、日期栏、公司信息等），
+          上传甲方的 .docx 投标文件，系统将自动扫描其中的空白位置（签名栏、日期栏、公司信息等），
           由 AI 结合知识库自动填写，最终导出格式 100% 还原的已填报文件。
         </p>
 
@@ -407,7 +407,7 @@ export default function CreateBid() {
             <div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
               <UploadCloud size={48} className="text-indigo-500" />
             </div>
-            <h3 className="text-2xl font-bold text-gray-800 mb-3">上传招标文件 (.docx)</h3>
+            <h3 className="text-2xl font-bold text-gray-800 mb-3">上传投标文件 (.docx)</h3>
             <p className="text-gray-500 text-center text-sm leading-relaxed">
               支持 Word 2007+ 格式 (.docx)<br />
               系统将自动识别文件中的签名栏、日期栏、<br />
