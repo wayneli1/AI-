@@ -4,7 +4,7 @@ import {
   UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
-import { useSearchParams } from 'react-router-dom'; // 💡 新增：路由参数钩子
+import { useSearchParams } from 'react-router-dom';
 
 import { fillDocumentBlanks, scanBlanksWithAI } from '../utils/difyWorkflow';
 import { supabase } from '../lib/supabase';
@@ -21,7 +21,7 @@ import {
 
 export default function CreateBid() {
   const { user } = useAuth();
-  const [searchParams] = useSearchParams(); // 💡 新增：获取 URL 参数
+  const [searchParams] = useSearchParams();
   const urlProjectId = searchParams.get('id');
 
   const [step, setStep] = useState('upload');
@@ -39,6 +39,10 @@ export default function CreateBid() {
   const [companyList, setCompanyList] = useState([]);
   const [fetchingCompanies, setFetchingCompanies] = useState(false);
 
+  // 💡 新增：招标原文的 State 与 弹窗控制
+  const [tenderContext, setTenderContext] = useState(''); 
+  const [isContextModalVisible, setIsContextModalVisible] = useState(false);
+
   const [isScanning, setIsScanning] = useState(false);
   const [isFilling, setIsFilling] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState(null);
@@ -46,9 +50,6 @@ export default function CreateBid() {
   const [highlightBlankId, setHighlightBlankId] = useState(null);
   const previewRef = useRef(null);
 
-  // ==========================================
-  // 💡 核心修复 1：根据 URL ID 恢复历史项目状态
-  // ==========================================
   useEffect(() => {
     if (urlProjectId && user) {
       loadExistingProject(urlProjectId);
@@ -64,7 +65,6 @@ export default function CreateBid() {
       if (data) {
         setCurrentProjectId(data.id);
         
-        // 核心难点：必须把云端的 Word 文件重新下载下来解析，才能恢复预览和导出功能
         if (data.file_url) {
           const response = await fetch(data.file_url);
           const blob = await response.blob();
@@ -78,19 +78,17 @@ export default function CreateBid() {
           setOriginalZip(zip);
         }
 
-        // 恢复扫描出的空白列表
         if (data.framework_content) {
           const blanks = JSON.parse(data.framework_content);
           setScannedBlanks(blanks);
         }
 
-        // 恢复之前填写过的数据
         if (data.analysis_report) {
           const edits = JSON.parse(data.analysis_report);
           setManualEdits(edits);
-          setStep('review'); // 如果有填报数据，直接进入复核模式
+          setStep('review'); 
         } else if (data.framework_content) {
-          setStep('scan'); // 只有空白列表没填过，进入待扫描/填报模式
+          setStep('scan'); 
         } else {
           setStep('upload');
         }
@@ -104,13 +102,9 @@ export default function CreateBid() {
     }
   };
 
-  // ==========================================
-  // 💡 核心修复 2：手填内容防丢失（防抖自动保存）
-  // ==========================================
   useEffect(() => {
     if (!currentProjectId || step === 'upload') return;
 
-    // 当用户手动修改输入框时，延迟 1.5 秒自动存入数据库的 analysis_report 字段
     const debounceTimer = setTimeout(async () => {
       try {
         await supabase.from('bidding_projects').update({ 
@@ -161,7 +155,6 @@ export default function CreateBid() {
       setOriginalXml(xmlString);
       setOriginalZip(zip);
 
-      // 并行执行正则扫描和 AI 扫描
       const [regexBlanks, indexedParagraphs] = await Promise.all([
         Promise.resolve(scanBlanksFromXml(xmlString)),
         Promise.resolve(extractIndexedParagraphs(xmlString))
@@ -204,12 +197,11 @@ export default function CreateBid() {
         project_name: file.name.replace(/\.[^/.]+$/, ''),
         file_url: uploadedFileUrl,
         framework_content: JSON.stringify(mergedBlanks),
-        status: 'processing' // 等待填写
+        status: 'processing'
       }).select().single();
 
       if (!error && project) {
         setCurrentProjectId(project.id);
-        // 💡 替换 URL 以防用户刷新
         window.history.replaceState(null, '', `/create-bid?id=${project.id}`);
       }
 
@@ -238,11 +230,12 @@ export default function CreateBid() {
     try {
       message.loading({ content: `正在调用 AI 分析并填写 ${scannedBlanks.length} 处空白...`, key: 'fill', duration: 0 });
 
-      const result = await fillDocumentBlanks(scannedBlanks, targetCompany);
+      // 💡 核心修改：把 tenderContext 传给填报引擎
+      const result = await fillDocumentBlanks(scannedBlanks, targetCompany, tenderContext);
 
       setFilledValues(result);
 
-      const merged = { ...manualEdits }; // 保留已手动填写的内容
+      const merged = { ...manualEdits };
       for (const blank of scannedBlanks) {
         if (!merged[blank.id] && result[blank.id]) {
           merged[blank.id] = result[blank.id] || '';
@@ -415,7 +408,7 @@ export default function CreateBid() {
             <Button
               type="text"
               icon={<ArrowLeft size={18} />}
-              onClick={() => { setStep('upload'); setScannedBlanks([]); setFilledValues({}); setManualEdits({}); }}
+              onClick={() => { setStep('upload'); setScannedBlanks([]); setFilledValues({}); setManualEdits({}); setTenderContext(''); }}
               className="text-gray-600 font-medium"
             >
               重新上传
@@ -563,6 +556,7 @@ export default function CreateBid() {
               />
             </div>
 
+            {/* 💡 核心 UI 修改：底部加入补充招标原文按钮 */}
             <div className="p-4 bg-white border-t border-gray-100 shrink-0">
               <div className="flex items-center gap-3">
                 <span className="text-sm font-bold text-gray-700 shrink-0">投标主体：</span>
@@ -583,6 +577,17 @@ export default function CreateBid() {
                   </Button>
                 </div>
 
+                {/* 📎 贴入招标原文按钮 */}
+                <Button 
+                  type={tenderContext ? "primary" : "default"}
+                  ghost={!!tenderContext}
+                  icon={<FileText size={16} />} 
+                  onClick={() => setIsContextModalVisible(true)}
+                  className={`h-9 px-4 rounded-lg font-medium transition-colors ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-500'}`}
+                >
+                  {tenderContext ? '已补充招标上下文' : '📎 贴入招标原文 (推荐)'}
+                </Button>
+
                 <div className="flex-1" />
 
                 {!isReviewed ? (
@@ -591,7 +596,7 @@ export default function CreateBid() {
                     size="large"
                     onClick={handleAutoFill}
                     loading={isFilling}
-                    className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-11 font-bold border-0 px-8"
+                    className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-11 font-bold border-0 px-8 shadow-md"
                   >
                     AI 自动填写
                   </Button>
@@ -600,7 +605,7 @@ export default function CreateBid() {
                     <Button
                       onClick={handleAutoFill}
                       loading={isFilling}
-                      className="rounded-xl h-11 font-bold px-6"
+                      className="rounded-xl h-11 font-bold px-6 border-gray-300 text-gray-700"
                     >
                       重新 AI 填写
                     </Button>
@@ -609,7 +614,7 @@ export default function CreateBid() {
                       size="large"
                       icon={<Download size={16} />}
                       onClick={handleExportFilledWord}
-                      className="bg-green-600 hover:bg-green-700 rounded-xl h-11 font-bold border-0 px-8"
+                      className="bg-green-600 hover:bg-green-700 rounded-xl h-11 font-bold border-0 px-8 shadow-md"
                     >
                       导出已填报文件
                     </Button>
@@ -664,6 +669,33 @@ export default function CreateBid() {
             </div>
           )}
         </Modal>
+
+        {/* 💡 新增：招标原文输入弹窗 */}
+        <Modal
+          title={<div className="font-bold text-lg text-gray-800 flex items-center"><FileText className="mr-2 text-indigo-500"/>补充招标原文要求</div>}
+          open={isContextModalVisible}
+          onOk={() => setIsContextModalVisible(false)}
+          onCancel={() => setIsContextModalVisible(false)}
+          okText="确认保存"
+          cancelText="取消"
+          width={700}
+          centered
+        >
+          <div className="py-2">
+            <div className="text-sm text-gray-600 mb-4 bg-indigo-50 p-3 rounded-lg border border-indigo-100 leading-relaxed">
+              💡 <b>强烈建议：</b>请在此粘贴甲方的招标公告、项目概况、采购需求等关键文本。<br/>
+              AI 在为您填表时，将<b>优先从此处提取</b>项目编号、采购人、预算金额、交货时间等专属信息。
+            </div>
+            <Input.TextArea
+              value={tenderContext}
+              onChange={(e) => setTenderContext(e.target.value)}
+              placeholder="请粘贴文本，例如：本项目名称为《2026年邮件系统采购项目》，项目编号：GD-2026-001，采购人：某某局，预算金额：100万元..."
+              className="w-full h-64 p-3 text-sm leading-relaxed custom-scrollbar rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
+              style={{ resize: 'none' }}
+            />
+          </div>
+        </Modal>
+
       </div>
     );
   }

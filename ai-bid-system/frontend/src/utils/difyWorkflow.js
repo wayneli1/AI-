@@ -80,7 +80,8 @@ export const scanBlanksWithAI = async (paragraphs) => {
   }
 };
 
-export const fillDocumentBlanks = async (blankContexts, companyName) => {
+// 💡 核心修改：新增 tenderContext 参数并传给后端
+export const fillDocumentBlanks = async (blankContexts, companyName, tenderContext = '') => {
   if (!FILL_BLANK_API_KEY || !DIFY_API_BASE) {
     throw new Error("未配置填报工作流 API Key (VITE_DIFY_FILL_BLANK_API_KEY)");
   }
@@ -101,7 +102,8 @@ export const fillDocumentBlanks = async (blankContexts, companyName) => {
       body: JSON.stringify({
         inputs: {
           blank_list: JSON.stringify(blankList),
-          company_name: companyName || ''
+          company_name: companyName || '',
+          tender_context: tenderContext // 💡 新增：把原文传给 Dify
         },
         response_mode: "blocking",
         user: "frontend-fill-blank-user"
