@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 
-import { fillDocumentBlanks } from '../utils/difyWorkflow';
+import { fillDocumentBlanks, scanBlanksWithAI } from '../utils/difyWorkflow';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -13,7 +13,9 @@ import {
   replaceBlanksInXml,
   extractDocumentXml,
   generateFilledDocx,
-  extractParagraphsForPreview
+  extractParagraphsForPreview,
+  extractIndexedParagraphs,
+  mergeBlanks
 } from '../utils/wordBlankFiller';
 
 export default function CreateBid() {
@@ -77,18 +79,38 @@ export default function CreateBid() {
       setOriginalXml(xmlString);
       setOriginalZip(zip);
 
-      const blanks = scanBlanksFromXml(xmlString);
+      // 并行执行正则扫描和 AI 扫描
+      const [regexBlanks, indexedParagraphs] = await Promise.all([
+        Promise.resolve(scanBlanksFromXml(xmlString)),
+        Promise.resolve(extractIndexedParagraphs(xmlString))
+      ]);
 
-      if (blanks.length === 0) {
+      let aiBlanks = [];
+      try {
+        // 只发送非空段落给 AI 扫描
+        const nonEmptyParagraphs = indexedParagraphs.filter(p => p.text.length > 0);
+        if (nonEmptyParagraphs.length > 0) {
+          message.loading({ content: '正则扫描完成，正在调用 AI 进行智能识别...', key: 'scan', duration: 0 });
+          aiBlanks = await scanBlanksWithAI(nonEmptyParagraphs);
+        }
+      } catch (aiError) {
+        console.warn('AI 扫描失败，继续使用正则结果:', aiError);
+        message.warning({ content: 'AI 扫描失败，仅使用正则识别结果', key: 'scan', duration: 3 });
+      }
+
+      // 合并正则和 AI 结果
+      const mergedBlanks = mergeBlanks(regexBlanks, aiBlanks);
+
+      if (mergedBlanks.length === 0) {
         message.warning({ content: '未扫描到空白位置，该文件可能不需要填报，或空白格式未被识别。', key: 'scan', duration: 5 });
         setStep('upload');
         setIsScanning(false);
         return;
       }
 
-      setScannedBlanks(blanks);
+      setScannedBlanks(mergedBlanks);
       const initialEdits = {};
-      blanks.forEach(b => { initialEdits[b.id] = ''; });
+      mergedBlanks.forEach(b => { initialEdits[b.id] = ''; });
       setManualEdits(initialEdits);
 
       const fileExtension = '.' + ext;
@@ -101,7 +123,7 @@ export default function CreateBid() {
         user_id: user.id,
         project_name: file.name.replace(/\.[^/.]+$/, ''),
         file_url: uploadedFileUrl,
-        framework_content: JSON.stringify(blanks),
+        framework_content: JSON.stringify(mergedBlanks),
         status: 'processing'
       }).select().single();
 
@@ -109,7 +131,12 @@ export default function CreateBid() {
         setCurrentProjectId(project.id);
       }
 
-      message.success({ content: `扫描完成，共发现 ${blanks.length} 处待填写位置！`, key: 'scan' });
+      const scanSummary = `扫描完成，共发现 ${mergedBlanks.length} 处待填写位置！`;
+      if (aiBlanks.length > 0) {
+        message.success({ content: `${scanSummary} (正则: ${regexBlanks.length}, AI: ${aiBlanks.length})`, key: 'scan' });
+      } else {
+        message.success({ content: scanSummary, key: 'scan' });
+      }
       setStep('scan');
     } catch (err) {
       console.error('扫描失败:', err);

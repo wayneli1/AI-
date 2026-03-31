@@ -77,6 +77,7 @@ function hasKeywordNearby(paragraphText, matchIndex, matchLength, windowSize = 3
 export function scanBlanksFromXml(xmlString) {
   const blanks = [];
   let blankCounter = 0;
+  let paraIndex = 0;
 
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
@@ -85,7 +86,10 @@ export function scanBlanksFromXml(xmlString) {
     const paragraphXml = paraMatch[0];
     const paragraphText = getVisibleTextFromParagraph(paragraphXml);
 
-    if (!paragraphText || paragraphText.trim().length === 0) continue;
+    if (!paragraphText || paragraphText.trim().length === 0) {
+      paraIndex++;
+      continue;
+    }
 
     const underscorePattern = /_{3,}/g;
     let m;
@@ -95,6 +99,7 @@ export function scanBlanksFromXml(xmlString) {
         blank.id = `blank_${++blankCounter}`;
         blank.context = paragraphText.trim();
         blank.index = m.index;
+        blank.paraIndex = paraIndex;
         blanks.push(blank);
       }
     }
@@ -106,6 +111,7 @@ export function scanBlanksFromXml(xmlString) {
         blank.id = `blank_${++blankCounter}`;
         blank.context = paragraphText.trim();
         blank.index = m.index;
+        blank.paraIndex = paraIndex;
         blanks.push(blank);
       }
     }
@@ -119,7 +125,8 @@ export function scanBlanksFromXml(xmlString) {
         matchText: m[0],
         index: m.index,
         type: 'date_pattern',
-        confidence: 'high'
+        confidence: 'high',
+        paraIndex: paraIndex
       });
     }
 
@@ -133,10 +140,13 @@ export function scanBlanksFromXml(xmlString) {
           matchText: m[0],
           index: m.index,
           type: 'keyword_space',
-          confidence: 'medium'
+          confidence: 'medium',
+          paraIndex: paraIndex
         });
       }
     }
+    
+    paraIndex++;
   }
 
   const cellRegex = /<w:tc[\s>][\s\S]*?<\/w:tc>/g;
@@ -290,14 +300,53 @@ function escapeXml(str) {
     .replace(/'/g, '&apos;');
 }
 
+export function extractIndexedParagraphs(xmlString) {
+  const paragraphs = [];
+  const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
+  let paraMatch;
+  let paraIndex = 0;
+  
+  while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
+    const xml = paraMatch[0];
+    const text = getVisibleTextFromParagraph(xml).trim();
+    if (text.length === 0) continue;
+    
+    paragraphs.push({
+      paraIndex,
+      text,
+      xml
+    });
+    paraIndex++;
+  }
+  return paragraphs;
+}
+
+export function mergeBlanks(regexBlanks, aiBlanks) {
+  const merged = [...regexBlanks];
+  const existingContexts = new Set(regexBlanks.map(b => `${b.context}|${b.index}`));
+  
+  aiBlanks.forEach(aiBlank => {
+    const key = `${aiBlank.context}|${aiBlank.index}`;
+    if (!existingContexts.has(key)) {
+      merged.push({
+        ...aiBlank,
+        id: `blank_ai_${merged.length + 1}`,
+        confidence: aiBlank.confidence || 'medium'
+      });
+    }
+  });
+  
+  return merged;
+}
+
 export function extractParagraphsForPreview(xmlString, blanks) {
   const paragraphs = [];
   const blankContextMap = new Map();
-  for (const b of blanks) {
-    const ctx = b.context.trim();
-    if (!blankContextMap.has(ctx)) blankContextMap.set(ctx, []);
-    blankContextMap.get(ctx).push(b.id);
-  }
+
+  blanks.forEach(blank => {
+    const existing = blankContextMap.get(blank.context) || [];
+    blankContextMap.set(blank.context, [...existing, blank.id]);
+  });
 
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
