@@ -1,9 +1,10 @@
-import React, { useState, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { Button, Input, message, Modal, Table, Tag, Empty, Spin } from 'antd';
 import {
   UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
+import { useSearchParams } from 'react-router-dom'; // 💡 新增：路由参数钩子
 
 import { fillDocumentBlanks, scanBlanksWithAI } from '../utils/difyWorkflow';
 import { supabase } from '../lib/supabase';
@@ -20,6 +21,8 @@ import {
 
 export default function CreateBid() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams(); // 💡 新增：获取 URL 参数
+  const urlProjectId = searchParams.get('id');
 
   const [step, setStep] = useState('upload');
   const fileInputRef = useRef(null);
@@ -42,6 +45,85 @@ export default function CreateBid() {
 
   const [highlightBlankId, setHighlightBlankId] = useState(null);
   const previewRef = useRef(null);
+
+  // ==========================================
+  // 💡 核心修复 1：根据 URL ID 恢复历史项目状态
+  // ==========================================
+  useEffect(() => {
+    if (urlProjectId && user) {
+      loadExistingProject(urlProjectId);
+    }
+  }, [urlProjectId, user]);
+
+  const loadExistingProject = async (id) => {
+    try {
+      message.loading({ content: '正在从云端恢复标书数据...', key: 'load', duration: 0 });
+      const { data, error } = await supabase.from('bidding_projects').select('*').eq('id', id).single();
+      if (error) throw error;
+
+      if (data) {
+        setCurrentProjectId(data.id);
+        
+        // 核心难点：必须把云端的 Word 文件重新下载下来解析，才能恢复预览和导出功能
+        if (data.file_url) {
+          const response = await fetch(data.file_url);
+          const blob = await response.blob();
+          const file = new File([blob], `${data.project_name}.docx`, { 
+            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' 
+          });
+          setOriginalFile(file);
+          
+          const { xmlString, zip } = await extractDocumentXml(file);
+          setOriginalXml(xmlString);
+          setOriginalZip(zip);
+        }
+
+        // 恢复扫描出的空白列表
+        if (data.framework_content) {
+          const blanks = JSON.parse(data.framework_content);
+          setScannedBlanks(blanks);
+        }
+
+        // 恢复之前填写过的数据
+        if (data.analysis_report) {
+          const edits = JSON.parse(data.analysis_report);
+          setManualEdits(edits);
+          setStep('review'); // 如果有填报数据，直接进入复核模式
+        } else if (data.framework_content) {
+          setStep('scan'); // 只有空白列表没填过，进入待扫描/填报模式
+        } else {
+          setStep('upload');
+        }
+
+        message.success({ content: '项目恢复成功！', key: 'load' });
+      }
+    } catch (err) {
+      console.error("加载历史项目失败:", err);
+      message.error({ content: '恢复项目失败，可能文件已损坏', key: 'load' });
+      setStep('upload');
+    }
+  };
+
+  // ==========================================
+  // 💡 核心修复 2：手填内容防丢失（防抖自动保存）
+  // ==========================================
+  useEffect(() => {
+    if (!currentProjectId || step === 'upload') return;
+
+    // 当用户手动修改输入框时，延迟 1.5 秒自动存入数据库的 analysis_report 字段
+    const debounceTimer = setTimeout(async () => {
+      try {
+        await supabase.from('bidding_projects').update({ 
+          analysis_report: JSON.stringify(manualEdits) 
+        }).eq('id', currentProjectId);
+      } catch (error) {
+        console.error('自动保存失败:', error);
+      }
+    }, 1500);
+
+    return () => clearTimeout(debounceTimer);
+  }, [manualEdits, currentProjectId, step]);
+
 
   const previewParagraphs = useMemo(() => {
     if (!originalXml || scannedBlanks.length === 0) return [];
@@ -87,7 +169,6 @@ export default function CreateBid() {
 
       let aiBlanks = [];
       try {
-        // 只发送非空段落给 AI 扫描
         const nonEmptyParagraphs = indexedParagraphs.filter(p => p.text.length > 0);
         if (nonEmptyParagraphs.length > 0) {
           message.loading({ content: '正则扫描完成，正在调用 AI 进行智能识别...', key: 'scan', duration: 0 });
@@ -98,7 +179,6 @@ export default function CreateBid() {
         message.warning({ content: 'AI 扫描失败，仅使用正则识别结果', key: 'scan', duration: 3 });
       }
 
-      // 合并正则和 AI 结果
       const mergedBlanks = mergeBlanks(regexBlanks, aiBlanks);
 
       if (mergedBlanks.length === 0) {
@@ -124,11 +204,13 @@ export default function CreateBid() {
         project_name: file.name.replace(/\.[^/.]+$/, ''),
         file_url: uploadedFileUrl,
         framework_content: JSON.stringify(mergedBlanks),
-        status: 'processing'
+        status: 'processing' // 等待填写
       }).select().single();
 
       if (!error && project) {
         setCurrentProjectId(project.id);
+        // 💡 替换 URL 以防用户刷新
+        window.history.replaceState(null, '', `/create-bid?id=${project.id}`);
       }
 
       const scanSummary = `扫描完成，共发现 ${mergedBlanks.length} 处待填写位置！`;
@@ -160,15 +242,17 @@ export default function CreateBid() {
 
       setFilledValues(result);
 
-      const merged = {};
+      const merged = { ...manualEdits }; // 保留已手动填写的内容
       for (const blank of scannedBlanks) {
-        merged[blank.id] = result[blank.id] || '';
+        if (!merged[blank.id] && result[blank.id]) {
+          merged[blank.id] = result[blank.id] || '';
+        }
       }
       setManualEdits(merged);
 
       if (currentProjectId) {
         await supabase.from('bidding_projects').update({
-          analysis_report: JSON.stringify(result),
+          analysis_report: JSON.stringify(merged),
           status: 'completed'
         }).eq('id', currentProjectId);
       }
@@ -191,13 +275,9 @@ export default function CreateBid() {
 
     try {
       message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
-
-      const finalValues = { ...filledValues, ...manualEdits };
-      const modifiedXml = replaceBlanksInXml(originalXml, scannedBlanks, finalValues);
-
+      const modifiedXml = replaceBlanksInXml(originalXml, scannedBlanks, manualEdits);
       const blob = generateFilledDocx(originalZip, modifiedXml);
       saveAs(blob, `已填报_${originalFile.name}`);
-
       message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
     } catch (err) {
       console.error('导出失败:', err);
@@ -223,7 +303,6 @@ export default function CreateBid() {
       ];
       setCompanyList([...new Set(allCategories.filter(name => name && name.trim() !== ''))]);
     } catch (error) {
-      // ignore
     } finally {
       setFetchingCompanies(false);
     }

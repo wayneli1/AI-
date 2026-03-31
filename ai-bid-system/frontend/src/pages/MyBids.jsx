@@ -108,6 +108,7 @@ const MyBids = () => {
     try {
       if (project.framework_content) {
         const parsed = JSON.parse(project.framework_content);
+        // 新版的 scannedBlanks 也是一个数组
         if (Array.isArray(parsed)) {
           isNewGenerationFlow = true; 
         }
@@ -120,18 +121,15 @@ const MyBids = () => {
       if (project.status === 'completed') {
         return (
           <>
-            <span className="px-3 py-1 rounded-full text-xs font-medium bg-purple-50 text-purple-600 mr-2 border border-purple-100">大纲已确认</span>
-            <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-600 border border-blue-100">完整方案</span>
+            <span className="px-3 py-1 rounded-full text-xs font-medium bg-green-50 text-green-600 border border-green-100">填报完成</span>
           </>
         );
       } else {
-        return <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-600 border border-indigo-100">大纲已生成 / 待生成正文</span>;
+        return <span className="px-3 py-1 rounded-full text-xs font-medium bg-indigo-50 text-indigo-600 border border-indigo-100">待填报空白</span>;
       }
     } else {
       if (project.status === 'completed') {
-        return (
-          <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-500 border border-blue-100">招标文件解读报告</span>
-        );
+        return <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-50 text-blue-500 border border-blue-100">招标文件解读报告</span>;
       } else {
         return <span className="px-3 py-1 rounded-full text-xs font-medium bg-orange-50 text-orange-500 border border-orange-100">文件解读中...</span>;
       }
