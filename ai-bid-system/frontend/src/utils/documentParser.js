@@ -52,13 +52,181 @@ const parsePDF = async (file) => {
   return fullText;
 };
 
-// --- 解析 Word (.docx) 的核心逻辑 ---
+// --- 解析 Word (.docx) 的核心逻辑（混合模式：段落用纯文本，表格保留 HTML） ---
 const parseWord = async (file) => {
   const arrayBuffer = await file.arrayBuffer();
-  // mammoth 瞬间抽干 Word 纯文本
-  const result = await mammoth.extractRawText({ arrayBuffer: arrayBuffer });
-  
-  const fullText = result.value;
-  console.log(`✅ Word 解析成功，共 ${fullText.length} 个字符`);
+  const result = await mammoth.convertToHtml({ arrayBuffer });
+  const html = result.value;
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(`<body>${html}</body>`, 'text/html');
+  const nodes = doc.body.childNodes;
+
+  const output = [];
+
+  for (const node of nodes) {
+    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+
+    if (node.tagName === 'TABLE') {
+      output.push(extractTableHtml(node));
+    } else {
+      const text = blockElementToText(node);
+      if (text.trim()) output.push(text);
+    }
+  }
+
+  const fullText = output.join('\n\n');
+  console.log(`✅ Word 混合解析成功，共 ${fullText.length} 个字符`);
   return fullText;
+};
+
+const extractTableHtml = (tableEl) => {
+  const clean = (el) => {
+    const clone = el.cloneNode(true);
+    for (const attr of [...clone.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (!['colspan', 'rowspan'].includes(name)) clone.removeAttribute(attr.name);
+    }
+    clone.removeAttribute('style');
+    clone.removeAttribute('class');
+    for (const child of clone.querySelectorAll('*')) {
+      child.removeAttribute('style');
+      child.removeAttribute('class');
+      for (const attr of [...child.attributes]) {
+        if (!['colspan', 'rowspan'].includes(attr.name.toLowerCase())) {
+          child.removeAttribute(attr.name);
+        }
+      }
+    }
+    return clone.outerHTML;
+  };
+  return clean(tableEl);
+};
+
+const blockElementToText = (el) => {
+  if (['H1','H2','H3','H4','H5','H6'].includes(el.tagName)) {
+    const level = parseInt(el.tagName[1]);
+    return '#'.repeat(level) + ' ' + el.textContent.trim();
+  }
+  if (['P','DIV','SPAN'].includes(el.tagName)) {
+    return el.textContent.trim();
+  }
+  if (['UL','OL'].includes(el.tagName)) {
+    return [...el.querySelectorAll('li')]
+      .map((li, i) => el.tagName === 'UL' ? `- ${li.textContent.trim()}` : `${i + 1}. ${li.textContent.trim()}`)
+      .join('\n');
+  }
+  return el.textContent.trim();
+};
+
+export const buildAiText = (fullText, maxLen = 20000) => {
+  if (!fullText) return '';
+  if (fullText.length <= maxLen) return fullText;
+
+  const tableBlocks = [];
+  const nonTableParts = [];
+
+  const parts = fullText.split(/(<table[\s\S]*?<\/table>)/gi);
+  for (const part of parts) {
+    if (/^<table/i.test(part)) {
+      let preceding = '';
+      const idx = nonTableParts.length - 1;
+      if (idx >= 0) {
+        const lines = nonTableParts[idx].split('\n');
+        preceding = lines.filter(l => l.trim()).slice(-3).join('\n') + '\n';
+      }
+      tableBlocks.push(preceding + part);
+    } else {
+      nonTableParts.push(part);
+    }
+  }
+
+  const tablesText = tableBlocks.join('\n\n');
+  let result = tablesText;
+
+  if (result.length >= maxLen) {
+    return result.substring(0, maxLen);
+  }
+
+  const remaining = maxLen - result.length;
+  const plainText = nonTableParts.join('\n\n');
+
+  if (plainText.length <= remaining) {
+    return result + '\n\n' + plainText;
+  }
+
+  const headPart = plainText.substring(0, remaining);
+  return result + '\n\n' + headPart;
+};
+
+export const extractOriginalTables = (fullText) => {
+  const tables = [];
+  const parts = fullText.split(/(<table[\s\S]*?<\/table>)/gi);
+  let precedingLines = [];
+
+  for (const part of parts) {
+    if (/^<table/i.test(part)) {
+      const heading = precedingLines.filter(l => l.trim()).slice(-3).join(' ');
+      const cellTexts = [];
+      const tmpDoc = new DOMParser().parseFromString(part, 'text/html');
+      tmpDoc.querySelectorAll('td').forEach(td => cellTexts.push(td.textContent.trim()));
+      const cellSnippet = cellTexts.join(' ');
+
+      tables.push({ html: part, heading, cellSnippet });
+      precedingLines = [];
+    } else {
+      precedingLines = part.split('\n');
+    }
+  }
+
+  return tables;
+};
+
+const findBestMatch = (nodeTitle, tables) => {
+  const title = nodeTitle.replace(/[\s\d一二三四五六七八九十、.()（）]/g, '').toLowerCase();
+  const titleChars = [...new Set(title)];
+
+  let bestTable = null;
+  let bestScore = 0;
+
+  for (const t of tables) {
+    let score = 0;
+
+    const headClean = t.heading.replace(/[\s\d一二三四五六七八九十、.()（）#]/g, '').toLowerCase();
+    let matchCount = 0;
+    for (const ch of titleChars) {
+      if (headClean.includes(ch)) matchCount++;
+    }
+    score = titleChars.length > 0 ? matchCount / titleChars.length : 0;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestTable = t;
+    }
+  }
+
+  return bestScore >= 0.5 ? bestTable : null;
+};
+
+export const injectOriginalTables = (outline, tables) => {
+  if (!tables || tables.length === 0) return outline;
+
+  const walk = (nodes) => {
+    for (const node of nodes) {
+      const hasTable = node.requirement && node.requirement.includes('<table');
+      if (hasTable) {
+        const match = findBestMatch(node.title, tables);
+        if (match) {
+          const prefix = node.requirement.substring(0, node.requirement.indexOf('<table'));
+          node.requirement = (prefix || '【表格填写指令】：请按以下表格结构填写数据，保持列名和合并单元格完全一致：\n') + match.html;
+        }
+      }
+      if (node.children && node.children.length > 0) {
+        walk(node.children);
+      }
+    }
+  };
+
+  walk(outline);
+  return outline;
 };
