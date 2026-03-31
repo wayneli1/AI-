@@ -126,6 +126,7 @@ export default function CreateBid() {
     return extractParagraphsForPreview(originalXml, scannedBlanks);
   }, [originalXml, scannedBlanks]);
 
+  // 💡 【右侧表格】点击后：滚动【左侧原文】
   const scrollToBlank = useCallback((blankId) => {
     setHighlightBlankId(blankId);
     setTimeout(() => {
@@ -134,6 +135,18 @@ export default function CreateBid() {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
         el.classList.add('ring-2', 'ring-indigo-400');
         setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-400'), 2000);
+      }
+    }, 100);
+  }, []);
+
+  // 💡 新增：【左侧原文】点击后：滚动【右侧表格】
+  const scrollToTable = useCallback((blankId) => {
+    setHighlightBlankId(blankId); // 同步高亮状态
+    setTimeout(() => {
+      // Ant Design 的表格行自带 data-row-key 属性，靠这个来精准定位表格行
+      const el = document.querySelector(`[data-row-key="${blankId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
     }, 100);
   }, []);
@@ -232,7 +245,6 @@ export default function CreateBid() {
     try {
       message.loading({ content: `正在调用 AI 分析并填写 ${scannedBlanks.length} 处空白...`, key: 'fill', duration: 0 });
 
-      // 💡 核心修改：把 tenderContext 传给填报引擎
       const result = await fillDocumentBlanks(scannedBlanks, targetCompany, tenderContext);
 
       setFilledValues(result);
@@ -469,7 +481,7 @@ export default function CreateBid() {
               <h4 className="font-bold text-gray-700 text-sm flex items-center">
                 <Eye size={14} className="mr-2 text-indigo-500" />
                 原文对照
-                <span className="ml-2 text-xs text-gray-400 font-normal">点击表格行定位</span>
+                <span className="ml-2 text-xs text-gray-400 font-normal">点击高亮文字定位表格</span>
               </h4>
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-0.5" ref={previewRef}>
@@ -518,11 +530,13 @@ export default function CreateBid() {
                       const isHighlighted = highlightBlankId === part.id;
                       const filledValue = manualEdits[part.id];
                       return (
+                        // 💡 核心修改：在这里给左侧的高亮原文绑定了 onClick，点击它直接滚到右侧的表格！
                         <span
                           key={partIdx}
                           id={`preview-${part.id}`}
+                          onClick={() => scrollToTable(part.id)}
                           className={`
-                            inline-block px-1 py-0.5 rounded mx-0.5 font-bold transition-all duration-300
+                            inline-block px-1 py-0.5 rounded mx-0.5 font-bold transition-all duration-300 cursor-pointer hover:opacity-80 hover:shadow-md
                             ${isHighlighted
                               ? 'bg-indigo-500 text-white ring-2 ring-indigo-300'
                               : filledValue
@@ -530,7 +544,7 @@ export default function CreateBid() {
                                 : 'bg-yellow-200 text-yellow-900 border border-yellow-400'
                             }
                           `}
-                          title={filledValue || `待填写 (${part.id})`}
+                          title={`${filledValue || '待填写'} (点击跳转到表格行)`}
                         >
                           {filledValue || part.content}
                         </span>
@@ -560,7 +574,7 @@ export default function CreateBid() {
                 <p className="text-xs text-gray-400">
                   {isReviewed
                     ? 'AI 已完成填写，可直接修改后导出'
-                    : '点击任意行 → 左侧自动定位原文位置'}
+                    : '点击任意行 ↔ 左右双向联动定位'}
                 </p>
               </div>
             </div>
@@ -585,7 +599,6 @@ export default function CreateBid() {
               />
             </div>
 
-            {/* 💡 核心 UI 修改：底部加入补充招标原文按钮 */}
             <div className="p-4 bg-white border-t border-gray-100 shrink-0">
               <div className="flex items-center gap-3">
                 <span className="text-sm font-bold text-gray-700 shrink-0">投标主体：</span>
@@ -606,7 +619,6 @@ export default function CreateBid() {
                   </Button>
                 </div>
 
-                {/* 📎 贴入招标原文按钮 */}
                 <Button 
                   type={tenderContext ? "primary" : "default"}
                   ghost={!!tenderContext}
@@ -699,7 +711,6 @@ export default function CreateBid() {
           )}
         </Modal>
 
-        {/* 💡 新增：招标原文输入弹窗 */}
         <Modal
           title={<div className="font-bold text-lg text-gray-800 flex items-center"><FileText className="mr-2 text-indigo-500" size={20}/>补充招标原文要求</div>}
           open={isContextModalVisible}
