@@ -1,7 +1,7 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
-import { Button, Input, message, Modal, Table, Tag, Empty, Spin } from 'antd';
+import { Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect } from 'antd';
 import {
-  UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2
+  UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import { useSearchParams } from 'react-router-dom';
@@ -31,18 +31,26 @@ export default function CreateBid() {
   const [originalZip, setOriginalZip] = useState(null);
   const [originalXml, setOriginalXml] = useState('');
   const [scannedBlanks, setScannedBlanks] = useState([]);
-  const [filledValues, setFilledValues] = useState({});
   const [manualEdits, setManualEdits] = useState({});
 
   const [targetCompany, setTargetCompany] = useState('');
   const [isCompanyModalVisible, setIsCompanyModalVisible] = useState(false);
   const [companyList, setCompanyList] = useState([]);
   const [fetchingCompanies, setFetchingCompanies] = useState(false);
+  const [companyProfiles, setCompanyProfiles] = useState([]);
+  const [selectedCompany, setSelectedCompany] = useState(null);
+  const [tempSelectedCompany, setTempSelectedCompany] = useState(null);
+  const [tempKbName, setTempKbName] = useState('');
 
   const [tenderContext, setTenderContext] = useState(''); 
   const [isContextModalVisible, setIsContextModalVisible] = useState(false);
   const tenderFileInputRef = useRef(null);
   const [isExtractingTender, setIsExtractingTender] = useState(false);
+
+  // 产品资产库相关状态
+  const [selectedProductIds, setSelectedProductIds] = useState([]);
+  const [productTreeData, setProductTreeData] = useState([]);
+  const [loadingProducts, setLoadingProducts] = useState(false);
 
   const [isScanning, setIsScanning] = useState(false);
   const [isFilling, setIsFilling] = useState(false);
@@ -118,6 +126,59 @@ export default function CreateBid() {
 
     return () => clearTimeout(debounceTimer);
   }, [manualEdits, currentProjectId, step]);
+
+  // 监听 targetCompany 变化，加载该公司下的产品数据
+  useEffect(() => {
+    const loadProductsForCompany = async () => {
+      if (!targetCompany.trim() || !user) {
+        setProductTreeData([]);
+        setSelectedProductIds([]);
+        return;
+      }
+
+      try {
+        setLoadingProducts(true);
+        const { data, error } = await supabase
+          .from('products')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('company_name', targetCompany.trim())
+          .order('product_name')
+          .order('version');
+
+        if (error) throw error;
+
+        // 构建 TreeSelect 数据格式
+        const productMap = {};
+        data.forEach(product => {
+          if (!productMap[product.product_name]) {
+            productMap[product.product_name] = {
+              title: product.product_name,
+              value: `product-${product.product_name}`,
+              key: `product-${product.product_name}`,
+              children: []
+            };
+          }
+          productMap[product.product_name].children.push({
+            title: product.version,
+            value: product.id,
+            key: product.id
+          });
+        });
+
+        const treeData = Object.values(productMap);
+        setProductTreeData(treeData);
+      } catch (error) {
+        console.error('加载产品数据失败:', error);
+        setProductTreeData([]);
+      } finally {
+        setLoadingProducts(false);
+      }
+    };
+
+    const debounceTimer = setTimeout(loadProductsForCompany, 500);
+    return () => clearTimeout(debounceTimer);
+  }, [targetCompany, user]);
 
 
   const previewParagraphs = useMemo(() => {
@@ -244,9 +305,64 @@ export default function CreateBid() {
     try {
       message.loading({ content: `正在调用 AI 分析并填写 ${scannedBlanks.length} 处空白...`, key: 'fill', duration: 0 });
 
-      const result = await fillDocumentBlanks(scannedBlanks, targetCompany, tenderContext);
+      const structuredProfile = buildStructuredProfile(selectedCompany);
+      
+      // 组装产品资产提示词
+      let assetPrompt = '';
+      if (selectedProductIds.length > 0 && user) {
+        try {
+          const { data: assets, error } = await supabase
+            .from('product_assets')
+            .select('*, products!inner(product_name, version)')
+            .in('product_id', selectedProductIds);
 
-      setFilledValues(result);
+          if (error) throw error;
+
+          // 按产品分组
+          const grouped = {};
+          (assets || []).forEach(asset => {
+            const key = `${asset.products.product_name} ${asset.products.version}`;
+            if (!grouped[key]) grouped[key] = [];
+            grouped[key].push(asset);
+          });
+
+          // 构建提示词
+          if (Object.keys(grouped).length > 0) {
+            assetPrompt = '\n\n【可用产品资产白名单】\n';
+            Object.entries(grouped).forEach(([productLabel, items]) => {
+              assetPrompt += `\n--- [产品：${productLabel}] ---\n`;
+              
+              const images = items.filter(i => i.asset_type === 'image');
+              const texts = items.filter(i => i.asset_type === 'text');
+              
+              if (images.length > 0) {
+                assetPrompt += '包含图片占位符（如需插入本产品图片，请严格输出此占位符，严禁输出真实链接）：\n';
+                images.forEach(img => {
+                  assetPrompt += `- {{IMG_${productLabel}_${img.asset_name}}}\n`;
+                });
+              }
+              
+              if (texts.length > 0) {
+                assetPrompt += '包含文本资产内容（如需引用本产品条款，请直接参考以下文本）：\n';
+                texts.forEach(txt => {
+                  const contentPreview = txt.text_content.length > 200 
+                    ? `${txt.text_content.substring(0, 200)}...` 
+                    : txt.text_content;
+                  assetPrompt += `- [${txt.asset_name}]：${contentPreview}\n`;
+                });
+              }
+            });
+          }
+        } catch (assetError) {
+          console.warn('加载产品资产失败，继续执行:', assetError);
+        }
+      }
+
+      const enrichedContext = (structuredProfile ? structuredProfile + '\n' : '') 
+        + (tenderContext || '') 
+        + assetPrompt;
+      
+      const result = await fillDocumentBlanks(scannedBlanks, targetCompany, enrichedContext);
 
       const merged = { ...manualEdits };
       for (const blank of scannedBlanks) {
@@ -322,22 +438,89 @@ export default function CreateBid() {
   };
 
   const fetchCompanyList = async () => {
+    setTempSelectedCompany(selectedCompany);
+    setTempKbName(companyList.includes(targetCompany) ? targetCompany : '');
     setIsCompanyModalVisible(true);
     setFetchingCompanies(true);
     try {
-      const [docRes, imgRes] = await Promise.all([
+      const [profileRes, docRes, imgRes] = await Promise.all([
+        supabase.from('company_profiles').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
         supabase.from('document_categories').select('name'),
         supabase.from('image_categories').select('name')
       ]);
-      const allCategories = [
+      if (!profileRes.error) {
+        setCompanyProfiles(profileRes.data || []);
+      }
+      const kbNames = [...new Set([
         ...(docRes.data || []).map(i => i.name),
         ...(imgRes.data || []).map(i => i.name)
-      ];
-      setCompanyList([...new Set(allCategories.filter(name => name && name.trim() !== ''))]);
+      ].filter(name => name && name.trim() !== ''))];
+      setCompanyList(kbNames);
     } catch (error) {
+      console.error('加载企业列表失败:', error);
     } finally {
       setFetchingCompanies(false);
     }
+  };
+
+  const confirmCompanySelection = () => {
+    if (tempSelectedCompany) {
+      setSelectedCompany(tempSelectedCompany);
+    } else {
+      setSelectedCompany(null);
+    }
+    if (tempKbName) {
+      setTargetCompany(tempKbName);
+    } else if (tempSelectedCompany) {
+      setTargetCompany(tempSelectedCompany.company_name);
+    } else {
+      setTargetCompany('');
+    }
+    setIsCompanyModalVisible(false);
+    const parts = [];
+    if (tempSelectedCompany) parts.push(`结构化主体：${tempSelectedCompany.company_name}`);
+    if (tempKbName) parts.push(`知识库分类：${tempKbName}`);
+    if (parts.length > 0) message.success(`已锁定 ${parts.join(' + ')}`);
+  };
+
+  const buildStructuredProfile = (company) => {
+    if (!company) return '';
+    const labelMap = {
+      company_name: '公司名称',
+      uscc: '统一社会信用代码',
+      registered_capital: '注册资金',
+      company_type: '公司性质',
+      establish_date: '成立日期',
+      operating_period: '经营期限',
+      phone: '联系电话',
+      email: '公司邮箱',
+      address: '公司地址',
+      zip_code: '邮政编码',
+      registration_authority: '登记机关',
+      business_scope: '经营范围',
+      legal_rep_name: '法定代表人',
+      id_number: '身份证号',
+      gender: '性别',
+      birth_date: '出生日期',
+      id_expiry: '身份证有效期',
+      position: '职位',
+    };
+    let text = '【投标主体权威档案】\n';
+    for (const [key, label] of Object.entries(labelMap)) {
+      if (company[key]) {
+        text += `${label}：${company[key]}\n`;
+      }
+    }
+    if (company.custom_fields && typeof company.custom_fields === 'object') {
+      const keys = Object.keys(company.custom_fields);
+      if (keys.length > 0) {
+        text += '【自定义扩展信息】\n';
+        for (const [k, v] of Object.entries(company.custom_fields)) {
+          if (v) text += `${k}：${v}\n`;
+        }
+      }
+    }
+    return text;
   };
 
   const blankColumns = [
@@ -447,7 +630,7 @@ export default function CreateBid() {
             <Button
               type="text"
               icon={<ArrowLeft size={18} />}
-              onClick={() => { setStep('upload'); setScannedBlanks([]); setFilledValues({}); setManualEdits({}); setTenderContext(''); }}
+               onClick={() => { setStep('upload'); setScannedBlanks([]); setManualEdits({}); setTenderContext(''); }}
               className="text-gray-600 font-medium"
             >
               重新上传
@@ -627,6 +810,25 @@ export default function CreateBid() {
                   {tenderContext ? '已补充招标上下文' : '📎 贴入招标原文 (推荐)'}
                 </Button>
 
+                {/* 产品资产选择器 */}
+                <div className="flex items-center">
+                  <Package size={14} className="text-gray-500 mr-1" />
+                  <TreeSelect
+                    treeData={productTreeData}
+                    value={selectedProductIds}
+                    onChange={setSelectedProductIds}
+                    treeCheckable={true}
+                    showCheckedStrategy={TreeSelect.SHOW_PARENT}
+                    placeholder="关联产品资质"
+                    loading={loadingProducts}
+                    disabled={!targetCompany.trim() || loadingProducts}
+                    className="w-64"
+                    dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+                    allowClear
+                    treeDefaultExpandAll
+                  />
+                </div>
+
                 <div className="flex-1" />
 
                 {!isReviewed ? (
@@ -681,30 +883,94 @@ export default function CreateBid() {
           title="选择投标主体"
           open={isCompanyModalVisible}
           onCancel={() => setIsCompanyModalVisible(false)}
-          footer={null}
+          onOk={confirmCompanySelection}
+          okText="确认选择"
+          cancelText="取消"
+          okButtonProps={{ disabled: !tempSelectedCompany && !tempKbName }}
           centered
-          width={540}
+          width={640}
         >
           {fetchingCompanies ? (
             <div className="flex flex-col items-center py-12"><Spin /></div>
-          ) : companyList.length === 0 ? (
-            <Empty description="暂无公司记录，请先在知识库中添加" />
+          ) : companyProfiles.length === 0 && companyList.length === 0 ? (
+            <Empty description="暂无可选主体，请先在「投标主体库」或「知识库」中添加" />
           ) : (
-            <div className="grid grid-cols-2 gap-4">
-              {companyList.map((name) => (
-                <div
-                  key={name}
-                  onClick={() => {
-                    setTargetCompany(name);
-                    setIsCompanyModalVisible(false);
-                    message.success(`已锁定主体：${name}`);
-                  }}
-                  className="p-4 border border-gray-100 rounded-2xl hover:bg-indigo-50 hover:border-indigo-300 cursor-pointer flex items-center space-x-3"
-                >
-                  <div className="w-10 h-10 bg-gray-50 rounded-xl flex items-center justify-center text-lg">🏢</div>
-                  <div className="flex-1 truncate font-bold text-gray-700">{name}</div>
+            <div className="max-h-[60vh] overflow-y-auto space-y-5 pr-1">
+              {companyProfiles.length > 0 && (
+                <div>
+                  <div className="text-xs font-bold text-indigo-600 mb-2 tracking-wide">
+                    🏢 结构化主体（{companyProfiles.length}）—— 选中后将注入完整企业档案
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {companyProfiles.map((c) => (
+                      <div
+                        key={c.id}
+                         onClick={() => {
+                           setTempSelectedCompany(prev => prev?.id === c.id ? null : c);
+                         }}
+                        className={`p-3 border rounded-xl cursor-pointer transition-all ${tempSelectedCompany?.id === c.id ? 'border-indigo-400 bg-indigo-50 shadow-sm' : 'border-gray-100 hover:bg-indigo-50 hover:border-indigo-200'}`}
+                      >
+                        <div className="flex items-center space-x-2 mb-1">
+                          <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center text-white text-xs shadow">🏢</div>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-bold text-gray-800 text-sm truncate">{c.company_name}</div>
+                            {c.company_type && <span className="text-xs text-gray-400">{c.company_type}</span>}
+                          </div>
+                          {tempSelectedCompany?.id === c.id && (
+                            <span className="text-indigo-500 text-xs font-bold">✓ 已选</span>
+                          )}
+                        </div>
+                        {c.uscc && <div className="text-xs text-gray-500 truncate">信用代码：{c.uscc}</div>}
+                        {c.legal_rep_name && <div className="text-xs text-gray-500 truncate">法人：{c.legal_rep_name}</div>}
+                      </div>
+                    ))}
+                  </div>
                 </div>
-              ))}
+              )}
+
+              {companyProfiles.length > 0 && companyList.length > 0 && (
+                <div className="border-t border-gray-100" />
+              )}
+
+              {companyList.length > 0 && (
+                <div>
+                  <div className="text-xs font-bold text-green-600 mb-2 tracking-wide">
+                    📁 知识库分类（{companyList.length}）—— 选中后关联知识库文档
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    {companyList.map((name) => (
+                      <div
+                        key={name}
+                         onClick={() => {
+                           setTempKbName(prev => prev === name ? '' : name);
+                         }}
+                        className={`p-3 border rounded-xl cursor-pointer transition-all flex items-center space-x-2 ${tempKbName === name ? 'border-green-400 bg-green-50 shadow-sm' : 'border-gray-100 hover:bg-green-50 hover:border-green-200'}`}
+                      >
+                        <div className="w-8 h-8 bg-gray-50 rounded-lg flex items-center justify-center text-sm">📁</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-gray-700 text-sm truncate">{name}</div>
+                          <div className="text-xs text-gray-400">知识库分类</div>
+                        </div>
+                        {tempKbName === name && (
+                          <span className="text-green-500 text-xs font-bold">✓ 已选</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {(tempSelectedCompany || tempKbName) && (
+                <div className="bg-gray-50 rounded-lg p-3 text-xs text-gray-600 space-y-1">
+                  <div className="font-bold text-gray-700 mb-1">当前选择：</div>
+                  {tempSelectedCompany && (
+                    <div>🏢 结构化主体：<b>{tempSelectedCompany.company_name}</b>（完整档案将注入 AI 上下文）</div>
+                  )}
+                  {tempKbName && (
+                    <div>📁 知识库分类：<b>{tempKbName}</b>（Dify 将检索关联文档）</div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </Modal>

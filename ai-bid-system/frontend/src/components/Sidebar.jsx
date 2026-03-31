@@ -2,7 +2,7 @@ import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   FilePlus, FileText, Compass, 
-  Image, BookOpen, LogOut, User
+  Image, BookOpen, LogOut, User, Building2, Package
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Dropdown, message } from 'antd';
@@ -19,6 +19,8 @@ const Sidebar = () => {
   ];
 
   const libraryNav = [
+    { name: '公司信息库', icon: <Building2 size={18} />, path: '/company-profiles' },
+    { name: '产品资产库', icon: <Package size={18} />, path: '/product-library' },
     { name: '图片库', icon: <Image size={18} />, path: '/image-library' },
     { name: '知识库', icon: <BookOpen size={18} />, path: '/knowledge-base' },
   ];

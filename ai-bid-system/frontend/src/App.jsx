@@ -13,6 +13,8 @@ import ImageLibrary from './pages/ImageLibrary';
 import KnowledgeBase from './pages/KnowledgeBase';
 import Profile from './pages/Profile';
 import BidDetail from './pages/BidDetail';
+import CompanyProfile from './pages/CompanyProfile';
+import ProductLibrary from './pages/ProductLibrary';
 
 const App = () => {
   return (
@@ -37,6 +39,8 @@ const App = () => {
             <Route path="bid-analysis/:id" element={<BidDetail />} />
             <Route path="image-library" element={<ImageLibrary />} />
             <Route path="knowledge-base" element={<KnowledgeBase />} />
+            <Route path="company-profiles" element={<CompanyProfile />} />
+            <Route path="product-library" element={<ProductLibrary />} />
             <Route path="profile" element={<Profile />} />
           </Route>
           
