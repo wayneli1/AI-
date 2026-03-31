@@ -1,12 +1,13 @@
 import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
 import { Button, Input, message, Modal, Table, Tag, Empty, Spin } from 'antd';
 import {
-  UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye
+  UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import { useSearchParams } from 'react-router-dom';
 
 import { fillDocumentBlanks, scanBlanksWithAI } from '../utils/difyWorkflow';
+import { extractTextFromDocument } from '../utils/documentParser';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import {
@@ -39,9 +40,10 @@ export default function CreateBid() {
   const [companyList, setCompanyList] = useState([]);
   const [fetchingCompanies, setFetchingCompanies] = useState(false);
 
-  // 💡 新增：招标原文的 State 与 弹窗控制
   const [tenderContext, setTenderContext] = useState(''); 
   const [isContextModalVisible, setIsContextModalVisible] = useState(false);
+  const tenderFileInputRef = useRef(null);
+  const [isExtractingTender, setIsExtractingTender] = useState(false);
 
   const [isScanning, setIsScanning] = useState(false);
   const [isFilling, setIsFilling] = useState(false);
@@ -280,6 +282,33 @@ export default function CreateBid() {
 
   const handleManualEdit = (blankId, value) => {
     setManualEdits(prev => ({ ...prev, [blankId]: value }));
+  };
+
+  const handleTenderFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    setIsExtractingTender(true);
+    message.loading({ content: `正在读取 ${file.name}...`, key: 'extract_tender', duration: 0 });
+
+    try {
+      const text = await extractTextFromDocument(file);
+      if (text && text.trim()) {
+        setTenderContext(text);
+        message.success({ 
+          content: '提取成功！建议您删除无关页内容，仅保留核心要求，以提升 AI 准确度。', 
+          key: 'extract_tender',
+          duration: 5
+        });
+      } else {
+        message.warning({ content: '未能从文件中提取到有效文字', key: 'extract_tender' });
+      }
+    } catch (error) {
+      message.error({ content: `解析失败: ${error.message}`, key: 'extract_tender' });
+    } finally {
+      setIsExtractingTender(false);
+      if (event.target) event.target.value = '';
+    }
   };
 
   const fetchCompanyList = async () => {
@@ -672,26 +701,74 @@ export default function CreateBid() {
 
         {/* 💡 新增：招标原文输入弹窗 */}
         <Modal
-          title={<div className="font-bold text-lg text-gray-800 flex items-center"><FileText className="mr-2 text-indigo-500"/>补充招标原文要求</div>}
+          title={<div className="font-bold text-lg text-gray-800 flex items-center"><FileText className="mr-2 text-indigo-500" size={20}/>补充招标原文要求</div>}
           open={isContextModalVisible}
           onOk={() => setIsContextModalVisible(false)}
           onCancel={() => setIsContextModalVisible(false)}
           okText="确认保存"
           cancelText="取消"
-          width={700}
+          width={860}
           centered
+          styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
         >
           <div className="py-2">
-            <div className="text-sm text-gray-600 mb-4 bg-indigo-50 p-3 rounded-lg border border-indigo-100 leading-relaxed">
-              💡 <b>强烈建议：</b>请在此粘贴甲方的招标公告、项目概况、采购需求等关键文本。<br/>
-              AI 在为您填表时，将<b>优先从此处提取</b>项目编号、采购人、预算金额、交货时间等专属信息。
+            <div className="text-sm text-gray-600 mb-4 bg-amber-50 p-3 rounded-lg border border-amber-200 leading-relaxed">
+              💡 <b>强烈建议：</b>上传招标文件或粘贴关键要求后，<b>请删除无关页内容</b>（如通用条款、免责声明等），仅保留项目概况、技术参数、评分标准等核心内容。<br/>
+              <span className="text-amber-700">内容越精简，AI 填报越准确。</span>
             </div>
+
+            <div className="flex justify-between items-center mb-2">
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-gray-700 text-sm">招标上下文内容</span>
+                {tenderContext && (
+                  <span className="text-xs text-gray-400">
+                    {tenderContext.length > 1000
+                      ? `${(tenderContext.length / 1000).toFixed(1)}k 字`
+                      : `${tenderContext.length} 字`}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {tenderContext && (
+                  <Button
+                    size="small"
+                    danger
+                    icon={<Trash2 size={14} />}
+                    onClick={() => {
+                      setTenderContext('');
+                      message.success('已清空，可重新粘贴或上传');
+                    }}
+                  >
+                    清空
+                  </Button>
+                )}
+                <input
+                  type="file"
+                  ref={tenderFileInputRef}
+                  className="hidden"
+                  onChange={handleTenderFileUpload}
+                  accept=".pdf,.doc,.docx"
+                />
+                <Button
+                  size="small"
+                  type="dashed"
+                  icon={<UploadCloud size={14} />}
+                  loading={isExtractingTender}
+                  onClick={() => tenderFileInputRef.current?.click()}
+                  className="text-indigo-600 border-indigo-300 hover:bg-indigo-50"
+                >
+                  上传文件自动提取
+                </Button>
+              </div>
+            </div>
+
             <Input.TextArea
               value={tenderContext}
               onChange={(e) => setTenderContext(e.target.value)}
-              placeholder="请粘贴文本，例如：本项目名称为《2026年邮件系统采购项目》，项目编号：GD-2026-001，采购人：某某局，预算金额：100万元..."
-              className="w-full h-64 p-3 text-sm leading-relaxed custom-scrollbar rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
-              style={{ resize: 'none' }}
+              placeholder={"请上传文件自动提取，或手动粘贴文本。\n\n例如：\n本项目名称为《2026年邮件系统采购项目》\n项目编号：GD-2026-001\n采购人：某某局\n预算金额：100万元\n交货时间：合同签订后30日内..."}
+              className="w-full p-4 text-sm leading-relaxed custom-scrollbar rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
+              style={{ resize: 'vertical', minHeight: '420px' }}
+              autoSize={{ minRows: 18, maxRows: 35 }}
             />
           </div>
         </Modal>

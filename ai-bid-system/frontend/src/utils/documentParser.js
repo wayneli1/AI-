@@ -52,7 +52,6 @@ const parsePDF = async (file) => {
   return fullText;
 };
 
-// --- 解析 Word (.docx) 的核心逻辑（混合模式：段落用纯文本，表格保留 HTML） ---
 const parseWord = async (file) => {
   const arrayBuffer = await file.arrayBuffer();
   const result = await mammoth.convertToHtml({ arrayBuffer });
@@ -68,7 +67,7 @@ const parseWord = async (file) => {
     if (node.nodeType !== Node.ELEMENT_NODE) continue;
 
     if (node.tagName === 'TABLE') {
-      output.push(extractTableHtml(node));
+      output.push(tableToPlainText(node));
     } else {
       const text = blockElementToText(node);
       if (text.trim()) output.push(text);
@@ -76,31 +75,45 @@ const parseWord = async (file) => {
   }
 
   const fullText = output.join('\n\n');
-  console.log(`✅ Word 混合解析成功，共 ${fullText.length} 个字符`);
+  console.log(`Word 解析成功，共 ${fullText.length} 个字符`);
   return fullText;
 };
 
-const extractTableHtml = (tableEl) => {
-  const clean = (el) => {
-    const clone = el.cloneNode(true);
-    for (const attr of [...clone.attributes]) {
-      const name = attr.name.toLowerCase();
-      if (!['colspan', 'rowspan'].includes(name)) clone.removeAttribute(attr.name);
+const tableToPlainText = (tableEl) => {
+  const rows = tableEl.querySelectorAll('tr');
+  const matrix = [];
+
+  for (const row of rows) {
+    const cells = row.querySelectorAll('td, th');
+    const rowTexts = [...cells].map(cell => cell.textContent.trim().replace(/\n+/g, ' '));
+    if (rowTexts.some(t => t !== '')) {
+      matrix.push(rowTexts);
     }
-    clone.removeAttribute('style');
-    clone.removeAttribute('class');
-    for (const child of clone.querySelectorAll('*')) {
-      child.removeAttribute('style');
-      child.removeAttribute('class');
-      for (const attr of [...child.attributes]) {
-        if (!['colspan', 'rowspan'].includes(attr.name.toLowerCase())) {
-          child.removeAttribute(attr.name);
-        }
-      }
+  }
+
+  if (matrix.length === 0) return '';
+
+  const colCount = Math.max(...matrix.map(r => r.length));
+  const colWidths = [];
+  for (let c = 0; c < colCount; c++) {
+    let maxLen = 0;
+    for (const row of matrix) {
+      const val = row[c] || '';
+      maxLen = Math.max(maxLen, val.length);
     }
-    return clone.outerHTML;
-  };
-  return clean(tableEl);
+    colWidths.push(Math.min(maxLen, 30));
+  }
+
+  const lines = [];
+  for (const row of matrix) {
+    const padded = [];
+    for (let c = 0; c < colCount; c++) {
+      const val = (row[c] || '').padEnd(colWidths[c], ' ');
+      padded.push(val);
+    }
+    lines.push(padded.join('  |  '));
+  }
+  return lines.join('\n');
 };
 
 const blockElementToText = (el) => {
