@@ -1,14 +1,15 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Tree, Button, Modal, Input, Upload, message, 
   Card, Tag, Empty, Spin, Form, Radio, Space, Popconfirm, Badge
 } from 'antd';
 import { 
   Package, Folder, FileImage, FileText, Plus, 
-  Edit, Trash2, Upload as UploadIcon, FolderPlus
+  Edit, Trash2, Upload as UploadIcon, FolderPlus, File
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { extractTextFromDocument } from '../utils/documentParser';
 
 const { DirectoryTree } = Tree;
 const { TextArea } = Input;
@@ -33,6 +34,9 @@ const ProductLibrary = () => {
   const [textContent, setTextContent] = useState('');
   const [uploadingFile, setUploadingFile] = useState(false);
   const [fileUrl, setFileUrl] = useState('');
+  const [isExtractingText, setIsExtractingText] = useState(false);
+  const [documentFileName, setDocumentFileName] = useState('');
+  const documentFileInputRef = useRef(null);
   
   const [newCompanyName, setNewCompanyName] = useState('');
   const [newProductName, setNewProductName] = useState('');
@@ -178,7 +182,25 @@ const ProductLibrary = () => {
         .getPublicUrl(filePath);
       
       setFileUrl(publicUrlData.publicUrl);
-      message.success('文件上传成功');
+      setDocumentFileName(file.name);
+      
+      // 如果是文档类型，自动提取文本
+      if (assetType === 'document') {
+        setIsExtractingText(true);
+        try {
+          const extractedText = await extractTextFromDocument(file);
+          setTextContent(extractedText);
+          message.success('文档上传成功，文本已自动提取');
+        } catch (extractError) {
+          console.error('文本提取失败:', extractError);
+          message.warning('文档上传成功，但文本提取失败，请手动输入或重新上传');
+        } finally {
+          setIsExtractingText(false);
+        }
+      } else {
+        message.success('文件上传成功');
+      }
+      
       return false;
     } catch (error) {
       console.error('文件上传失败:', error);
@@ -188,12 +210,40 @@ const ProductLibrary = () => {
       setUploadingFile(false);
     }
   };
+  
+  const handleTextFileUpload = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    const ext = file.name.split('.').pop().toLowerCase();
+    if (!['docx', 'pdf'].includes(ext)) {
+      message.warning('仅支持 .docx 和 .pdf 格式');
+      return;
+    }
+    
+    setIsExtractingText(true);
+    message.loading({ content: `正在提取 ${file.name} 中的文本...`, key: 'extract', duration: 0 });
+    
+    try {
+      const text = await extractTextFromDocument(file);
+      setTextContent(text);
+      setDocumentFileName(file.name);
+      message.success({ content: '文本提取成功！', key: 'extract' });
+    } catch (error) {
+      console.error('文本提取失败:', error);
+      message.error({ content: `提取失败: ${error.message}`, key: 'extract' });
+    } finally {
+      setIsExtractingText(false);
+      if (event.target) event.target.value = '';
+    }
+  };
 
   const resetAssetForm = () => {
     setAssetName('');
     setAssetType('image');
     setTextContent('');
     setFileUrl('');
+    setDocumentFileName('');
     setCurrentAsset(null);
     setIsEditingAsset(false);
   };
@@ -285,6 +335,7 @@ const ProductLibrary = () => {
     setAssetType(asset.asset_type);
     setTextContent(asset.text_content || '');
     setFileUrl(asset.file_url || '');
+    setDocumentFileName(asset.file_url ? asset.file_url.split('/').pop() : '');
     setIsEditingAsset(true);
     setIsAssetModalVisible(true);
   };
@@ -305,13 +356,18 @@ const ProductLibrary = () => {
       return;
     }
     
+    if (assetType === 'document' && !fileUrl) {
+      message.warning('请上传文档文件');
+      return;
+    }
+    
     try {
       const assetData = {
         product_id: selectedProductId,
         asset_name: assetName.trim(),
         asset_type: assetType,
-        text_content: assetType === 'text' ? textContent.trim() : null,
-        file_url: assetType === 'image' ? fileUrl : null
+        text_content: (assetType === 'text' || assetType === 'document') ? textContent.trim() : null,
+        file_url: (assetType === 'image' || assetType === 'document') ? fileUrl : null
       };
       
       if (isEditingAsset && currentAsset) {
@@ -352,7 +408,8 @@ const ProductLibrary = () => {
       
       if (error) throw error;
       
-      if (asset?.asset_type === 'image' && asset.file_url) {
+      // 删除存储中的文件（图片和文档）
+      if ((asset?.asset_type === 'image' || asset?.asset_type === 'document') && asset.file_url) {
         try {
           const urlParts = asset.file_url.split('/');
           const fileName = urlParts[urlParts.length - 1];
@@ -372,63 +429,99 @@ const ProductLibrary = () => {
     }
   };
 
-  const renderAssetCard = (asset) => (
-    <Card
-      key={asset.id}
-      className="mb-4"
-      size="small"
-      actions={[
-        <Edit key="edit" size={14} onClick={() => handleEditAsset(asset)} className="cursor-pointer" />,
-        <Popconfirm
-          key="delete"
-          title="确定要删除这个资产吗？"
-          onConfirm={() => handleDeleteAsset(asset.id)}
-          okText="确定"
-          cancelText="取消"
-        >
-          <Trash2 size={14} className="text-red-500 cursor-pointer" />
-        </Popconfirm>
-      ]}
-    >
-      <div className="flex items-start justify-between">
-        <div className="flex-1">
-          <div className="flex items-center mb-2">
-            {asset.asset_type === 'image' ? (
-              <FileImage size={14} className="text-blue-500 mr-2" />
-            ) : (
-              <FileText size={14} className="text-green-500 mr-2" />
+  const renderAssetCard = (asset) => {
+    const getAssetIcon = () => {
+      switch (asset.asset_type) {
+        case 'image': return <FileImage size={14} className="text-blue-500 mr-2" />;
+        case 'document': return <File size={14} className="text-purple-500 mr-2" />;
+        default: return <FileText size={14} className="text-green-500 mr-2" />;
+      }
+    };
+    
+    const getAssetTag = () => {
+      switch (asset.asset_type) {
+        case 'image': return { label: '图片', color: 'blue' };
+        case 'document': return { label: '文档', color: 'purple' };
+        default: return { label: '文本', color: 'green' };
+      }
+    };
+    
+    const tag = getAssetTag();
+    
+    return (
+      <Card
+        key={asset.id}
+        className="mb-4"
+        size="small"
+        actions={[
+          <Edit key="edit" size={14} onClick={() => handleEditAsset(asset)} className="cursor-pointer" />,
+          <Popconfirm
+            key="delete"
+            title="确定要删除这个资产吗？"
+            onConfirm={() => handleDeleteAsset(asset.id)}
+            okText="确定"
+            cancelText="取消"
+          >
+            <Trash2 size={14} className="text-red-500 cursor-pointer" />
+          </Popconfirm>
+        ]}
+      >
+        <div className="flex items-start justify-between">
+          <div className="flex-1">
+            <div className="flex items-center mb-2">
+              {getAssetIcon()}
+              <span className="font-medium text-gray-900 text-sm">{asset.asset_name}</span>
+              <Tag color={tag.color} className="ml-2 text-xs">
+                {tag.label}
+              </Tag>
+            </div>
+            
+            {asset.asset_type === 'image' && asset.file_url && (
+              <div className="mt-2">
+                <img 
+                  src={asset.file_url} 
+                  alt={asset.asset_name}
+                  className="max-w-full h-24 object-cover rounded border"
+                  onError={(e) => {
+                    e.target.onerror = null;
+                    e.target.src = 'https://via.placeholder.com/200x96?text=加载失败';
+                  }}
+                />
+              </div>
             )}
-            <span className="font-medium text-gray-900 text-sm">{asset.asset_name}</span>
-            <Tag color={asset.asset_type === 'image' ? 'blue' : 'green'} className="ml-2 text-xs">
-              {asset.asset_type === 'image' ? '图片' : '文本'}
-            </Tag>
+            
+            {asset.asset_type === 'document' && asset.file_url && (
+              <div className="mt-2">
+                <div className="flex items-center text-xs text-gray-600 bg-gray-50 p-2 rounded border">
+                  <File size={12} className="mr-2" />
+                  <span className="truncate flex-1">
+                    {asset.file_url.split('/').pop()}
+                  </span>
+                  <a 
+                    href={asset.file_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:text-blue-800 ml-2 whitespace-nowrap"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    下载原文件
+                  </a>
+                </div>
+              </div>
+            )}
+            
+            {(asset.asset_type === 'text' || asset.asset_type === 'document') && asset.text_content && (
+              <div className="mt-2 text-xs text-gray-600 bg-gray-50 p-2 rounded border max-h-20 overflow-y-auto">
+                {asset.text_content.length > 150 
+                  ? `${asset.text_content.substring(0, 150)}...` 
+                  : asset.text_content}
+              </div>
+            )}
           </div>
-          
-          {asset.asset_type === 'image' && asset.file_url && (
-            <div className="mt-2">
-              <img 
-                src={asset.file_url} 
-                alt={asset.asset_name}
-                className="max-w-full h-24 object-cover rounded border"
-                onError={(e) => {
-                  e.target.onerror = null;
-                  e.target.src = 'https://via.placeholder.com/200x96?text=加载失败';
-                }}
-              />
-            </div>
-          )}
-          
-          {asset.asset_type === 'text' && asset.text_content && (
-            <div className="mt-2 text-xs text-gray-600 bg-gray-50 p-2 rounded border max-h-20 overflow-y-auto">
-              {asset.text_content.length > 150 
-                ? `${asset.text_content.substring(0, 150)}...` 
-                : asset.text_content}
-            </div>
-          )}
         </div>
-      </div>
-    </Card>
-  );
+      </Card>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-white">
@@ -659,6 +752,7 @@ const ProductLibrary = () => {
                   setAssetType(e.target.value);
                   setFileUrl('');
                   setTextContent('');
+                  setDocumentFileName('');
                 }}
                 className="w-full"
               >
@@ -672,7 +766,13 @@ const ProductLibrary = () => {
                   <Radio value="text">
                     <div className="flex items-center">
                       <FileText size={16} className="mr-2 text-green-500" />
-                      文本（服务条款、技术参数等）
+                      文本（手动粘贴文本内容）
+                    </div>
+                  </Radio>
+                  <Radio value="document">
+                    <div className="flex items-center">
+                      <File size={16} className="mr-2 text-purple-500" />
+                      文档（上传 docx/pdf，自动提取文本给 AI）
                     </div>
                   </Radio>
                 </Space>
@@ -715,16 +815,69 @@ const ProductLibrary = () => {
                   支持 JPG、PNG、GIF 格式
                 </div>
               </Form.Item>
+            ) : assetType === 'document' ? (
+              <Form.Item label="上传文档" required>
+                <Upload
+                  name="file"
+                  listType="text"
+                  showUploadList={false}
+                  beforeUpload={handleFileUpload}
+                  accept=".docx,.pdf"
+                  disabled={uploadingFile}
+                >
+                  <Button icon={<UploadIcon size={16} />} loading={uploadingFile}>
+                    {documentFileName || '选择 docx/pdf 文件'}
+                  </Button>
+                </Upload>
+                <div className="text-xs text-gray-500 mt-2">
+                  支持 .docx 和 .pdf 格式，自动提取文本给 AI 使用
+                </div>
+                {textContent && (
+                  <div className="mt-4">
+                    <div className="text-sm font-medium text-gray-700 mb-2">提取的文本内容：</div>
+                    <div className="text-xs text-gray-600 bg-gray-50 p-3 rounded border max-h-40 overflow-y-auto">
+                      {textContent.length > 500 
+                        ? `${textContent.substring(0, 500)}...` 
+                        : textContent}
+                    </div>
+                  </div>
+                )}
+              </Form.Item>
             ) : (
               <Form.Item label="文本内容" required>
+                <div className="flex justify-between items-center mb-2">
+                  <span className="text-sm font-medium text-gray-700">文本内容</span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="file"
+                      ref={documentFileInputRef}
+                      className="hidden"
+                      onChange={handleTextFileUpload}
+                      accept=".docx,.pdf"
+                    />
+                    <Button
+                      size="small"
+                      type="dashed"
+                      icon={<UploadIcon size={12} />}
+                      loading={isExtractingText}
+                      onClick={() => documentFileInputRef.current?.click()}
+                      className="text-xs"
+                    >
+                      上传文件自动提取
+                    </Button>
+                  </div>
+                </div>
                 <TextArea
-                  placeholder="请输入文本内容，例如服务条款、技术参数等..."
+                  placeholder="手动粘贴文本，或上传 .docx/.pdf 文件自动提取..."
                   value={textContent}
                   onChange={(e) => setTextContent(e.target.value)}
                   rows={6}
                   showCount
                   maxLength={5000}
                 />
+                <div className="text-xs text-gray-500 mt-2">
+                  支持手动粘贴，或上传 .docx/.pdf 文件自动提取文本
+                </div>
               </Form.Item>
             )}
             

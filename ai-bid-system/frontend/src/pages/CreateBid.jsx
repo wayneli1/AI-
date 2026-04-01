@@ -332,8 +332,8 @@ export default function CreateBid() {
             Object.entries(grouped).forEach(([productLabel, items]) => {
               assetPrompt += `\n--- [产品：${productLabel}] ---\n`;
               
-              const images = items.filter(i => i.asset_type === 'image');
-              const texts = items.filter(i => i.asset_type === 'text');
+               const images = items.filter(i => i.asset_type === 'image');
+              const texts = items.filter(i => i.asset_type === 'text' || i.asset_type === 'document');
               
               if (images.length > 0) {
                 assetPrompt += '包含图片占位符（如需插入本产品图片，请严格输出此占位符，严禁输出真实链接）：\n';
@@ -345,9 +345,9 @@ export default function CreateBid() {
               if (texts.length > 0) {
                 assetPrompt += '包含文本资产内容（如需引用本产品条款，请直接参考以下文本）：\n';
                 texts.forEach(txt => {
-                  const contentPreview = txt.text_content.length > 200 
+                  const contentPreview = txt.text_content && txt.text_content.length > 200 
                     ? `${txt.text_content.substring(0, 200)}...` 
-                    : txt.text_content;
+                    : txt.text_content || '';
                   assetPrompt += `- [${txt.asset_name}]：${contentPreview}\n`;
                 });
               }
