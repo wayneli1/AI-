@@ -1,9 +1,36 @@
 const DIFY_API_BASE = import.meta.env.VITE_DIFY_API_BASE;
 const FILL_BLANK_API_KEY = import.meta.env.VITE_DIFY_FILL_BLANK_API_KEY;
 
+const BULLSEYE = '【🎯此处为本字段要填的位置🎯】';
+
+function buildBullseyeContext(blank) {
+  const ctx = blank.context || '';
+  const idx = blank.index ?? 0;
+  const matchText = blank.matchText || '';
+
+  if (blank.type === 'empty_cell' || matchText === '[空白单元格]') {
+    return ctx;
+  }
+
+  if (!matchText || idx < 0) return ctx;
+
+  if (idx + matchText.length <= ctx.length) {
+    const before = ctx.substring(0, idx);
+    const after = ctx.substring(idx + matchText.length);
+    return before + BULLSEYE + after;
+  }
+
+  const pos = ctx.indexOf(matchText);
+  if (pos !== -1) {
+    return ctx.substring(0, pos) + BULLSEYE + ctx.substring(pos + matchText.length);
+  }
+
+  return ctx;
+}
+
 export const scanBlanksWithAI = async (paragraphs) => {
   const SCAN_BLANK_API_KEY = import.meta.env.VITE_DIFY_SCAN_BLANK_API_KEY;
-  
+
   if (!SCAN_BLANK_API_KEY || !DIFY_API_BASE) {
     throw new Error("未配置空白扫描 API Key (VITE_DIFY_SCAN_BLANK_API_KEY)");
   }
@@ -16,7 +43,7 @@ export const scanBlanksWithAI = async (paragraphs) => {
     const paragraphsText = JSON.stringify(lightParagraphs);
 
     console.log("AI 扫描引擎启动，发送段落数:", lightParagraphs.length);
-    
+
     const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
       method: 'POST',
       headers: {
@@ -24,7 +51,7 @@ export const scanBlanksWithAI = async (paragraphs) => {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        inputs: { 
+        inputs: {
           paragraphs_text: paragraphsText
         },
         response_mode: "blocking",
@@ -80,19 +107,24 @@ export const scanBlanksWithAI = async (paragraphs) => {
   }
 };
 
-// 💡 核心修改：新增 tenderContext 参数并传给后端
 export const fillDocumentBlanks = async (blankContexts, companyName, tenderContext = '') => {
   if (!FILL_BLANK_API_KEY || !DIFY_API_BASE) {
     throw new Error("未配置填报工作流 API Key (VITE_DIFY_FILL_BLANK_API_KEY)");
   }
 
   try {
-    const blankList = blankContexts.map(b => ({
-      id: b.id,
-      context: b.context,
-      type: b.type,
-      matchText: b.matchText || ''
-    }));
+    const blankList = blankContexts.map(b => {
+      const bullseyeCtx = buildBullseyeContext(b);
+      return {
+        id: b.id,
+        context: bullseyeCtx,
+        original_context: b.context,
+        type: b.type,
+        matchText: b.matchText || ''
+      };
+    });
+
+    console.log('填报数据(靶心定位)样本:', blankList.slice(0, 3));
 
     const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
       method: 'POST',
@@ -104,7 +136,7 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
         inputs: {
           blank_list: JSON.stringify(blankList),
           company_name: companyName || '',
-          tender_context: tenderContext // 💡 新增：把原文传给 Dify
+          tender_context: tenderContext
         },
         response_mode: "blocking",
         user: "frontend-fill-blank-user"

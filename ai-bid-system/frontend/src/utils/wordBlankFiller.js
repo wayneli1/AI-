@@ -16,48 +16,77 @@ const BLANK_KEYWORDS = [
   '合同编号', '合同名称', '合同金额',
   '收货人', '送货人', '验收人', '验收单位', '送货单位', '收货单位',
   '承包商', '单位名称', '签约', '签订',
-  '大写', '小写', '人民币', '元'
+  '大写', '小写', '人民币', '元',
+  '序号', '项目', '货物', '服务', '内容', '备注'
 ];
 
-function getVisibleTextFromParagraph(paragraphXml) {
+function getVisibleTextFromXml(xml) {
   const textParts = [];
   const textRegex = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g;
   let m;
-  while ((m = textRegex.exec(paragraphXml)) !== null) {
+  while ((m = textRegex.exec(xml)) !== null) {
     textParts.push(m[1]);
   }
   return textParts.join('');
 }
 
-function extractBlankFromMatch(matchText, fullParagraphText) {
-  const trimmed = matchText.trim();
-  if (trimmed === '') return null;
+function buildTableStructureMap(xmlString) {
+  const cellInfos = [];
+  const rowRegex = /<w:tr[\s>]([\s\S]*?)<\/w:tr>/g;
+  let rowMatch;
 
-  if (/^_+$/.test(trimmed) && trimmed.length >= 2) {
-    return { matchText: trimmed, type: 'underscore', confidence: 'high' };
+  while ((rowMatch = rowRegex.exec(xmlString)) !== null) {
+    const rowXml = rowMatch[0];
+    const rowStartGlobal = rowMatch.index;
+
+    const tcRegex = /<w:tc[\s>]([\s\S]*?)<\/w:tc>/g;
+    let tcMatch;
+    while ((tcMatch = tcRegex.exec(rowXml)) !== null) {
+      const tcXml = tcMatch[0];
+      const tcLocalOffset = tcMatch.index;
+      const tcGlobalOffset = rowStartGlobal + tcLocalOffset;
+
+      const pRegex = /<w:p[\s>]([\s\S]*?)<\/w:p>/g;
+      let pMatch;
+      while ((pMatch = pRegex.exec(tcXml)) !== null) {
+        const pLocalOffset = pMatch.index;
+        const pGlobalOffset = tcGlobalOffset + pLocalOffset;
+        const paraIdx = countParagraphsBefore(xmlString, pGlobalOffset);
+        const text = getVisibleTextFromXml(pMatch[0]).trim();
+
+        cellInfos.push({
+          paraIndex: paraIdx,
+          cellXml: tcXml,
+          cellLocalOffset: tcLocalOffset,
+          rowXml,
+          rowLocalStart: 0,
+          cellText: text,
+          cellGlobalOffset: tcGlobalOffset
+        });
+      }
+    }
   }
-  if (/^-+$/.test(trimmed) && trimmed.length >= 3) {
-    return { matchText: trimmed, type: 'dash', confidence: 'high' };
-  }
-  if (/^[\s　]+$/.test(trimmed) && trimmed.length >= 3) {
-    return { matchText: trimmed, type: 'spaces', confidence: 'high' };
-  }
-  if (/年\s*月\s*日/.test(trimmed) && /[\s　]{2,}/.test(trimmed)) {
-    return { matchText: trimmed, type: 'date_pattern', confidence: 'high' };
-  }
-  if (/^第\s*[一二三四五六七八九十\d]+\s*页\s*/.test(trimmed)) return null;
-  if (/^共\s*[一二三四五六七八九十\d]+\s*页/.test(trimmed)) return null;
-  return null;
+  return cellInfos;
 }
 
-function hasKeywordNearby(paragraphText, matchIndex, matchLength, windowSize = 30) {
-  const before = paragraphText.substring(Math.max(0, matchIndex - windowSize), matchIndex);
-  const after = paragraphText.substring(matchIndex + matchLength, matchIndex + matchLength + windowSize);
-  const context = before + after;
-  return BLANK_KEYWORDS.some(kw => context.includes(kw));
+function countParagraphsBefore(xmlString, globalOffset) {
+  const slice = xmlString.substring(0, globalOffset);
+  return (slice.match(/<w:p[\s>]/g) || []).length;
 }
 
-// ===================== Image helpers =====================
+function getPreviousCellLabel(rowXml, currentCellLocalOffset) {
+  const tcRegex = /<w:tc[\s>]([\s\S]*?)<\/w:tc>/g;
+  let tcMatch;
+  let prevText = '';
+  while ((tcMatch = tcRegex.exec(rowXml)) !== null) {
+    if (tcMatch.index >= currentCellLocalOffset) break;
+    const text = getVisibleTextFromXml(tcMatch[0]).trim();
+    if (text) {
+      prevText = text;
+    }
+  }
+  return prevText;
+}
 
 function isImageUrl(value) {
   if (!value || typeof value !== 'string') return false;
@@ -72,22 +101,17 @@ function guessImageMime(url) {
   if (lower.endsWith('.png')) return 'image/png';
   if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
   if (lower.endsWith('.gif')) return 'image/gif';
-  if (lower.endsWith('.bmp')) return 'image/bmp';
-  if (lower.endsWith('.webp')) return 'image/webp';
   return 'image/png';
 }
 
 function guessImageExt(mime) {
-  const map = {
-    'image/png': 'png', 'image/jpeg': 'jpeg', 'image/gif': 'gif',
-    'image/bmp': 'bmp', 'image/webp': 'webp'
-  };
+  const map = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/gif': 'gif' };
   return map[mime] || 'png';
 }
 
 async function fetchImageAsArrayBuffer(url) {
   const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`下载图片失败: HTTP ${resp.status} - ${url}`);
+  if (!resp.ok) throw new Error(`图片下载失败: ${url}`);
   const ct = resp.headers.get('content-type') || '';
   const buf = await resp.arrayBuffer();
   let mime = guessImageMime(url);
@@ -96,37 +120,7 @@ async function fetchImageAsArrayBuffer(url) {
 }
 
 function buildImageRunXml(rId, cxEmu, cyEmu) {
-  return (
-    `<w:r>` +
-      `<w:rPr><w:noProof/></w:rPr>` +
-      `<w:drawing>` +
-        `<wp:inline distT="0" distB="0" distL="0" distR="0">` +
-          `<wp:extent cx="${cxEmu}" cy="${cyEmu}"/>` +
-          `<wp:effectExtent l="0" t="0" r="0" b="0"/>` +
-          `<wp:docPr id="${Math.floor(Math.random() * 100000)}" name="injected_image"/>` +
-          `<wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/></wp:cNvGraphicFramePr>` +
-          `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +
-            `<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
-              `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
-                `<pic:nvPicPr>` +
-                  `<pic:cNvPr id="0" name="injected.png"/>` +
-                  `<pic:cNvPicPr/>` +
-                `</pic:nvPicPr>` +
-                `<pic:blipFill>` +
-                  `<a:blip r:embed="${rId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>` +
-                  `<a:stretch><a:fillRect/></a:stretch>` +
-                `</pic:blipFill>` +
-                `<pic:spPr>` +
-                  `<a:xfrm><a:off x="0" y="0"/><a:ext cx="${cxEmu}" cy="${cyEmu}"/></a:xfrm>` +
-                  `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>` +
-                `</pic:spPr>` +
-              `</pic:pic>` +
-            `</a:graphicData>` +
-          `</a:graphic>` +
-        `</wp:inline>` +
-      `</w:drawing>` +
-    `</w:r>`
-  );
+  return `<w:r><w:rPr><w:noProof/></w:rPr><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cxEmu}" cy="${cyEmu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${Math.floor(Math.random() * 100000)}" name="injected_image"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="injected.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cxEmu}" cy="${cyEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 }
 
 function parseRelsXml(relsXml) {
@@ -143,8 +137,7 @@ function parseRelsXml(relsXml) {
 function addRelationship(relsObj, target, type) {
   const newId = ++relsObj.maxId;
   const rId = `rId${newId}`;
-  const tag = `<Relationship Id="${rId}" Type="${type}" Target="${target}"/>`;
-  relsObj.xml = relsObj.xml.replace('</Relationships>', `${tag}</Relationships>`);
+  relsObj.xml = relsObj.xml.replace('</Relationships>', `<Relationship Id="${rId}" Type="${type}" Target="${target}"/></Relationships>`);
   return rId;
 }
 
@@ -162,16 +155,14 @@ function loadImageNaturalSize(buffer) {
     const blob = new Blob([buffer]);
     const url = URL.createObjectURL(blob);
     const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve({ w: img.naturalWidth, h: img.naturalHeight });
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      resolve({ w: 400, h: 300 });
-    };
+    img.onload = () => { URL.revokeObjectURL(url); resolve({ w: img.naturalWidth, h: img.naturalHeight }); };
+    img.onerror = () => { URL.revokeObjectURL(url); resolve({ w: 400, h: 300 }); };
     img.src = url;
   });
+}
+
+function escapeXml(str) {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
 // ===================== Core scanning =====================
@@ -179,60 +170,94 @@ function loadImageNaturalSize(buffer) {
 export function scanBlanksFromXml(xmlString) {
   const blanks = [];
   let blankCounter = 0;
-  
+
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
   let currentParaIndex = 0;
 
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
-    const paragraphXml = paraMatch[0];
-    const paragraphText = getVisibleTextFromParagraph(paragraphXml);
+    const paragraphText = getVisibleTextFromXml(paraMatch[0]);
 
-    // 💡 修复重点：即使为空，也不能 continue 跳过，必须保证 index 严格同步！
     if (paragraphText.trim().length > 0) {
+      // 💡 修复重点 2：保留原句结构，绝不能用 trim()，否则会破坏 indexOf 定位！
+      const text = paragraphText;
+
       const underscorePattern = /_{3,}/g;
       let m;
-      while ((m = underscorePattern.exec(paragraphText)) !== null) {
-        const blank = extractBlankFromMatch(m[0], paragraphText);
-        if (blank) {
-          blanks.push({ ...blank, id: `blank_${++blankCounter}`, context: paragraphText.trim(), index: m.index, paraIndex: currentParaIndex });
+      while ((m = underscorePattern.exec(text)) !== null) {
+        if (m[0].length >= 2) {
+          blanks.push({
+            id: `blank_${++blankCounter}`, context: text,
+            matchText: m[0], index: m.index, type: 'underscore',
+            confidence: 'high', paraIndex: currentParaIndex
+          });
         }
       }
 
       const dashPattern = /-{4,}/g;
-      while ((m = dashPattern.exec(paragraphText)) !== null) {
-        const blank = extractBlankFromMatch(m[0], paragraphText);
-        if (blank) {
-          blanks.push({ ...blank, id: `blank_${++blankCounter}`, context: paragraphText.trim(), index: m.index, paraIndex: currentParaIndex });
+      while ((m = dashPattern.exec(text)) !== null) {
+        if (m[0].length >= 3) {
+          blanks.push({
+            id: `blank_${++blankCounter}`, context: text,
+            matchText: m[0], index: m.index, type: 'dash',
+            confidence: 'high', paraIndex: currentParaIndex
+          });
         }
       }
 
-      const datePattern = /\s{2,}年\s+月\s+日/g;
-      while ((m = datePattern.exec(paragraphText)) !== null) {
-        blanks.push({
-          id: `blank_${++blankCounter}`, context: paragraphText.trim(),
-          matchText: m[0], index: m.index, type: 'date_pattern',
-          confidence: 'high', paraIndex: currentParaIndex
-        });
+      const datePatterns = [ /\s{2,}年\s*月\s*日/g, /\s{2,}年\s{2,}月\s{2,}日/g, /\s*年\s+月\s+日/g ];
+      for (const dp of datePatterns) {
+        while ((m = dp.exec(text)) !== null) {
+          blanks.push({
+            id: `blank_${++blankCounter}`, context: text,
+            matchText: m[0], index: m.index, type: 'date_pattern',
+            confidence: 'high', paraIndex: currentParaIndex
+          });
+        }
       }
 
-      const spacePattern = /[：:]\s{3,}/g;
-      while ((m = spacePattern.exec(paragraphText)) !== null) {
-        if (hasKeywordNearby(paragraphText, m.index, m[0].length)) {
+      // 💡 修复重点 1：分组捕获，隔离冒号，只替换后面的空格！
+      const spacePattern = /([：:])(\s{3,})/g;
+      while ((m = spacePattern.exec(text)) !== null) {
+        // m[1]是冒号，m[2]是连续空格
+        const colonStr = m[1];
+        const spaceStr = m[2];
+        const spaceIndex = m.index + colonStr.length; // 定位到空格的起点
+
+        // 检查周边是否有关键词
+        const before = text.substring(Math.max(0, spaceIndex - 30), spaceIndex);
+        if (BLANK_KEYWORDS.some(kw => before.includes(kw))) {
           blanks.push({
-            id: `blank_${++blankCounter}`, context: paragraphText.trim(),
-            matchText: m[0], index: m.index, type: 'keyword_space',
+            id: `blank_${++blankCounter}`, context: text,
+            matchText: spaceStr, index: spaceIndex, type: 'keyword_space',
             confidence: 'medium', paraIndex: currentParaIndex
           });
         }
       }
 
-      // 💡 优化项：新增对括号空白和占位符的识别
-      const bracketPattern = /[(（]\s*(盖章处|签章处|请填写[^）)]*|待补充|填写[^）)]*)\s*[)）]|\[\s*(填写[^\]]*|待补充)\s*\]|【\s*(填写[^】]*|待补充)\s*】|待定|待补充/g;
-      while ((m = bracketPattern.exec(paragraphText)) !== null) {
+      const roundBracketPattern = /[（(]\s*(盖章处|签章处|盖章|签字|请填写[^）)]*|待补充|待定|填写[^）)]*|请盖章)\s*[)）]/g;
+      while ((m = roundBracketPattern.exec(text)) !== null) {
         blanks.push({
-          id: `blank_${++blankCounter}`, context: paragraphText.trim(),
+          id: `blank_${++blankCounter}`, context: text,
           matchText: m[0], index: m.index, type: 'brackets',
+          confidence: 'high', paraIndex: currentParaIndex
+        });
+      }
+
+      const squareBracketPattern = /[\[【]\s*(填写[^\]】]*|待补充|待定|请填写[^\]】]*)\s*[\]】]/g;
+      while ((m = squareBracketPattern.exec(text)) !== null) {
+        blanks.push({
+          id: `blank_${++blankCounter}`, context: text,
+          matchText: m[0], index: m.index, type: 'brackets',
+          confidence: 'high', paraIndex: currentParaIndex
+        });
+      }
+
+      const placeholderPattern = /待补充|待填/g;
+      while ((m = placeholderPattern.exec(text)) !== null) {
+        blanks.push({
+          id: `blank_${++blankCounter}`, context: text,
+          matchText: m[0], index: m.index, type: 'placeholder',
           confidence: 'high', paraIndex: currentParaIndex
         });
       }
@@ -240,43 +265,55 @@ export function scanBlanksFromXml(xmlString) {
     currentParaIndex++;
   }
 
-  // 稳健的空单元格识别
-  const cellRegex = /<w:tc[\s>][\s\S]*?<\/w:tc>/g;
-  let cellMatch;
-  while ((cellMatch = cellRegex.exec(xmlString)) !== null) {
-    const cellXml = cellMatch[0];
-    const cellText = getVisibleTextFromParagraph(cellXml).trim();
-    if (cellText === '' || /^[\s　_－-]+$/.test(cellText)) {
-      const beforeXml = xmlString.substring(0, cellMatch.index);
-      const pCount = (beforeXml.match(/<w:p[\s>]/g) || []).length;
-      
-      let surroundingContext = '';
-      const parentRowMatch = cellMatch.input.substring(
-        Math.max(0, cellMatch.index - 2000),
-        Math.min(cellMatch.index + cellMatch[0].length + 2000, cellMatch.input.length)
-      );
-      const rowMatch = parentRowMatch.match(/<w:tr[\s>][\s\S]*?<\/w:tr>/);
-      if (rowMatch) surroundingContext = getVisibleTextFromParagraph(rowMatch[0]).trim();
+  // ========== 表格空单元格识别（增加垃圾数据过滤） ==========
+  const cellInfos = buildTableStructureMap(xmlString);
+  const rowBuckets = new Map();
+  for (const ci of cellInfos) {
+    const rowKey = ci.rowXml;
+    if (!rowBuckets.has(rowKey)) rowBuckets.set(rowKey, []);
+    rowBuckets.get(rowKey).push(ci);
+  }
 
-      if (surroundingContext) {
-        blanks.push({
-          id: `blank_${++blankCounter}`,
-          context: surroundingContext,
-          matchText: '[空白单元格]',
-          index: 0,
-          type: 'empty_cell', 
-          confidence: 'medium',
-          paraIndex: pCount
-        });
+  for (const [, cells] of rowBuckets) {
+    for (let i = 0; i < cells.length; i++) {
+      const cell = cells[i];
+      if (cell.cellText !== '' && !/^[\s　_－-]+$/.test(cell.cellText)) continue;
+
+      let label = '';
+      if (i > 0) label = getPreviousCellLabel(cell.rowXml, cell.cellLocalOffset);
+      if (!label && i === 0 && cells.length > 1) {
+        label = cells[1] ? getVisibleTextFromXml(cells[1].cellXml).trim() : '';
       }
+
+      const rowFullText = getVisibleTextFromXml(cell.rowXml).trim();
+      const checkText = label || rowFullText;
+
+      // 💡 修复重点 3：严格过滤！如果没有明确的业务关键词，绝不生成这个空单元格，防止撑爆大模型
+      if (!BLANK_KEYWORDS.some(kw => checkText.includes(kw))) {
+        continue;
+      }
+
+      const context = label ? `${label}：[空白单元格]` : `${rowFullText}`;
+
+      blanks.push({
+        id: `blank_${++blankCounter}`,
+        context,
+        matchText: '[空白单元格]',
+        _cellLabel: label,
+        index: label ? label.length + 1 : 0, // 避开前面用于描述的文字
+        type: 'empty_cell',
+        confidence: 'medium',
+        paraIndex: cell.paraIndex
+      });
     }
   }
 
+  // 去重
   const uniqueBlanks = [];
-  const seenContexts = new Set();
+  const seen = new Set();
   for (const b of blanks) {
     const key = `${b.paraIndex}::${b.matchText}::${b.index}`;
-    if (!seenContexts.has(key)) { seenContexts.add(key); uniqueBlanks.push(b); }
+    if (!seen.has(key)) { seen.add(key); uniqueBlanks.push(b); }
   }
   return uniqueBlanks;
 }
@@ -290,16 +327,7 @@ function buildTextNodeMap(paragraphXml) {
   let m;
   while ((m = WT_REGEX.exec(paragraphXml)) !== null) {
     const text = m[3];
-    nodes.push({
-      fullMatch: m[0],
-      openTag: m[1],
-      text,
-      closeTag: m[4],
-      matchStart: m.index,
-      matchEnd: m.index + m[0].length,
-      textStart: offset,
-      textEnd: offset + text.length
-    });
+    nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[4], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length });
     offset += text.length;
   }
   let fullText = '';
@@ -349,15 +377,9 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let pMatch;
   let pIdx = 0;
-  
+
   while ((pMatch = paragraphRegex.exec(modifiedXml)) !== null) {
-    paragraphs.push({
-      start: pMatch.index,
-      end: pMatch.index + pMatch[0].length,
-      xml: pMatch[0],
-      text: getVisibleTextFromParagraph(pMatch[0]),
-      paraIndex: pIdx
-    });
+    paragraphs.push({ start: pMatch.index, end: pMatch.index + pMatch[0].length, xml: pMatch[0], text: getVisibleTextFromXml(pMatch[0]), paraIndex: pIdx });
     pIdx++;
   }
 
@@ -367,85 +389,65 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
     if (processedIds.has(blank.id)) continue;
     processedIds.add(blank.id);
 
-    // 💡 修复重点：用精确坐标定位，告别字符串查找
     const matchingParagraph = paragraphs.find(p => p.paraIndex === blank.paraIndex);
     if (!matchingParagraph) continue;
 
     const paraXml = matchingParagraph.xml;
     const isImage = isImageUrl(value) && imageRidMap && imageRidMap[blank.id];
-
     let newParaXml = paraXml;
 
-    // 💡 处理空单元格的绝杀：不需要找字符串位置，直接塞进段落里！
     if (blank.type === 'empty_cell' || blank.matchText === '[空白单元格]') {
       if (isImage) {
-         const imgInfo = imageRidMap[blank.id];
-         const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
-         newParaXml = paraXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
+        const imgInfo = imageRidMap[blank.id];
+        const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
+        newParaXml = paraXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
       } else {
-         newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
+        newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
       }
     } else {
-      // 常规文本映射替换
       const { nodes, fullText } = buildTextNodeMap(paraXml);
-
       let matchText = blank.matchText;
-      if (!matchText && blank.type === 'keyword_space') {
-        const colonMatch = fullText.match(/[：:]\s{2,}/);
-        if (colonMatch) matchText = colonMatch[0];
-      }
-      if (!matchText && blank.type === 'date_pattern') {
-        const dateMatch = fullText.match(/\s{2,}年\s*月\s*日/);
-        if (dateMatch) matchText = dateMatch[0];
-      }
-      if (!matchText) {
-        matchText = blank.matchText;
-      }
-
-      if (!matchText) {
+      const searchBlank = { ...blank, matchText };
+      const blankPos = findBlankInFullText(fullText, searchBlank);
+      
+      if (blankPos === -1) {
         newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
       } else {
-        const searchBlank = { ...blank, matchText };
-        const blankPos = findBlankInFullText(fullText, searchBlank);
-        if (blankPos === -1) {
-          newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
-        } else {
-          const blankEnd = blankPos + matchText.length;
-          const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
-          if (coveredNodes.length === 0) continue;
+        const blankEnd = blankPos + matchText.length;
+        const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
+        if (coveredNodes.length === 0) continue;
 
-          if (isImage) {
-            const imgInfo = imageRidMap[blank.id];
-            const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
-            for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
-            let tempParaXml = rebuildParagraphXml(paraXml, nodes);
+        if (isImage) {
+          const imgInfo = imageRidMap[blank.id];
+          const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
+          for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
+          let tempParaXml = rebuildParagraphXml(paraXml, nodes);
 
-            const updatedMap = buildTextNodeMap(tempParaXml);
-            let bestRun = null;
-            let bestRunStart = -1;
-            const rr = /<w:r[\s>][\s\S]*?<\/w:r>/g;
-            let rm;
-            while ((rm = rr.exec(tempParaXml)) !== null) {
-              for (const un of updatedMap.nodes) {
-                if (un.text === '' && un.textStart <= blankPos && un.textEnd >= blankPos) {
-                  if (rm.index <= un.matchStart && rm.index + rm[0].length >= un.matchEnd) {
-                    if (bestRunStart === -1 || rm.index < bestRunStart) { bestRun = rm; bestRunStart = rm.index; }
-                  }
+          const updatedMap = buildTextNodeMap(tempParaXml);
+          let bestRun = null;
+          let bestRunStart = -1;
+          const rr = /<w:r[\s>][\s\S]*?<\/w:r>/g;
+          let rm;
+          while ((rm = rr.exec(tempParaXml)) !== null) {
+            for (const un of updatedMap.nodes) {
+              if (un.text === '' && un.textStart <= blankPos && un.textEnd >= blankPos) {
+                if (rm.index <= un.matchStart && rm.index + rm[0].length >= un.matchEnd) {
+                  if (bestRunStart === -1 || rm.index < bestRunStart) { bestRun = rm; bestRunStart = rm.index; }
                 }
               }
             }
-            if (bestRun) {
-              newParaXml = tempParaXml.substring(0, bestRun.index) + drawingXml + tempParaXml.substring(bestRun.index + bestRun[0].length);
-            } else {
-              newParaXml = tempParaXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
-            }
-          } else {
-            for (let i = 0; i < coveredNodes.length; i++) {
-              coveredNodes[i]._replaced = true;
-              coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
-            }
-            newParaXml = rebuildParagraphXml(paraXml, nodes);
           }
+          if (bestRun) {
+            newParaXml = tempParaXml.substring(0, bestRun.index) + drawingXml + tempParaXml.substring(bestRun.index + bestRun[0].length);
+          } else {
+            newParaXml = tempParaXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
+          }
+        } else {
+          for (let i = 0; i < coveredNodes.length; i++) {
+            coveredNodes[i]._replaced = true;
+            coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
+          }
+          newParaXml = rebuildParagraphXml(paraXml, nodes);
         }
       }
     }
@@ -464,10 +466,6 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
   return modifiedXml;
 }
 
-function escapeXml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
-
 // ===================== Public helpers =====================
 
 export function extractIndexedParagraphs(xmlString) {
@@ -475,30 +473,31 @@ export function extractIndexedParagraphs(xmlString) {
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
   let paraIndex = 0;
-  
-  const insideTableSet = new Set();
-  const tcRegex = /<w:tc[\s>][\s\S]*?<\/w:tc>/g;
-  let tcMatch;
-  while ((tcMatch = tcRegex.exec(xmlString)) !== null) {
-    const tcXml = tcMatch[0];
-    const pIdxs = [];
-    const pRegex = /<w:p[\s>]/g;
-    let pM;
-    while ((pM = pRegex.exec(tcXml)) !== null) {
-      const beforeTc = xmlString.substring(0, tcMatch.index + pM.index);
-      const count = (beforeTc.match(/<w:p[\s>]/g) || []).length;
-      pIdxs.push(count);
+
+  const cellInfos = buildTableStructureMap(xmlString);
+  const tableParaSet = new Set();
+  const paraToLabel = new Map();
+  const paraToRowText = new Map();
+
+  for (const ci of cellInfos) {
+    tableParaSet.add(ci.paraIndex);
+    if (ci.cellText === '' || /^[\s　_－-]+$/.test(ci.cellText)) {
+      paraToLabel.set(ci.paraIndex, getPreviousCellLabel(ci.rowXml, ci.cellLocalOffset) || '');
+      paraToRowText.set(ci.paraIndex, getVisibleTextFromXml(ci.rowXml).trim());
     }
-    pIdxs.forEach(idx => insideTableSet.add(idx));
   }
 
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
     const xml = paraMatch[0];
-    const text = getVisibleTextFromParagraph(xml).trim();
-    if (text.length > 0) {
-      paragraphs.push({ paraIndex, text, xml });
-    } else if (insideTableSet.has(paraIndex)) {
-      paragraphs.push({ paraIndex, text: '[表格空单元格]', xml });
+    const text = getVisibleTextFromXml(xml);
+    if (text.trim().length > 0) {
+      paragraphs.push({ paraIndex, text, xml }); // 💡 绝不能加 .trim() 毁掉坐标
+    } else if (tableParaSet.has(paraIndex)) {
+      const label = paraToLabel.get(paraIndex) || '';
+      const rowText = paraToRowText.get(paraIndex) || '';
+      if (BLANK_KEYWORDS.some(kw => label.includes(kw) || rowText.includes(kw))) {
+        paragraphs.push({ paraIndex, text: label ? `${label}：[空白单元格]` : (rowText || '[表格空单元格]'), xml });
+      }
     }
     paraIndex++;
   }
@@ -508,7 +507,6 @@ export function extractIndexedParagraphs(xmlString) {
 export function mergeBlanks(regexBlanks, aiBlanks) {
   const merged = [...regexBlanks];
   const existingKeys = new Set(regexBlanks.map(b => `${b.paraIndex}|${b.matchText}|${b.index ?? 0}`));
-  
   aiBlanks.forEach(aiBlank => {
     const key = `${aiBlank.paraIndex}|${aiBlank.matchText}|${aiBlank.index ?? 0}`;
     if (!existingKeys.has(key)) {
@@ -519,22 +517,27 @@ export function mergeBlanks(regexBlanks, aiBlanks) {
   return merged;
 }
 
+// 💡 替换 wordBlankFiller.js 中的这个函数
 export function extractParagraphsForPreview(xmlString, blanks) {
   const paragraphs = [];
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
   let paraIndex = 0;
-  
+
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
     const xml = paraMatch[0];
-    const text = getVisibleTextFromParagraph(xml).trim();
-    
-    // 💡 通过坐标寻找空白，比原先粗暴的字符串匹配安全一万倍！
+    const text = getVisibleTextFromXml(xml).trim();
     const matchedBlanks = blanks.filter(b => b.paraIndex === paraIndex);
-    
+
     if (text.length > 0 || matchedBlanks.length > 0) {
+      // 🎯 美容绝招：如果原文是纯空的，我们就把底层好不容易拼出来的“上下文(context)”显示出来！
+      let displayText = text;
+      if (displayText.length === 0 && matchedBlanks.length > 0) {
+        displayText = matchedBlanks[0].context; 
+      }
+      
       paragraphs.push({ 
-        text: text || '[表格/空行占位]', 
+        text: displayText || '[空段落]', 
         blankIds: matchedBlanks.map(b => b.id) 
       });
     }
@@ -582,7 +585,6 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
     );
     for (const r of results) {
       if (r.status === 'fulfilled') fetchedImages.push(r.value);
-      else console.warn('图片下载失败:', r.reason);
     }
   }
 
@@ -592,21 +594,14 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
 
   if (fetchedImages.length > 0) {
     let relsXml = zip.file(RELS_PATH)?.asText();
-    if (!relsXml) {
-      relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
-    }
+    if (!relsXml) relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
     relsObj = parseRelsXml(relsXml);
 
     let ctXml = zip.file('[Content_Types].xml')?.asText() || '';
     const ensureExt = (ext, mime) => {
-      if (!ctXml.includes(`Extension="${ext}"`)) {
-        ctXml = ctXml.replace('</Types>', `<Default Extension="${ext}" ContentType="${mime}"/></Types>`);
-      }
+      if (!ctXml.includes(`Extension="${ext}"`)) ctXml = ctXml.replace('</Types>', `<Default Extension="${ext}" ContentType="${mime}"/></Types>`);
     };
-    ensureExt('png', 'image/png');
-    ensureExt('jpeg', 'image/jpeg');
-    ensureExt('gif', 'image/gif');
-    ensureExt('bmp', 'image/bmp');
+    ensureExt('png', 'image/png'); ensureExt('jpeg', 'image/jpeg'); ensureExt('gif', 'image/gif'); ensureExt('bmp', 'image/bmp');
     zip.file('[Content_Types].xml', ctXml);
 
     for (let i = 0; i < fetchedImages.length; i++) {
@@ -614,25 +609,16 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
       const ext = guessImageExt(img.mime);
       const mediaFileName = `word/media/injected_${i + 1}.${ext}`;
       const target = `media/injected_${i + 1}.${ext}`;
-
       zip.file(mediaFileName, img.buffer);
-
       const rId = addRelationship(relsObj, target, IMAGE_REL_TYPE);
-
       const TARGET_PX = 160;
       const { cx, cy } = getImageDimensionsEmu(TARGET_PX, img.naturalW, img.naturalH);
-
       imageRidMap[img.blankId] = { rId, cxEmu: cx, cyEmu: cy };
     }
-
     zip.file(RELS_PATH, relsObj.xml);
   }
 
   const finalXml = replaceBlanksInXml(modifiedXml, blanks, filledValues, imageRidMap);
   zip.file('word/document.xml', finalXml);
-
-  return zip.generate({
-    type: 'blob',
-    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-  });
+  return zip.generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 }
