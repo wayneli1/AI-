@@ -143,7 +143,6 @@ function addRelationship(relsObj, target, type) {
   return rId;
 }
 
-// px -> EMU (1 inch = 914400 EMU, assume 96 DPI)
 const PX_TO_EMU = 914400 / 96;
 
 function getImageDimensionsEmu(pxWidth, naturalW, naturalH) {
@@ -170,77 +169,83 @@ function loadImageNaturalSize(buffer) {
   });
 }
 
-// ===================== Core scanning (unchanged) =====================
+// ===================== Core scanning =====================
 
 export function scanBlanksFromXml(xmlString) {
   const blanks = [];
   let blankCounter = 0;
-  let paraIndex = 0;
-
+  
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
+  let currentParaIndex = 0;
 
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
     const paragraphXml = paraMatch[0];
     const paragraphText = getVisibleTextFromParagraph(paragraphXml);
 
-    if (!paragraphText || paragraphText.trim().length === 0) { paraIndex++; continue; }
-
-    const underscorePattern = /_{3,}/g;
-    let m;
-    while ((m = underscorePattern.exec(paragraphText)) !== null) {
-      const blank = extractBlankFromMatch(m[0], paragraphText);
-      if (blank) {
-        blank.id = `blank_${++blankCounter}`;
-        blank.context = paragraphText.trim();
-        blank.index = m.index;
-        blank.paraIndex = paraIndex;
-        blanks.push(blank);
+    // 💡 修复重点：即使为空，也不能 continue 跳过，必须保证 index 严格同步！
+    if (paragraphText.trim().length > 0) {
+      const underscorePattern = /_{3,}/g;
+      let m;
+      while ((m = underscorePattern.exec(paragraphText)) !== null) {
+        const blank = extractBlankFromMatch(m[0], paragraphText);
+        if (blank) {
+          blanks.push({ ...blank, id: `blank_${++blankCounter}`, context: paragraphText.trim(), index: m.index, paraIndex: currentParaIndex });
+        }
       }
-    }
 
-    const dashPattern = /-{4,}/g;
-    while ((m = dashPattern.exec(paragraphText)) !== null) {
-      const blank = extractBlankFromMatch(m[0], paragraphText);
-      if (blank) {
-        blank.id = `blank_${++blankCounter}`;
-        blank.context = paragraphText.trim();
-        blank.index = m.index;
-        blank.paraIndex = paraIndex;
-        blanks.push(blank);
+      const dashPattern = /-{4,}/g;
+      while ((m = dashPattern.exec(paragraphText)) !== null) {
+        const blank = extractBlankFromMatch(m[0], paragraphText);
+        if (blank) {
+          blanks.push({ ...blank, id: `blank_${++blankCounter}`, context: paragraphText.trim(), index: m.index, paraIndex: currentParaIndex });
+        }
       }
-    }
 
-    const datePattern = /\s{2,}年\s+月\s+日/g;
-    while ((m = datePattern.exec(paragraphText)) !== null) {
-      blankCounter++;
-      blanks.push({
-        id: `blank_${blankCounter}`, context: paragraphText.trim(),
-        matchText: m[0], index: m.index, type: 'date_pattern',
-        confidence: 'high', paraIndex
-      });
-    }
-
-    const spacePattern = /[：:]\s{3,}/g;
-    while ((m = spacePattern.exec(paragraphText)) !== null) {
-      if (hasKeywordNearby(paragraphText, m.index, m[0].length)) {
-        blankCounter++;
+      const datePattern = /\s{2,}年\s+月\s+日/g;
+      while ((m = datePattern.exec(paragraphText)) !== null) {
         blanks.push({
-          id: `blank_${blankCounter}`, context: paragraphText.trim(),
-          matchText: m[0], index: m.index, type: 'keyword_space',
-          confidence: 'medium', paraIndex
+          id: `blank_${++blankCounter}`, context: paragraphText.trim(),
+          matchText: m[0], index: m.index, type: 'date_pattern',
+          confidence: 'high', paraIndex: currentParaIndex
+        });
+      }
+
+      const spacePattern = /[：:]\s{3,}/g;
+      while ((m = spacePattern.exec(paragraphText)) !== null) {
+        if (hasKeywordNearby(paragraphText, m.index, m[0].length)) {
+          blanks.push({
+            id: `blank_${++blankCounter}`, context: paragraphText.trim(),
+            matchText: m[0], index: m.index, type: 'keyword_space',
+            confidence: 'medium', paraIndex: currentParaIndex
+          });
+        }
+      }
+
+      // 💡 优化项：新增对括号空白和占位符的识别
+      const bracketPattern = /[(（]\s*(盖章处|签章处|请填写[^）)]*|待补充|填写[^）)]*)\s*[)）]|\[\s*(填写[^\]]*|待补充)\s*\]|【\s*(填写[^】]*|待补充)\s*】|待定|待补充/g;
+      while ((m = bracketPattern.exec(paragraphText)) !== null) {
+        blanks.push({
+          id: `blank_${++blankCounter}`, context: paragraphText.trim(),
+          matchText: m[0], index: m.index, type: 'brackets',
+          confidence: 'high', paraIndex: currentParaIndex
         });
       }
     }
-    paraIndex++;
+    currentParaIndex++;
   }
 
+  // 💡 修复重点：稳健的空单元格识别
   const cellRegex = /<w:tc[\s>][\s\S]*?<\/w:tc>/g;
   let cellMatch;
   while ((cellMatch = cellRegex.exec(xmlString)) !== null) {
     const cellXml = cellMatch[0];
     const cellText = getVisibleTextFromParagraph(cellXml).trim();
     if (cellText === '' || /^[\s　_－-]+$/.test(cellText)) {
+      // 算出这个空单元格内部第一行文本所在的物理坐标 (paraIndex)
+      const beforeXml = xmlString.substring(0, cellMatch.index);
+      const pCount = (beforeXml.match(/<w:p[\s>]/g) || []).length;
+      
       let surroundingContext = '';
       const parentRowMatch = cellMatch.input.substring(
         Math.max(0, cellMatch.index - 2000),
@@ -248,12 +253,16 @@ export function scanBlanksFromXml(xmlString) {
       );
       const rowMatch = parentRowMatch.match(/<w:tr[\s>][\s\S]*?<\/w:tr>/);
       if (rowMatch) surroundingContext = getVisibleTextFromParagraph(rowMatch[0]).trim();
+
       if (surroundingContext && hasKeywordNearby(surroundingContext, 0, surroundingContext.length, surroundingContext.length)) {
-        blankCounter++;
         blanks.push({
-          id: `blank_${blankCounter}`,
-          context: `[表格空白单元格] ${surroundingContext}`,
-          matchText: cellText || '(空)', type: 'empty_cell', confidence: 'medium'
+          id: `blank_${++blankCounter}`,
+          context: surroundingContext,
+          matchText: '[空白单元格]',
+          index: 0,
+          type: 'empty_cell', 
+          confidence: 'medium',
+          paraIndex: pCount // 赋予它精确的物理坐标！
         });
       }
     }
@@ -262,13 +271,13 @@ export function scanBlanksFromXml(xmlString) {
   const uniqueBlanks = [];
   const seenContexts = new Set();
   for (const b of blanks) {
-    const key = `${b.context}::${b.index}`;
+    const key = `${b.paraIndex}::${b.matchText}::${b.index}`;
     if (!seenContexts.has(key)) { seenContexts.add(key); uniqueBlanks.push(b); }
   }
   return uniqueBlanks;
 }
 
-// ===================== Text Mapping engine (fragmentation-proof) =====================
+// ===================== Text Mapping engine =====================
 
 function buildTextNodeMap(paragraphXml) {
   const WT_REGEX = /(<w:t(\s[^>]*)?>)([^<]*)(<\/w:t>)/g;
@@ -326,126 +335,104 @@ function getOverlappingNodes(nodes, textStart, textEnd) {
   return result;
 }
 
-// ===================== Replace blanks (text-mapping, image-aware) =====================
+// ===================== Replace blanks =====================
 
 export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap) {
   let modifiedXml = xmlString;
   const processedIds = new Set();
 
-  // 1. Parse paragraphs with positions
   const paragraphs = [];
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let pMatch;
+  let pIdx = 0;
+  
   while ((pMatch = paragraphRegex.exec(modifiedXml)) !== null) {
     paragraphs.push({
       start: pMatch.index,
       end: pMatch.index + pMatch[0].length,
       xml: pMatch[0],
-      text: getVisibleTextFromParagraph(pMatch[0])
+      text: getVisibleTextFromParagraph(pMatch[0]),
+      paraIndex: pIdx
     });
+    pIdx++;
   }
 
-  // 2. Process each blank
   for (const blank of blanks) {
     const value = filledValues[blank.id];
-    if (value === undefined || value === null) continue;
+    if (value === undefined || value === null || value === '') continue;
     if (processedIds.has(blank.id)) continue;
     processedIds.add(blank.id);
 
-    const matchingParagraph = paragraphs.find(p => p.text.trim() === blank.context);
+    // 💡 修复重点：用精确坐标定位，告别字符串查找
+    const matchingParagraph = paragraphs.find(p => p.paraIndex === blank.paraIndex);
     if (!matchingParagraph) continue;
 
     const paraXml = matchingParagraph.xml;
-    const { nodes, fullText } = buildTextNodeMap(paraXml);
-
-    const blankPos = findBlankInFullText(fullText, blank);
-    if (blankPos === -1) continue;
-
-    const blankEnd = blankPos + blank.matchText.length;
-    const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
-    if (coveredNodes.length === 0) continue;
-
     const isImage = isImageUrl(value) && imageRidMap && imageRidMap[blank.id];
 
-    if (isImage) {
-      // Image injection: clear all covered text nodes, insert <w:drawing> before first covered run
-      const imgInfo = imageRidMap[blank.id];
-      const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
+    let newParaXml = paraXml;
 
-      let newParaXml = paraXml;
-
-      // We need to work on the current state of the paragraph XML
-      // Clear all covered text nodes first
-      for (const node of coveredNodes) {
-        node._replaced = true;
-        node._newText = '';
+    // 💡 处理空单元格的绝杀：不需要找字符串位置，直接塞进段落里！
+    if (blank.type === 'empty_cell' || blank.matchText === '[空白单元格]') {
+      if (isImage) {
+         const imgInfo = imageRidMap[blank.id];
+         const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
+         newParaXml = paraXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
+      } else {
+         newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
       }
-      newParaXml = rebuildParagraphXml(paraXml, nodes);
+    } else {
+      // 常规文本映射替换
+      const { nodes, fullText } = buildTextNodeMap(paraXml);
+      const blankPos = findBlankInFullText(fullText, blank);
+      if (blankPos === -1) continue;
 
-      // Now find the first <w:r> that contained a covered node and replace it with drawingXml
-      const updatedMap = buildTextNodeMap(newParaXml);
-      // Find the first run that now has empty text where our blank was
-      const runRegex2 = /<w:r[\s>][\s\S]*?<\/w:r>/g;
-      let rMatch2;
-      // Find the run closest to the blank position
-      // Strategy: find the first <w:r> whose <w:t> content was cleared
-      let bestRun = null;
-      let bestRunStart = -1;
-      // Re-parse nodes to find cleared ones
-      for (const un of updatedMap.nodes) {
-        if (un.text === '' && un.textStart <= blankPos && un.textEnd >= blankPos) {
-          // Find the <w:r> containing this <w:t>
-          const rr = /<w:r[\s>][\s\S]*?<\/w:r>/g;
-          let rm;
-          while ((rm = rr.exec(newParaXml)) !== null) {
-            if (rm.index <= un.matchStart && rm.index + rm[0].length >= un.matchEnd) {
-              if (bestRunStart === -1 || rm.index < bestRunStart) {
-                bestRun = rm;
-                bestRunStart = rm.index;
+      const blankEnd = blankPos + blank.matchText.length;
+      const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
+      if (coveredNodes.length === 0) continue;
+
+      if (isImage) {
+        const imgInfo = imageRidMap[blank.id];
+        const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
+        for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
+        let tempParaXml = rebuildParagraphXml(paraXml, nodes);
+
+        const updatedMap = buildTextNodeMap(tempParaXml);
+        let bestRun = null;
+        let bestRunStart = -1;
+        const rr = /<w:r[\s>][\s\S]*?<\/w:r>/g;
+        let rm;
+        while ((rm = rr.exec(tempParaXml)) !== null) {
+          for (const un of updatedMap.nodes) {
+            if (un.text === '' && un.textStart <= blankPos && un.textEnd >= blankPos) {
+              if (rm.index <= un.matchStart && rm.index + rm[0].length >= un.matchEnd) {
+                if (bestRunStart === -1 || rm.index < bestRunStart) { bestRun = rm; bestRunStart = rm.index; }
               }
             }
           }
         }
-      }
-
-      if (bestRun) {
-        newParaXml = newParaXml.substring(0, bestRun.index) + drawingXml + newParaXml.substring(bestRun.index + bestRun[0].length);
-      } else {
-        // Fallback: insert before </w:p>
-        newParaXml = newParaXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
-      }
-
-      if (newParaXml !== matchingParagraph.xml) {
-        modifiedXml = modifiedXml.substring(0, matchingParagraph.start) + newParaXml + modifiedXml.substring(matchingParagraph.end);
-        const diff = newParaXml.length - matchingParagraph.xml.length;
-        paragraphs.forEach(p => {
-          if (p.start > matchingParagraph.start) { p.start += diff; p.end += diff; }
-          else if (p.start === matchingParagraph.start) { p.xml = newParaXml; p.end = p.start + newParaXml.length; }
-        });
-        matchingParagraph.xml = newParaXml;
-      }
-    } else {
-      // Text replacement: write value into first covered node, clear the rest
-      for (let i = 0; i < coveredNodes.length; i++) {
-        coveredNodes[i]._replaced = true;
-        if (i === 0) {
-          coveredNodes[i]._newText = escapeXml(value);
+        if (bestRun) {
+          newParaXml = tempParaXml.substring(0, bestRun.index) + drawingXml + tempParaXml.substring(bestRun.index + bestRun[0].length);
         } else {
-          coveredNodes[i]._newText = '';
+          newParaXml = tempParaXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
         }
+      } else {
+        for (let i = 0; i < coveredNodes.length; i++) {
+          coveredNodes[i]._replaced = true;
+          coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
+        }
+        newParaXml = rebuildParagraphXml(paraXml, nodes);
       }
+    }
 
-      const newParaXml = rebuildParagraphXml(paraXml, nodes);
-
-      if (newParaXml !== matchingParagraph.xml) {
-        modifiedXml = modifiedXml.substring(0, matchingParagraph.start) + newParaXml + modifiedXml.substring(matchingParagraph.end);
-        const diff = newParaXml.length - matchingParagraph.xml.length;
-        paragraphs.forEach(p => {
-          if (p.start > matchingParagraph.start) { p.start += diff; p.end += diff; }
-          else if (p.start === matchingParagraph.start) { p.xml = newParaXml; p.end = p.start + newParaXml.length; }
-        });
-        matchingParagraph.xml = newParaXml;
-      }
+    if (newParaXml !== matchingParagraph.xml) {
+      modifiedXml = modifiedXml.substring(0, matchingParagraph.start) + newParaXml + modifiedXml.substring(matchingParagraph.end);
+      const diff = newParaXml.length - matchingParagraph.xml.length;
+      paragraphs.forEach(p => {
+        if (p.start > matchingParagraph.start) { p.start += diff; p.end += diff; }
+        else if (p.start === matchingParagraph.start) { p.xml = newParaXml; p.end = p.start + newParaXml.length; }
+      });
+      matchingParagraph.xml = newParaXml;
     }
   }
 
@@ -453,12 +440,7 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
 }
 
 function escapeXml(str) {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
 }
 
 // ===================== Public helpers =====================
@@ -468,11 +450,14 @@ export function extractIndexedParagraphs(xmlString) {
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
   let paraIndex = 0;
+  
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
     const xml = paraMatch[0];
     const text = getVisibleTextFromParagraph(xml).trim();
-    if (text.length === 0) continue;
-    paragraphs.push({ paraIndex, text, xml });
+    // 💡 修复重点：如果为空也不能直接跳过，坐标必须加一！
+    if (text.length > 0) {
+      paragraphs.push({ paraIndex, text, xml });
+    }
     paraIndex++;
   }
   return paragraphs;
@@ -480,11 +465,13 @@ export function extractIndexedParagraphs(xmlString) {
 
 export function mergeBlanks(regexBlanks, aiBlanks) {
   const merged = [...regexBlanks];
-  const existingContexts = new Set(regexBlanks.map(b => `${b.context}|${b.index}`));
+  const existingKeys = new Set(regexBlanks.map(b => `${b.paraIndex}|${b.matchText}`));
+  
   aiBlanks.forEach(aiBlank => {
-    const key = `${aiBlank.context}|${aiBlank.index}`;
-    if (!existingContexts.has(key)) {
+    const key = `${aiBlank.paraIndex}|${aiBlank.matchText}`;
+    if (!existingKeys.has(key)) {
       merged.push({ ...aiBlank, id: `blank_ai_${merged.length + 1}`, confidence: aiBlank.confidence || 'medium' });
+      existingKeys.add(key);
     }
   });
   return merged;
@@ -492,19 +479,24 @@ export function mergeBlanks(regexBlanks, aiBlanks) {
 
 export function extractParagraphsForPreview(xmlString, blanks) {
   const paragraphs = [];
-  const blankContextMap = new Map();
-  blanks.forEach(blank => {
-    const existing = blankContextMap.get(blank.context) || [];
-    blankContextMap.set(blank.context, [...existing, blank.id]);
-  });
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
+  let paraIndex = 0;
+  
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
     const xml = paraMatch[0];
     const text = getVisibleTextFromParagraph(xml).trim();
-    if (text.length === 0) continue;
-    const matchedBlankIds = blankContextMap.get(text) || [];
-    paragraphs.push({ text, blankIds: matchedBlankIds });
+    
+    // 💡 通过坐标寻找空白，比原先粗暴的字符串匹配安全一万倍！
+    const matchedBlanks = blanks.filter(b => b.paraIndex === paraIndex);
+    
+    if (text.length > 0 || matchedBlanks.length > 0) {
+      paragraphs.push({ 
+        text: text || '[表格/空行占位]', 
+        blankIds: matchedBlanks.map(b => b.id) 
+      });
+    }
+    paraIndex++;
   }
   return paragraphs;
 }
@@ -516,10 +508,7 @@ export function extractDocumentXml(file) {
       try {
         const zip = new PizZip(e.target.result);
         const xmlFile = zip.file('word/document.xml');
-        if (!xmlFile) {
-          reject(new Error('无法找到 word/document.xml'));
-          return;
-        }
+        if (!xmlFile) { reject(new Error('无法找到 word/document.xml')); return; }
         resolve({ xmlString: xmlFile.asText(), zip });
       } catch (err) { reject(err); }
     };
@@ -534,14 +523,12 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
   const imageRidMap = {};
   const imageEntries = [];
 
-  // 1. Collect image blanks
   for (const blank of blanks) {
     const val = filledValues[blank.id];
     if (!val || !isImageUrl(val)) continue;
     imageEntries.push({ blankId: blank.id, url: val.trim() });
   }
 
-  // 2. Fetch all images in parallel
   const fetchedImages = [];
   if (imageEntries.length > 0) {
     const results = await Promise.allSettled(
@@ -557,7 +544,6 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
     }
   }
 
-  // 3. Update rels
   let relsObj = null;
   const IMAGE_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
   const RELS_PATH = 'word/_rels/document.xml.rels';
@@ -569,7 +555,6 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
     }
     relsObj = parseRelsXml(relsXml);
 
-    // [Content_Types].xml — ensure png/jpeg extensions are registered
     let ctXml = zip.file('[Content_Types].xml')?.asText() || '';
     const ensureExt = (ext, mime) => {
       if (!ctXml.includes(`Extension="${ext}"`)) {
@@ -601,9 +586,7 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
     zip.file(RELS_PATH, relsObj.xml);
   }
 
-  // 4. Re-run replaceBlanksInXml with image rId map (even if 0 images, this is fine)
   const finalXml = replaceBlanksInXml(modifiedXml, blanks, filledValues, imageRidMap);
-
   zip.file('word/document.xml', finalXml);
 
   return zip.generate({
