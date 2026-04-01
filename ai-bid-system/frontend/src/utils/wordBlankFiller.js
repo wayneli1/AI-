@@ -179,8 +179,8 @@ export function scanBlanksFromXml(xmlString) {
     const paragraphText = getVisibleTextFromXml(paraMatch[0]);
 
     if (paragraphText.trim().length > 0) {
-      // 💡 修复重点 2：保留原句结构，绝不能用 trim()，否则会破坏 indexOf 定位！
       const text = paragraphText;
+      let foundBlanksInPara = false;
 
       const underscorePattern = /_{3,}/g;
       let m;
@@ -191,6 +191,7 @@ export function scanBlanksFromXml(xmlString) {
             matchText: m[0], index: m.index, type: 'underscore',
             confidence: 'high', paraIndex: currentParaIndex
           });
+          foundBlanksInPara = true;
         }
       }
 
@@ -202,6 +203,7 @@ export function scanBlanksFromXml(xmlString) {
             matchText: m[0], index: m.index, type: 'dash',
             confidence: 'high', paraIndex: currentParaIndex
           });
+          foundBlanksInPara = true;
         }
       }
 
@@ -213,18 +215,15 @@ export function scanBlanksFromXml(xmlString) {
             matchText: m[0], index: m.index, type: 'date_pattern',
             confidence: 'high', paraIndex: currentParaIndex
           });
+          foundBlanksInPara = true;
         }
       }
 
-      // 💡 修复重点 1：分组捕获，隔离冒号，只替换后面的空格！
       const spacePattern = /([：:])(\s{3,})/g;
       while ((m = spacePattern.exec(text)) !== null) {
-        // m[1]是冒号，m[2]是连续空格
         const colonStr = m[1];
         const spaceStr = m[2];
-        const spaceIndex = m.index + colonStr.length; // 定位到空格的起点
-
-        // 检查周边是否有关键词
+        const spaceIndex = m.index + colonStr.length; 
         const before = text.substring(Math.max(0, spaceIndex - 30), spaceIndex);
         if (BLANK_KEYWORDS.some(kw => before.includes(kw))) {
           blanks.push({
@@ -232,6 +231,7 @@ export function scanBlanksFromXml(xmlString) {
             matchText: spaceStr, index: spaceIndex, type: 'keyword_space',
             confidence: 'medium', paraIndex: currentParaIndex
           });
+          foundBlanksInPara = true;
         }
       }
 
@@ -242,6 +242,7 @@ export function scanBlanksFromXml(xmlString) {
           matchText: m[0], index: m.index, type: 'brackets',
           confidence: 'high', paraIndex: currentParaIndex
         });
+        foundBlanksInPara = true;
       }
 
       const squareBracketPattern = /[\[【]\s*(填写[^\]】]*|待补充|待定|请填写[^\]】]*)\s*[\]】]/g;
@@ -251,6 +252,7 @@ export function scanBlanksFromXml(xmlString) {
           matchText: m[0], index: m.index, type: 'brackets',
           confidence: 'high', paraIndex: currentParaIndex
         });
+        foundBlanksInPara = true;
       }
 
       const placeholderPattern = /待补充|待填/g;
@@ -260,12 +262,30 @@ export function scanBlanksFromXml(xmlString) {
           matchText: m[0], index: m.index, type: 'placeholder',
           confidence: 'high', paraIndex: currentParaIndex
         });
+        foundBlanksInPara = true;
+      }
+
+      // 💡 终极杀招：资质附件类暗示（无中生有生成虚拟占位符贴图）
+      const attachmentKeywords = ['营业执照', '营业执照复印件', '审计报告', '资信证明', '法人证书', '资质证书', '财务报表', '无重大违法记录', '资格证明文件', '声明', '承诺函'];
+      const hasAttachmentHint = attachmentKeywords.some(kw => text.includes(kw));
+      const isRequirement = /复印件|原件|提供|出具|须具备|副本|声明|加盖公章/.test(text);
+
+      if (!foundBlanksInPara && hasAttachmentHint && isRequirement && text.length > 5 && text.length < 300) {
+        blanks.push({
+          id: `blank_${++blankCounter}`,
+          context: text,
+          matchText: '[附件/资质插入位]', 
+          index: text.length, 
+          type: 'attachment',
+          confidence: 'high',
+          paraIndex: currentParaIndex
+        });
       }
     }
     currentParaIndex++;
   }
 
-  // ========== 表格空单元格识别（增加垃圾数据过滤） ==========
+  // ========== 表格空单元格识别 ==========
   const cellInfos = buildTableStructureMap(xmlString);
   const rowBuckets = new Map();
   for (const ci of cellInfos) {
@@ -288,7 +308,6 @@ export function scanBlanksFromXml(xmlString) {
       const rowFullText = getVisibleTextFromXml(cell.rowXml).trim();
       const checkText = label || rowFullText;
 
-      // 💡 修复重点 3：严格过滤！如果没有明确的业务关键词，绝不生成这个空单元格，防止撑爆大模型
       if (!BLANK_KEYWORDS.some(kw => checkText.includes(kw))) {
         continue;
       }
@@ -300,7 +319,7 @@ export function scanBlanksFromXml(xmlString) {
         context,
         matchText: '[空白单元格]',
         _cellLabel: label,
-        index: label ? label.length + 1 : 0, // 避开前面用于描述的文字
+        index: label ? label.length + 1 : 0, 
         type: 'empty_cell',
         confidence: 'medium',
         paraIndex: cell.paraIndex
@@ -396,6 +415,7 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
     const isImage = isImageUrl(value) && imageRidMap && imageRidMap[blank.id];
     let newParaXml = paraXml;
 
+    // 💡 引擎升级：处理空单元格 或 虚拟附件位 (无论找不到字符串，都暴力追加到末尾)
     if (blank.type === 'empty_cell' || blank.matchText === '[空白单元格]') {
       if (isImage) {
         const imgInfo = imageRidMap[blank.id];
@@ -406,48 +426,73 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
       }
     } else {
       const { nodes, fullText } = buildTextNodeMap(paraXml);
+
       let matchText = blank.matchText;
+      if (!matchText && blank.type === 'keyword_space') {
+        const colonMatch = fullText.match(/[：:]\s{2,}/);
+        if (colonMatch) matchText = colonMatch[0];
+      }
+      if (!matchText && blank.type === 'date_pattern') {
+        const dateMatch = fullText.match(/\s{2,}年\s*月\s*日/);
+        if (dateMatch) matchText = dateMatch[0];
+      }
+      if (!matchText && blank.type === 'brackets') {
+        const bracketMatch = fullText.match(/[（(\[【].*?[）)\]】]/);
+        if (bracketMatch) matchText = bracketMatch[0];
+      }
+      if (!matchText && blank.type === 'placeholder') {
+        const phMatch = fullText.match(/待补充|待填/);
+        if (phMatch) matchText = phMatch[0];
+      }
+
       const searchBlank = { ...blank, matchText };
       const blankPos = findBlankInFullText(fullText, searchBlank);
       
-      if (blankPos === -1) {
-        newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
-      } else {
-        const blankEnd = blankPos + matchText.length;
-        const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
-        if (coveredNodes.length === 0) continue;
-
+      // 💡 引擎升级：如果是虚拟的资质占位符，或者实在找不到匹配文字，安全降级追加到段落末尾！
+      if (blankPos === -1 || blank.type === 'attachment') {
         if (isImage) {
           const imgInfo = imageRidMap[blank.id];
           const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
-          for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
-          let tempParaXml = rebuildParagraphXml(paraXml, nodes);
+          newParaXml = paraXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
+        } else {
+          newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
+        }
+      } else {
+        const blankEnd = blankPos + matchText.length;
+        const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
+        if (coveredNodes.length > 0) {
+          if (isImage) {
+            const imgInfo = imageRidMap[blank.id];
+            const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
+            for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
+            let tempParaXml = rebuildParagraphXml(paraXml, nodes);
 
-          const updatedMap = buildTextNodeMap(tempParaXml);
-          let bestRun = null;
-          let bestRunStart = -1;
-          const rr = /<w:r[\s>][\s\S]*?<\/w:r>/g;
-          let rm;
-          while ((rm = rr.exec(tempParaXml)) !== null) {
-            for (const un of updatedMap.nodes) {
-              if (un.text === '' && un.textStart <= blankPos && un.textEnd >= blankPos) {
-                if (rm.index <= un.matchStart && rm.index + rm[0].length >= un.matchEnd) {
-                  if (bestRunStart === -1 || rm.index < bestRunStart) { bestRun = rm; bestRunStart = rm.index; }
+            const updatedMap = buildTextNodeMap(tempParaXml);
+            let bestRun = null;
+            let bestRunStart = -1;
+            const rr = /<w:r[\s>][\s\S]*?<\/w:r>/g;
+            let rm;
+            while ((rm = rr.exec(tempParaXml)) !== null) {
+              for (const un of updatedMap.nodes) {
+                if (un.text === '' && un.textStart <= blankPos && un.textEnd >= blankPos) {
+                  if (rm.index <= un.matchStart && rm.index + rm[0].length >= un.matchEnd) {
+                    if (bestRunStart === -1 || rm.index < bestRunStart) { bestRun = rm; bestRunStart = rm.index; }
+                  }
                 }
               }
             }
-          }
-          if (bestRun) {
-            newParaXml = tempParaXml.substring(0, bestRun.index) + drawingXml + tempParaXml.substring(bestRun.index + bestRun[0].length);
+            if (bestRun) {
+              newParaXml = tempParaXml.substring(0, bestRun.index) + drawingXml + tempParaXml.substring(bestRun.index + bestRun[0].length);
+            } else {
+              newParaXml = tempParaXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
+            }
           } else {
-            newParaXml = tempParaXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
+            for (let i = 0; i < coveredNodes.length; i++) {
+              coveredNodes[i]._replaced = true;
+              coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
+            }
+            newParaXml = rebuildParagraphXml(paraXml, nodes);
           }
-        } else {
-          for (let i = 0; i < coveredNodes.length; i++) {
-            coveredNodes[i]._replaced = true;
-            coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
-          }
-          newParaXml = rebuildParagraphXml(paraXml, nodes);
         }
       }
     }
@@ -491,7 +536,7 @@ export function extractIndexedParagraphs(xmlString) {
     const xml = paraMatch[0];
     const text = getVisibleTextFromXml(xml);
     if (text.trim().length > 0) {
-      paragraphs.push({ paraIndex, text, xml }); // 💡 绝不能加 .trim() 毁掉坐标
+      paragraphs.push({ paraIndex, text, xml }); 
     } else if (tableParaSet.has(paraIndex)) {
       const label = paraToLabel.get(paraIndex) || '';
       const rowText = paraToRowText.get(paraIndex) || '';
@@ -517,7 +562,6 @@ export function mergeBlanks(regexBlanks, aiBlanks) {
   return merged;
 }
 
-// 💡 替换 wordBlankFiller.js 中的这个函数
 export function extractParagraphsForPreview(xmlString, blanks) {
   const paragraphs = [];
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
@@ -530,16 +574,11 @@ export function extractParagraphsForPreview(xmlString, blanks) {
     const matchedBlanks = blanks.filter(b => b.paraIndex === paraIndex);
 
     if (text.length > 0 || matchedBlanks.length > 0) {
-      // 🎯 美容绝招：如果原文是纯空的，我们就把底层好不容易拼出来的“上下文(context)”显示出来！
       let displayText = text;
       if (displayText.length === 0 && matchedBlanks.length > 0) {
         displayText = matchedBlanks[0].context; 
       }
-      
-      paragraphs.push({ 
-        text: displayText || '[空段落]', 
-        blankIds: matchedBlanks.map(b => b.id) 
-      });
+      paragraphs.push({ text: displayText || '[空段落]', blankIds: matchedBlanks.map(b => b.id) });
     }
     paraIndex++;
   }
