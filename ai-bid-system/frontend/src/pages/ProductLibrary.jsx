@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Tree, Button, Modal, Input, Upload, message, 
-  Card, Tag, Empty, Spin, Form, Radio, Space, Popconfirm, Badge
+  Card, Tag, Empty, Spin, Form, Radio, Space, Popconfirm
 } from 'antd';
 import { 
   Package, Folder, FileImage, FileText, Plus, 
-  Edit, Trash2, Upload as UploadIcon, FolderPlus, File
+  Edit, Trash2, Upload as UploadIcon, FolderPlus, File, Download
 } from 'lucide-react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
@@ -40,7 +40,7 @@ const ProductLibrary = () => {
   
   const [newCompanyName, setNewCompanyName] = useState('');
   const [newProductName, setNewProductName] = useState('');
-  const [newVersion, setNewVersion] = useState('');
+  const [newVersion, setNewVersion] = useState(''); // 现在是选填
   const [savingProduct, setSavingProduct] = useState(false);
 
   const loadProductTree = useCallback(async () => {
@@ -65,11 +65,6 @@ const ProductLibrary = () => {
       if (productsRes.error) throw productsRes.error;
       if (assetsRes.error) throw assetsRes.error;
       
-      const assetCounts = {};
-      (assetsRes.data || []).forEach(a => {
-        assetCounts[a.product_id] = (assetCounts[a.product_id] || 0) + 1;
-      });
-      
       const companies = {};
       productsRes.data.forEach(product => {
         if (!companies[product.company_name]) {
@@ -81,15 +76,15 @@ const ProductLibrary = () => {
           };
         }
         
-        const assetCount = assetCounts[product.id] || 0;
+        // 💡 优化 1：去掉了 Badge 数量显示，完全依靠 Antd 原生的树形展开箭头
+        // 💡 优化 2：兼容版本号为空的情况
+        const versionText = product.version ? ` ${product.version}` : '';
+        
         companies[product.company_name].children.push({
           title: (
             <span className="flex items-center">
               <Package size={12} className="mr-1 text-purple-500" />
-              {product.product_name} {product.version}
-              {assetCount > 0 && (
-                <Badge count={assetCount} size="small" className="ml-2" />
-              )}
+              {product.product_name}{versionText}
             </span>
           ),
           key: product.id,
@@ -184,7 +179,6 @@ const ProductLibrary = () => {
       setFileUrl(publicUrlData.publicUrl);
       setDocumentFileName(file.name);
       
-      // 如果是文档类型，自动提取文本
       if (assetType === 'document') {
         setIsExtractingText(true);
         try {
@@ -222,7 +216,7 @@ const ProductLibrary = () => {
     }
     
     setIsExtractingText(true);
-    message.loading({ content: `正在提取 ${file.name} 中的文本...`, key: 'extract', duration: 0 });
+    message.loading({ content: `正在提取文本...`, key: 'extract', duration: 0 });
     
     try {
       const text = await extractTextFromDocument(file);
@@ -260,8 +254,9 @@ const ProductLibrary = () => {
   };
 
   const handleSaveProduct = async () => {
-    if (!newCompanyName.trim() || !newProductName.trim() || !newVersion.trim()) {
-      message.warning('请填写完整的产品信息');
+    // 💡 优化：移除对 version 的非空校验
+    if (!newCompanyName.trim() || !newProductName.trim()) {
+      message.warning('请填写公司和产品名称');
       return;
     }
     
@@ -273,12 +268,12 @@ const ProductLibrary = () => {
           user_id: user.id,
           company_name: newCompanyName.trim(),
           product_name: newProductName.trim(),
-          version: newVersion.trim()
+          version: newVersion.trim() || '' // 选填，默认存空字符串
         });
       
       if (error) {
         if (error.code === '23505') {
-          message.error('该产品版本已存在');
+          message.error('该产品或版本已存在');
         } else {
           throw error;
         }
@@ -408,7 +403,6 @@ const ProductLibrary = () => {
       
       if (error) throw error;
       
-      // 删除存储中的文件（图片和文档）
       if ((asset?.asset_type === 'image' || asset?.asset_type === 'document') && asset.file_url) {
         try {
           const urlParts = asset.file_url.split('/');
@@ -451,10 +445,10 @@ const ProductLibrary = () => {
     return (
       <Card
         key={asset.id}
-        className="mb-4"
+        className="mb-4 shadow-sm hover:shadow transition-shadow"
         size="small"
         actions={[
-          <Edit key="edit" size={14} onClick={() => handleEditAsset(asset)} className="cursor-pointer" />,
+          <Edit key="edit" size={14} onClick={() => handleEditAsset(asset)} className="cursor-pointer text-gray-500 hover:text-blue-500 transition-colors" />,
           <Popconfirm
             key="delete"
             title="确定要删除这个资产吗？"
@@ -462,26 +456,27 @@ const ProductLibrary = () => {
             okText="确定"
             cancelText="取消"
           >
-            <Trash2 size={14} className="text-red-500 cursor-pointer" />
+            <Trash2 size={14} className="text-red-500 cursor-pointer hover:text-red-600 transition-colors" />
           </Popconfirm>
         ]}
       >
         <div className="flex items-start justify-between">
           <div className="flex-1">
-            <div className="flex items-center mb-2">
+            <div className="flex items-center mb-1">
               {getAssetIcon()}
-              <span className="font-medium text-gray-900 text-sm">{asset.asset_name}</span>
-              <Tag color={tag.color} className="ml-2 text-xs">
+              <span className="font-bold text-gray-800 text-base">{asset.asset_name}</span>
+              <Tag color={tag.color} className="ml-3 text-xs border-0">
                 {tag.label}
               </Tag>
             </div>
             
+            {/* 💡 优化 3：极简展示。隐藏 .docx 文件名和长篇文本内容，文档仅提供下载链接，图片保留缩略图供区分 */}
             {asset.asset_type === 'image' && asset.file_url && (
-              <div className="mt-2">
+              <div className="mt-3">
                 <img 
                   src={asset.file_url} 
                   alt={asset.asset_name}
-                  className="max-w-full h-24 object-cover rounded border"
+                  className="max-w-full h-24 object-cover rounded border border-gray-100"
                   onError={(e) => {
                     e.target.onerror = null;
                     e.target.src = 'https://via.placeholder.com/200x96?text=加载失败';
@@ -491,30 +486,16 @@ const ProductLibrary = () => {
             )}
             
             {asset.asset_type === 'document' && asset.file_url && (
-              <div className="mt-2">
-                <div className="flex items-center text-xs text-gray-600 bg-gray-50 p-2 rounded border">
-                  <File size={12} className="mr-2" />
-                  <span className="truncate flex-1">
-                    {asset.file_url.split('/').pop()}
-                  </span>
-                  <a 
-                    href={asset.file_url} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:text-blue-800 ml-2 whitespace-nowrap"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    下载原文件
-                  </a>
-                </div>
-              </div>
-            )}
-            
-            {(asset.asset_type === 'text' || asset.asset_type === 'document') && asset.text_content && (
-              <div className="mt-2 text-xs text-gray-600 bg-gray-50 p-2 rounded border max-h-20 overflow-y-auto">
-                {asset.text_content.length > 150 
-                  ? `${asset.text_content.substring(0, 150)}...` 
-                  : asset.text_content}
+              <div className="mt-3">
+                <a 
+                  href={asset.file_url} 
+                  target="_blank" 
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center text-xs text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1.5 rounded-full transition-colors"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <Download size={12} className="mr-1" /> 下载源文件
+                </a>
               </div>
             )}
           </div>
@@ -530,14 +511,14 @@ const ProductLibrary = () => {
           <Package size={24} className="text-purple-600 mr-3" />
           <div>
             <h1 className="text-2xl font-bold text-gray-900">产品资产库</h1>
-            <p className="text-gray-500 text-sm">三级结构：公司 → 产品版本 → 资产（图片/文本）</p>
+            <p className="text-gray-500 text-sm">构建您专属的智能语料库：公司 → 产品 → 资产名称</p>
           </div>
         </div>
         <div className="h-px bg-gray-100 mt-4"></div>
       </div>
       
       <div className="flex h-[calc(100vh-160px)]">
-        <div className="w-80 border-r border-gray-200 p-4 overflow-y-auto">
+        <div className="w-80 border-r border-gray-200 p-4 overflow-y-auto custom-scrollbar">
           <div className="mb-4">
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-semibold text-gray-700 flex items-center">
@@ -549,12 +530,13 @@ const ProductLibrary = () => {
                 size="small"
                 icon={<Plus size={14} />}
                 onClick={handleAddProduct}
+                className="bg-purple-600 hover:bg-purple-700 border-0"
               >
                 新建产品
               </Button>
             </div>
             <p className="text-xs text-gray-400">
-              点击产品版本查看资产
+              点击展开查看名下产品
             </p>
           </div>
           
@@ -565,14 +547,14 @@ const ProductLibrary = () => {
               treeData={treeData}
               onSelect={handleTreeSelect}
               defaultExpandAll
-              className="product-tree"
+              className="product-tree bg-transparent"
               titleRender={(node) => {
                 if (node.productId) {
                   return (
-                    <div className="flex items-center justify-between w-full group">
-                      <span>{node.title}</span>
+                    <div className="flex items-center justify-between w-full group py-0.5">
+                      <span className="text-gray-700">{node.title}</span>
                       <Popconfirm
-                        title="确定删除此产品？其下所有资产也将被删除"
+                        title="确定删除此产品？其下所有资产也将一并清除"
                         onConfirm={(e) => {
                           e.stopPropagation();
                           handleDeleteProduct(node.productId);
@@ -581,15 +563,15 @@ const ProductLibrary = () => {
                         cancelText="取消"
                       >
                         <Trash2 
-                          size={12} 
-                          className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 cursor-pointer"
+                          size={13} 
+                          className="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 cursor-pointer transition-opacity"
                           onClick={(e) => e.stopPropagation()}
                         />
                       </Popconfirm>
                     </div>
                   );
                 }
-                return node.title;
+                return <span className="font-medium text-gray-800">{node.title}</span>;
               }}
             />
           ) : (
@@ -604,54 +586,59 @@ const ProductLibrary = () => {
           )}
         </div>
         
-        <div className="flex-1 p-6 overflow-y-auto">
+        <div className="flex-1 p-6 overflow-y-auto custom-scrollbar bg-gray-50/50">
           {selectedProductInfo ? (
             <>
               <div className="flex items-center justify-between mb-6">
                 <div>
-                  <h2 className="text-xl font-semibold text-gray-900">
-                    {selectedProductInfo.product_name} {selectedProductInfo.version}
+                  <h2 className="text-xl font-bold text-gray-900 flex items-center">
+                    {selectedProductInfo.product_name} 
+                    {selectedProductInfo.version && <span className="ml-2 text-purple-600 bg-purple-50 px-2 py-0.5 rounded text-sm border border-purple-100">{selectedProductInfo.version}</span>}
                   </h2>
-                  <p className="text-gray-500 text-sm">
-                    所属公司：{selectedProductInfo.company_name}
+                  <p className="text-gray-500 text-sm mt-1 flex items-center">
+                    所属公司：<Tag className="ml-1 border-0 bg-gray-100">{selectedProductInfo.company_name}</Tag>
                   </p>
                 </div>
                 <Button
                   type="primary"
                   icon={<Plus size={16} />}
                   onClick={handleAddAsset}
+                  className="bg-purple-600 hover:bg-purple-700 border-0 shadow-sm"
                 >
-                  添加资产
+                  录入新资产
                 </Button>
               </div>
               
               {loadingAssets ? (
                 <div className="flex justify-center py-12"><Spin /></div>
               ) : assets.length > 0 ? (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                   {assets.map(renderAssetCard)}
                 </div>
               ) : (
                 <Empty 
-                  description="该产品暂无资产" 
+                  description="该产品库目前空空如也，请录入相关图片或文案资产" 
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
+                  className="py-12 bg-white rounded-xl border border-dashed border-gray-200"
                 >
                   <Button type="primary" onClick={handleAddAsset}>
-                    添加第一个资产
+                    录入资产
                   </Button>
                 </Empty>
               )}
             </>
           ) : (
             <div className="flex flex-col items-center justify-center h-full">
-              <Package size={64} className="text-gray-300 mb-4" />
-              <h3 className="text-lg font-medium text-gray-900 mb-2">请选择产品版本</h3>
-              <p className="text-gray-500 text-center max-w-md mb-4">
-                在左侧目录树中选择一个产品版本，即可管理该产品的图片和文本资产
+              <div className="w-24 h-24 bg-purple-50 rounded-full flex items-center justify-center mb-6">
+                <Package size={40} className="text-purple-300" />
+              </div>
+              <h3 className="text-xl font-bold text-gray-800 mb-2">未选中产品</h3>
+              <p className="text-gray-500 text-center max-w-sm mb-6 leading-relaxed">
+                请在左侧目录树中点击展开公司，并选择一个具体的产品版本来管理其相关的资质与文案资产。
               </p>
               {treeData.length === 0 && (
-                <Button type="primary" icon={<FolderPlus size={16} />} onClick={handleAddProduct}>
-                  创建第一个产品
+                <Button type="primary" icon={<FolderPlus size={16} />} onClick={handleAddProduct} className="bg-purple-600 border-0">
+                  创建首个产品
                 </Button>
               )}
             </div>
@@ -662,9 +649,9 @@ const ProductLibrary = () => {
       {/* 新建产品弹窗 */}
       <Modal
         title={
-          <div className="flex items-center">
+          <div className="flex items-center font-bold text-lg">
             <FolderPlus size={18} className="mr-2 text-purple-500" />
-            新建产品
+            新建产品分类
           </div>
         }
         open={isProductModalVisible}
@@ -676,12 +663,13 @@ const ProductLibrary = () => {
         okText="创建"
         cancelText="取消"
         confirmLoading={savingProduct}
+        centered
       >
         <div className="py-4">
           <Form layout="vertical">
             <Form.Item label="所属公司" required>
               <Input
-                placeholder="例如：某某邮件公司"
+                placeholder="例如：中核核信信息技术（北京）有限公司"
                 value={newCompanyName}
                 onChange={(e) => setNewCompanyName(e.target.value)}
               />
@@ -693,7 +681,8 @@ const ProductLibrary = () => {
                 onChange={(e) => setNewProductName(e.target.value)}
               />
             </Form.Item>
-            <Form.Item label="版本号" required>
+            {/* 💡 优化 2：版本号改成选填，去除了 required 属性 */}
+            <Form.Item label="版本号 (选填)">
               <Input
                 placeholder="例如：V6.0"
                 value={newVersion}
@@ -701,26 +690,17 @@ const ProductLibrary = () => {
               />
             </Form.Item>
           </Form>
-          <div className="text-xs text-gray-500 bg-gray-50 p-2 rounded">
-            创建产品后，可以为该产品添加图片和文本资产，用于智能填报标书
-          </div>
         </div>
       </Modal>
       
       {/* 添加/编辑资产弹窗 */}
       <Modal
         title={
-          <div className="flex items-center">
+          <div className="flex items-center font-bold text-lg">
             {isEditingAsset ? (
-              <>
-                <Edit size={18} className="mr-2 text-blue-500" />
-                编辑资产
-              </>
+              <><Edit size={18} className="mr-2 text-blue-500" />编辑资产</>
             ) : (
-              <>
-                <Plus size={18} className="mr-2 text-green-500" />
-                添加资产
-              </>
+              <><Plus size={18} className="mr-2 text-green-500" />录入新资产</>
             )}
           </div>
         }
@@ -730,18 +710,24 @@ const ProductLibrary = () => {
           setIsAssetModalVisible(false);
           resetAssetForm();
         }}
-        okText={isEditingAsset ? "保存修改" : "添加资产"}
+        okText={isEditingAsset ? "保存修改" : "确认录入"}
         cancelText="取消"
-        width={600}
+        width={640}
+        centered
         confirmLoading={uploadingFile}
       >
         <div className="py-4">
+          <div className="mb-6 bg-blue-50/50 p-3 rounded-lg border border-blue-100 text-sm text-gray-600">
+            💡 <strong>资产名称非常重要！</strong>请务必填写清晰（例如：“系统架构拓扑图” 或 “标准保修承诺书”）。<br/>
+            AI 在填报标书时，将完全依靠这个名称来匹配并提取对应的图片或文字。
+          </div>
           <Form layout="vertical">
             <Form.Item label="资产名称" required>
               <Input
-                placeholder="例如：系统架构图、标准服务手册"
+                placeholder="一句话描述该资产，例如：售后服务方案、公安部等保证书..."
                 value={assetName}
                 onChange={(e) => setAssetName(e.target.value)}
+                size="large"
               />
             </Form.Item>
             
@@ -756,31 +742,25 @@ const ProductLibrary = () => {
                 }}
                 className="w-full"
               >
-                <Space direction="vertical">
-                  <Radio value="image">
-                    <div className="flex items-center">
-                      <FileImage size={16} className="mr-2 text-blue-500" />
-                      图片（系统架构图、产品截图等）
-                    </div>
-                  </Radio>
-                  <Radio value="text">
-                    <div className="flex items-center">
-                      <FileText size={16} className="mr-2 text-green-500" />
-                      文本（手动粘贴文本内容）
-                    </div>
-                  </Radio>
-                  <Radio value="document">
-                    <div className="flex items-center">
-                      <File size={16} className="mr-2 text-purple-500" />
-                      文档（上传 docx/pdf，自动提取文本给 AI）
-                    </div>
-                  </Radio>
-                </Space>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <Radio.Button value="image" className="text-center h-auto py-3">
+                    <FileImage size={24} className="mx-auto mb-1 text-blue-500" />
+                    <div>图片资质</div>
+                  </Radio.Button>
+                  <Radio.Button value="text" className="text-center h-auto py-3">
+                    <FileText size={24} className="mx-auto mb-1 text-green-500" />
+                    <div>纯文本条款</div>
+                  </Radio.Button>
+                  <Radio.Button value="document" className="text-center h-auto py-3">
+                    <File size={24} className="mx-auto mb-1 text-purple-500" />
+                    <div>上传文档解析</div>
+                  </Radio.Button>
+                </div>
               </Radio.Group>
             </Form.Item>
             
             {assetType === 'image' ? (
-              <Form.Item label="上传图片" required>
+              <Form.Item label="上传图片附件" required>
                 <Upload
                   name="file"
                   listType="picture-card"
@@ -788,35 +768,33 @@ const ProductLibrary = () => {
                   beforeUpload={handleFileUpload}
                   accept=".jpg,.jpeg,.png,.gif"
                   disabled={uploadingFile}
+                  className="asset-uploader"
                 >
                   {fileUrl ? (
-                    <div className="relative">
+                    <div className="relative w-full h-full p-1">
                       <img 
                         src={fileUrl} 
                         alt="预览" 
-                        className="w-full h-full object-cover"
+                        className="w-full h-full object-cover rounded"
                       />
-                      <div className="absolute inset-0 bg-black/20 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity">
-                        <UploadIcon size={20} className="text-white" />
+                      <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 hover:opacity-100 transition-opacity rounded">
+                        <span className="text-white text-xs flex items-center"><UploadIcon size={14} className="mr-1"/>更换图片</span>
                       </div>
                     </div>
                   ) : (
-                    <div>
+                    <div className="flex flex-col items-center justify-center h-full text-gray-400 hover:text-blue-500 transition-colors">
                       {uploadingFile ? <Spin /> : (
                         <>
-                          <UploadIcon size={24} className="text-gray-400 mb-2" />
-                          <div className="text-gray-500 text-sm">点击上传</div>
+                          <UploadIcon size={24} className="mb-2" />
+                          <div className="text-sm">点击上传资质截图</div>
                         </>
                       )}
                     </div>
                   )}
                 </Upload>
-                <div className="text-xs text-gray-500 mt-2">
-                  支持 JPG、PNG、GIF 格式
-                </div>
               </Form.Item>
             ) : assetType === 'document' ? (
-              <Form.Item label="上传文档" required>
+              <Form.Item label="上传源文档" required>
                 <Upload
                   name="file"
                   listType="text"
@@ -825,66 +803,34 @@ const ProductLibrary = () => {
                   accept=".docx,.pdf"
                   disabled={uploadingFile}
                 >
-                  <Button icon={<UploadIcon size={16} />} loading={uploadingFile}>
-                    {documentFileName || '选择 docx/pdf 文件'}
+                  <Button icon={<UploadIcon size={16} />} loading={uploadingFile} className="w-full h-12 border-dashed">
+                    {documentFileName || '点击选择 .docx 或 .pdf 文件'}
                   </Button>
                 </Upload>
-                <div className="text-xs text-gray-500 mt-2">
-                  支持 .docx 和 .pdf 格式，自动提取文本给 AI 使用
-                </div>
                 {textContent && (
                   <div className="mt-4">
-                    <div className="text-sm font-medium text-gray-700 mb-2">提取的文本内容：</div>
-                    <div className="text-xs text-gray-600 bg-gray-50 p-3 rounded border max-h-40 overflow-y-auto">
-                      {textContent.length > 500 
-                        ? `${textContent.substring(0, 500)}...` 
-                        : textContent}
+                    <div className="text-sm font-medium text-gray-700 mb-2">已成功解析提取以下文本，供 AI 填报使用：</div>
+                    <div className="text-xs text-gray-600 bg-gray-50 p-3 rounded border max-h-40 overflow-y-auto custom-scrollbar">
+                      {textContent}
                     </div>
                   </div>
                 )}
               </Form.Item>
             ) : (
-              <Form.Item label="文本内容" required>
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-sm font-medium text-gray-700">文本内容</span>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="file"
-                      ref={documentFileInputRef}
-                      className="hidden"
-                      onChange={handleTextFileUpload}
-                      accept=".docx,.pdf"
-                    />
-                    <Button
-                      size="small"
-                      type="dashed"
-                      icon={<UploadIcon size={12} />}
-                      loading={isExtractingText}
-                      onClick={() => documentFileInputRef.current?.click()}
-                      className="text-xs"
-                    >
-                      上传文件自动提取
-                    </Button>
-                  </div>
-                </div>
+              <Form.Item label="粘贴条款内容" required>
                 <TextArea
-                  placeholder="手动粘贴文本，或上传 .docx/.pdf 文件自动提取..."
+                  placeholder="在此直接粘贴您的售后承诺、服务标准等纯文本内容..."
                   value={textContent}
                   onChange={(e) => setTextContent(e.target.value)}
-                  rows={6}
-                  showCount
-                  maxLength={5000}
+                  rows={8}
+                  className="custom-scrollbar"
                 />
-                <div className="text-xs text-gray-500 mt-2">
-                  支持手动粘贴，或上传 .docx/.pdf 文件自动提取文本
-                </div>
               </Form.Item>
             )}
             
             {selectedProductInfo && (
-              <div className="text-sm text-gray-500 bg-gray-50 p-3 rounded">
-                将添加到：<strong>{selectedProductInfo.product_name} {selectedProductInfo.version}</strong>
-                （{selectedProductInfo.company_name}）
+              <div className="text-xs text-gray-400 mt-4 text-center">
+                当前操作节点：{selectedProductInfo.company_name} / {selectedProductInfo.product_name} {selectedProductInfo.version}
               </div>
             )}
           </Form>
