@@ -90,7 +90,8 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
     const blankList = blankContexts.map(b => ({
       id: b.id,
       context: b.context,
-      type: b.type
+      type: b.type,
+      matchText: b.matchText || ''
     }));
 
     const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {

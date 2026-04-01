@@ -2,16 +2,21 @@ import PizZip from 'pizzip';
 
 const BLANK_KEYWORDS = [
   '供应商', '投标人', '报价人', '中标人', '承包商', '厂商',
+  '甲方', '乙方', '买方', '卖方', '采购人', '招标人',
   '名称', '公司', '单位', '法定代表人', '授权代表', '委托代理人', '代理人',
-  '地址', '邮政编码', '邮编', '电话', '传真', '联系人',
-  '开户银行', '银行账号', '账号', '开户行',
+  '地址', '邮政编码', '邮编', '电话', '传真', '联系人', '手机',
+  '开户银行', '银行账号', '账号', '开户行', '税号',
   '签字', '盖章', '签名', '签章', '公章', '印章',
   '日期', '时间', '期限', '有效期',
-  '报价', '总价', '合计', '金额', '合同价', '投标价',
+  '报价', '总价', '合计', '金额', '合同价', '投标价', '价格',
   '项目名称', '项目编号', '标段', '包号',
   '规格', '型号', '品牌', '产地', '制造商',
   '数量', '单价', '交货期', '质保期',
-  '备注', '说明', '承诺', '响应'
+  '备注', '说明', '承诺', '响应',
+  '合同编号', '合同名称', '合同金额',
+  '收货人', '送货人', '验收人', '验收单位', '送货单位', '收货单位',
+  '承包商', '单位名称', '签约', '签订',
+  '大写', '小写', '人民币', '元'
 ];
 
 function getVisibleTextFromParagraph(paragraphXml) {
@@ -235,14 +240,13 @@ export function scanBlanksFromXml(xmlString) {
     currentParaIndex++;
   }
 
-  // 💡 修复重点：稳健的空单元格识别
+  // 稳健的空单元格识别
   const cellRegex = /<w:tc[\s>][\s\S]*?<\/w:tc>/g;
   let cellMatch;
   while ((cellMatch = cellRegex.exec(xmlString)) !== null) {
     const cellXml = cellMatch[0];
     const cellText = getVisibleTextFromParagraph(cellXml).trim();
     if (cellText === '' || /^[\s　_－-]+$/.test(cellText)) {
-      // 算出这个空单元格内部第一行文本所在的物理坐标 (paraIndex)
       const beforeXml = xmlString.substring(0, cellMatch.index);
       const pCount = (beforeXml.match(/<w:p[\s>]/g) || []).length;
       
@@ -254,7 +258,7 @@ export function scanBlanksFromXml(xmlString) {
       const rowMatch = parentRowMatch.match(/<w:tr[\s>][\s\S]*?<\/w:tr>/);
       if (rowMatch) surroundingContext = getVisibleTextFromParagraph(rowMatch[0]).trim();
 
-      if (surroundingContext && hasKeywordNearby(surroundingContext, 0, surroundingContext.length, surroundingContext.length)) {
+      if (surroundingContext) {
         blanks.push({
           id: `blank_${++blankCounter}`,
           context: surroundingContext,
@@ -262,7 +266,7 @@ export function scanBlanksFromXml(xmlString) {
           index: 0,
           type: 'empty_cell', 
           confidence: 'medium',
-          paraIndex: pCount // 赋予它精确的物理坐标！
+          paraIndex: pCount
         });
       }
     }
@@ -384,44 +388,65 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
     } else {
       // 常规文本映射替换
       const { nodes, fullText } = buildTextNodeMap(paraXml);
-      const blankPos = findBlankInFullText(fullText, blank);
-      if (blankPos === -1) continue;
 
-      const blankEnd = blankPos + blank.matchText.length;
-      const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
-      if (coveredNodes.length === 0) continue;
+      let matchText = blank.matchText;
+      if (!matchText && blank.type === 'keyword_space') {
+        const colonMatch = fullText.match(/[：:]\s{2,}/);
+        if (colonMatch) matchText = colonMatch[0];
+      }
+      if (!matchText && blank.type === 'date_pattern') {
+        const dateMatch = fullText.match(/\s{2,}年\s*月\s*日/);
+        if (dateMatch) matchText = dateMatch[0];
+      }
+      if (!matchText) {
+        matchText = blank.matchText;
+      }
 
-      if (isImage) {
-        const imgInfo = imageRidMap[blank.id];
-        const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
-        for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
-        let tempParaXml = rebuildParagraphXml(paraXml, nodes);
+      if (!matchText) {
+        newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
+      } else {
+        const searchBlank = { ...blank, matchText };
+        const blankPos = findBlankInFullText(fullText, searchBlank);
+        if (blankPos === -1) {
+          newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
+        } else {
+          const blankEnd = blankPos + matchText.length;
+          const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
+          if (coveredNodes.length === 0) continue;
 
-        const updatedMap = buildTextNodeMap(tempParaXml);
-        let bestRun = null;
-        let bestRunStart = -1;
-        const rr = /<w:r[\s>][\s\S]*?<\/w:r>/g;
-        let rm;
-        while ((rm = rr.exec(tempParaXml)) !== null) {
-          for (const un of updatedMap.nodes) {
-            if (un.text === '' && un.textStart <= blankPos && un.textEnd >= blankPos) {
-              if (rm.index <= un.matchStart && rm.index + rm[0].length >= un.matchEnd) {
-                if (bestRunStart === -1 || rm.index < bestRunStart) { bestRun = rm; bestRunStart = rm.index; }
+          if (isImage) {
+            const imgInfo = imageRidMap[blank.id];
+            const drawingXml = buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu);
+            for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
+            let tempParaXml = rebuildParagraphXml(paraXml, nodes);
+
+            const updatedMap = buildTextNodeMap(tempParaXml);
+            let bestRun = null;
+            let bestRunStart = -1;
+            const rr = /<w:r[\s>][\s\S]*?<\/w:r>/g;
+            let rm;
+            while ((rm = rr.exec(tempParaXml)) !== null) {
+              for (const un of updatedMap.nodes) {
+                if (un.text === '' && un.textStart <= blankPos && un.textEnd >= blankPos) {
+                  if (rm.index <= un.matchStart && rm.index + rm[0].length >= un.matchEnd) {
+                    if (bestRunStart === -1 || rm.index < bestRunStart) { bestRun = rm; bestRunStart = rm.index; }
+                  }
+                }
               }
             }
+            if (bestRun) {
+              newParaXml = tempParaXml.substring(0, bestRun.index) + drawingXml + tempParaXml.substring(bestRun.index + bestRun[0].length);
+            } else {
+              newParaXml = tempParaXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
+            }
+          } else {
+            for (let i = 0; i < coveredNodes.length; i++) {
+              coveredNodes[i]._replaced = true;
+              coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
+            }
+            newParaXml = rebuildParagraphXml(paraXml, nodes);
           }
         }
-        if (bestRun) {
-          newParaXml = tempParaXml.substring(0, bestRun.index) + drawingXml + tempParaXml.substring(bestRun.index + bestRun[0].length);
-        } else {
-          newParaXml = tempParaXml.replace(/<\/w:p>/, drawingXml + '</w:p>');
-        }
-      } else {
-        for (let i = 0; i < coveredNodes.length; i++) {
-          coveredNodes[i]._replaced = true;
-          coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
-        }
-        newParaXml = rebuildParagraphXml(paraXml, nodes);
       }
     }
 
@@ -451,12 +476,29 @@ export function extractIndexedParagraphs(xmlString) {
   let paraMatch;
   let paraIndex = 0;
   
+  const insideTableSet = new Set();
+  const tcRegex = /<w:tc[\s>][\s\S]*?<\/w:tc>/g;
+  let tcMatch;
+  while ((tcMatch = tcRegex.exec(xmlString)) !== null) {
+    const tcXml = tcMatch[0];
+    const pIdxs = [];
+    const pRegex = /<w:p[\s>]/g;
+    let pM;
+    while ((pM = pRegex.exec(tcXml)) !== null) {
+      const beforeTc = xmlString.substring(0, tcMatch.index + pM.index);
+      const count = (beforeTc.match(/<w:p[\s>]/g) || []).length;
+      pIdxs.push(count);
+    }
+    pIdxs.forEach(idx => insideTableSet.add(idx));
+  }
+
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
     const xml = paraMatch[0];
     const text = getVisibleTextFromParagraph(xml).trim();
-    // 💡 修复重点：如果为空也不能直接跳过，坐标必须加一！
     if (text.length > 0) {
       paragraphs.push({ paraIndex, text, xml });
+    } else if (insideTableSet.has(paraIndex)) {
+      paragraphs.push({ paraIndex, text: '[表格空单元格]', xml });
     }
     paraIndex++;
   }
@@ -465,10 +507,10 @@ export function extractIndexedParagraphs(xmlString) {
 
 export function mergeBlanks(regexBlanks, aiBlanks) {
   const merged = [...regexBlanks];
-  const existingKeys = new Set(regexBlanks.map(b => `${b.paraIndex}|${b.matchText}`));
+  const existingKeys = new Set(regexBlanks.map(b => `${b.paraIndex}|${b.matchText}|${b.index ?? 0}`));
   
   aiBlanks.forEach(aiBlank => {
-    const key = `${aiBlank.paraIndex}|${aiBlank.matchText}`;
+    const key = `${aiBlank.paraIndex}|${aiBlank.matchText}|${aiBlank.index ?? 0}`;
     if (!existingKeys.has(key)) {
       merged.push({ ...aiBlank, id: `blank_ai_${merged.length + 1}`, confidence: aiBlank.confidence || 'medium' });
       existingKeys.add(key);

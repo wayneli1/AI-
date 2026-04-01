@@ -311,12 +311,15 @@ export default function CreateBid() {
       let assetPrompt = '';
       const imageUrlMap = {}; // 占位符 -> 真实 URL 映射
       
-      if (selectedProductIds.length > 0 && user) {
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      const productUuids = selectedProductIds.filter(id => uuidRegex.test(id));
+
+      if (productUuids.length > 0 && user) {
         try {
           const { data: assets, error } = await supabase
             .from('product_assets')
             .select('*, products!inner(product_name, version)')
-            .in('product_id', selectedProductIds);
+            .in('product_id', productUuids);
 
           if (error) throw error;
 
@@ -842,7 +845,7 @@ export default function CreateBid() {
                     value={selectedProductIds}
                     onChange={setSelectedProductIds}
                     treeCheckable={true}
-                    showCheckedStrategy={TreeSelect.SHOW_PARENT}
+                    showCheckedStrategy={TreeSelect.SHOW_CHILD}
                     placeholder="关联产品资质"
                     loading={loadingProducts}
                     disabled={!targetCompany.trim() || loadingProducts}
