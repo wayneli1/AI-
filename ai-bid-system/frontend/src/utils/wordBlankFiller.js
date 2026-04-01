@@ -1,7 +1,7 @@
 import PizZip from 'pizzip';
 
 // 💡 保持原有词库不变
-function determineFillRole(text, type = '') {
+function determineFillRole(text) {
   const manualPatterns = [
     /报价|总价|单价|合同价|投标价|费率|偏离度|交货期|质保期/
   ];

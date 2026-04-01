@@ -8,59 +8,86 @@ export const scanBlanksWithAI = async (paragraphs) => {
     throw new Error("未配置空白扫描 API Key (VITE_DIFY_SCAN_BLANK_API_KEY)");
   }
 
-  try {
-    const lightParagraphs = paragraphs.map(p => ({
-      paraIndex: p.paraIndex,
-      text: p.text
-    }));
-    const paragraphsText = JSON.stringify(lightParagraphs);
+  const lightParagraphs = paragraphs.map(p => ({
+    paraIndex: p.paraIndex,
+    text: p.text
+  }));
 
-    console.log("AI 扫描引擎启动，发送段落数:", lightParagraphs.length);
-
-    const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${SCAN_BLANK_API_KEY}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        inputs: { paragraphs_text: paragraphsText },
-        response_mode: "blocking",
-        user: "frontend-scan-blank-user"
-      })
-    });
-
-    if (!response.ok) {
-      let errorDetail = '';
-      try { errorDetail = await response.text(); } catch (e) { /* ignore */ }
-      console.error(`AI 扫描 API ${response.status} 错误详情:`, errorDetail);
-      throw new Error(`HTTP ${response.status}: ${errorDetail}`);
-    }
-
-    const result = await response.json();
-    if (result.data?.error) throw new Error(result.data.message || '空白扫描工作流异常');
-
-    const outputStr = result.data?.outputs?.text || result.data?.outputs?.result;
-    if (!outputStr) throw new Error("AI 返回了空数据");
-
-    let cleanStr = outputStr;
-    cleanStr = cleanStr.replace(/<think[\s\S]*?<\/think>/gi, '').trim();
-    cleanStr = cleanStr.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-
-    try {
-      const parsed = JSON.parse(cleanStr);
-      if (Array.isArray(parsed)) return parsed;
-    } catch (e) {
-      const jsonMatch = cleanStr.match(/\[\s*\{[\s\S]*\}\s*\]/);
-      if (jsonMatch) {
-        try { return JSON.parse(jsonMatch[0]); } catch (e2) { console.error('JSON 解析失败:', e2); }
-      }
-    }
-    throw new Error("AI 返回的数据无法解析为 JSON 数组");
-  } catch (error) {
-    console.error('AI 空白扫描失败:', error);
-    throw error;
+  const CHUNK_SIZE = 40;
+  const chunks = [];
+  for (let i = 0; i < lightParagraphs.length; i += CHUNK_SIZE) {
+    chunks.push(lightParagraphs.slice(i, i + CHUNK_SIZE));
   }
+
+  console.log(`AI 扫描引擎启动，共 ${lightParagraphs.length} 个段落，切分为 ${chunks.length} 个并发扫描任务...`);
+
+  const promises = chunks.map(async (chunk, index) => {
+    try {
+      const paragraphsText = JSON.stringify(chunk);
+
+      const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SCAN_BLANK_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          inputs: { paragraphs_text: paragraphsText },
+          response_mode: "blocking",
+          user: "frontend-scan-blank-user"
+        })
+      });
+
+      if (!response.ok) {
+        console.warn(`⚠️ 扫描切片 ${index} HTTP ${response.status}，断臂求生跳过`);
+        return [];
+      }
+
+      const result = await response.json();
+      if (result.data?.error) {
+        console.warn(`⚠️ 扫描切片 ${index} 工作流异常: ${result.data.message}`);
+        return [];
+      }
+
+      const outputStr = result.data?.outputs?.text || result.data?.outputs?.result;
+      if (!outputStr) {
+        console.warn(`⚠️ 扫描切片 ${index} 返回空数据，跳过`);
+        return [];
+      }
+
+      let cleanStr = outputStr;
+      cleanStr = cleanStr.replace(/<think[\s\S]*?<\/think>/gi, '').trim();
+      cleanStr = cleanStr.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+
+      try {
+        const parsed = JSON.parse(cleanStr);
+        if (Array.isArray(parsed)) return parsed;
+      } catch (e) {
+        const jsonMatch = cleanStr.match(/\[\s*\{[\s\S]*\}\s*\]/);
+        if (jsonMatch) {
+          try {
+            const recovered = JSON.parse(jsonMatch[0]);
+            if (Array.isArray(recovered)) {
+              console.log(`✅ 扫描切片 ${index} 正则抢救成功，恢复 ${recovered.length} 个空白`);
+              return recovered;
+            }
+          } catch (e2) { /* fall through */ }
+        }
+      }
+
+      console.warn(`⚠️ 扫描切片 ${index} 解析失败，返回空数组`);
+      return [];
+    } catch (error) {
+      console.warn(`⚠️ 扫描切片 ${index} 异常，断臂求生:`, error.message);
+      return [];
+    }
+  });
+
+  const chunkResults = await Promise.all(promises);
+  const allAiBlanks = chunkResults.flat();
+
+  console.log(`🎉 AI 扫描完成！所有切片共发现 ${allAiBlanks.length} 个空白`);
+  return allAiBlanks;
 };
 
 export const fillDocumentBlanks = async (blankContexts, companyName, tenderContext = '') => {
