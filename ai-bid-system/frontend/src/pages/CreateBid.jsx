@@ -309,6 +309,8 @@ export default function CreateBid() {
       
       // 组装产品资产提示词
       let assetPrompt = '';
+      const imageUrlMap = {}; // 占位符 -> 真实 URL 映射
+      
       if (selectedProductIds.length > 0 && user) {
         try {
           const { data: assets, error } = await supabase
@@ -328,25 +330,30 @@ export default function CreateBid() {
 
           // 构建提示词
           if (Object.keys(grouped).length > 0) {
-            assetPrompt = '\n\n【可用产品资产白名单】\n';
+            assetPrompt = '\n\n【产品资产库（如需引用产品信息或插入图片，请严格使用以下占位符和文本内容）】\n';
             Object.entries(grouped).forEach(([productLabel, items]) => {
               assetPrompt += `\n--- [产品：${productLabel}] ---\n`;
               
-               const images = items.filter(i => i.asset_type === 'image');
+              const images = items.filter(i => i.asset_type === 'image');
               const texts = items.filter(i => i.asset_type === 'text' || i.asset_type === 'document');
               
               if (images.length > 0) {
                 assetPrompt += '包含图片占位符（如需插入本产品图片，请严格输出此占位符，严禁输出真实链接）：\n';
                 images.forEach(img => {
-                  assetPrompt += `- {{IMG_${productLabel}_${img.asset_name}}}\n`;
+                  const placeholder = `{{IMG_${productLabel}_${img.asset_name}}}`;
+                  assetPrompt += `- ${placeholder}\n`;
+                  // 建立占位符到真实 URL 的映射
+                  if (img.file_url) {
+                    imageUrlMap[placeholder] = img.file_url;
+                  }
                 });
               }
               
               if (texts.length > 0) {
                 assetPrompt += '包含文本资产内容（如需引用本产品条款，请直接参考以下文本）：\n';
                 texts.forEach(txt => {
-                  const contentPreview = txt.text_content && txt.text_content.length > 200 
-                    ? `${txt.text_content.substring(0, 200)}...` 
+                  const contentPreview = txt.text_content && txt.text_content.length > 5000 
+                    ? `${txt.text_content.substring(0, 5000)}...(全文共 ${txt.text_content.length} 字，已截断)` 
                     : txt.text_content || '';
                   assetPrompt += `- [${txt.asset_name}]：${contentPreview}\n`;
                 });
@@ -364,10 +371,27 @@ export default function CreateBid() {
       
       const result = await fillDocumentBlanks(scannedBlanks, targetCompany, enrichedContext);
 
+      // 处理 AI 返回结果：将占位符替换为真实 URL
+      const processedResult = {};
+      for (const blankId in result) {
+        let value = result[blankId] || '';
+        
+        // 替换所有图片占位符为真实 URL
+        if (value && typeof value === 'string') {
+          for (const [placeholder, realUrl] of Object.entries(imageUrlMap)) {
+            if (value.includes(placeholder)) {
+              value = value.replace(new RegExp(placeholder, 'g'), realUrl);
+            }
+          }
+        }
+        
+        processedResult[blankId] = value;
+      }
+
       const merged = { ...manualEdits };
       for (const blank of scannedBlanks) {
-        if (!merged[blank.id] && result[blank.id]) {
-          merged[blank.id] = result[blank.id] || '';
+        if (!merged[blank.id] && processedResult[blank.id]) {
+          merged[blank.id] = processedResult[blank.id] || '';
         }
       }
       setManualEdits(merged);
