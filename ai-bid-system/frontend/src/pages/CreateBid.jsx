@@ -51,6 +51,7 @@ export default function CreateBid() {
   const [selectedProductIds, setSelectedProductIds] = useState([]);
   const [productTreeData, setProductTreeData] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
+  const [productCompanyName, setProductCompanyName] = useState('');
 
   const [isScanning, setIsScanning] = useState(false);
   const [isFilling, setIsFilling] = useState(false);
@@ -127,12 +128,12 @@ export default function CreateBid() {
     return () => clearTimeout(debounceTimer);
   }, [manualEdits, currentProjectId, step]);
 
-  // 监听 targetCompany 变化，加载该公司下的产品数据
+  // 监听 productCompanyName 变化，加载该公司下的产品数据
   useEffect(() => {
     const loadProductsForCompany = async () => {
-      if (!targetCompany.trim() || !user) {
+      setSelectedProductIds([]);
+      if (!productCompanyName.trim() || !user) {
         setProductTreeData([]);
-        setSelectedProductIds([]);
         return;
       }
 
@@ -142,15 +143,15 @@ export default function CreateBid() {
           .from('products')
           .select('*')
           .eq('user_id', user.id)
-          .eq('company_name', targetCompany.trim())
+          .eq('company_name', productCompanyName.trim())
           .order('product_name')
           .order('version');
 
         if (error) throw error;
 
-        // 构建 TreeSelect 数据格式
         const productMap = {};
-        data.forEach(product => {
+        const rawData = data || [];
+        rawData.forEach(product => {
           if (!productMap[product.product_name]) {
             productMap[product.product_name] = {
               title: product.product_name,
@@ -159,14 +160,29 @@ export default function CreateBid() {
               children: []
             };
           }
+          const versionTitle = product.version ? product.version : '默认版本';
           productMap[product.product_name].children.push({
-            title: product.version,
+            title: versionTitle,
             value: product.id,
             key: product.id
           });
         });
 
-        const treeData = Object.values(productMap);
+        let treeData = Object.values(productMap).map(group => {
+          if (group.children.length === 1) {
+            const childProduct = rawData.find(p => p.id === group.children[0].value);
+            if (childProduct && !childProduct.version) {
+              return {
+                ...group,
+                children: undefined,
+                value: group.children[0].value,
+                isLeaf: true,
+              };
+            }
+          }
+          return group;
+        });
+
         setProductTreeData(treeData);
       } catch (error) {
         console.error('加载产品数据失败:', error);
@@ -178,7 +194,7 @@ export default function CreateBid() {
 
     const debounceTimer = setTimeout(loadProductsForCompany, 500);
     return () => clearTimeout(debounceTimer);
-  }, [targetCompany, user]);
+  }, [productCompanyName, user]);
 
 
   const previewParagraphs = useMemo(() => {
@@ -326,7 +342,9 @@ export default function CreateBid() {
           // 按产品分组
           const grouped = {};
           (assets || []).forEach(asset => {
-            const key = `${asset.products.product_name} ${asset.products.version}`;
+            const key = asset.products.version
+              ? `${asset.products.product_name} ${asset.products.version}`
+              : asset.products.product_name;
             if (!grouped[key]) grouped[key] = [];
             grouped[key].push(asset);
           });
@@ -503,6 +521,7 @@ export default function CreateBid() {
     } else {
       setTargetCompany('');
     }
+    setProductCompanyName(tempSelectedCompany?.company_name || '');
     setIsCompanyModalVisible(false);
     const parts = [];
     if (tempSelectedCompany) parts.push(`结构化主体：${tempSelectedCompany.company_name}`);
@@ -814,7 +833,10 @@ export default function CreateBid() {
                   <Input
                     placeholder="输入公司名称"
                     value={targetCompany}
-                    onChange={(e) => setTargetCompany(e.target.value)}
+                     onChange={(e) => {
+                       setTargetCompany(e.target.value);
+                       setProductCompanyName(e.target.value);
+                     }}
                     className="flex-1 border-none h-9 bg-transparent font-medium text-sm"
                   />
                   <Button
@@ -848,7 +870,7 @@ export default function CreateBid() {
                     showCheckedStrategy={TreeSelect.SHOW_CHILD}
                     placeholder="关联产品资质"
                     loading={loadingProducts}
-                    disabled={!targetCompany.trim() || loadingProducts}
+                    disabled={!productCompanyName.trim() || loadingProducts}
                     className="w-64"
                     dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
                     allowClear
