@@ -11,6 +11,21 @@ function determineFillRole(text) {
   return 'auto'; // 安全兜底：相信 AI！不知道的统统算 auto
 }
 
+// 标准化产品名称：处理中英文混合的空格问题
+function normalizeProductName(name) {
+  if (!name || typeof name !== 'string') return '';
+  // 1. 移除所有空格
+  let normalized = name.replace(/\s+/g, '');
+  // 2. 在英文单词和中文之间添加空格
+  normalized = normalized.replace(/([a-zA-Z])([\u4e00-\u9fa5])/g, '$1 $2');
+  normalized = normalized.replace(/([\u4e00-\u9fa5])([a-zA-Z])/g, '$1 $2');
+  // 3. 在英文单词和数字之间添加空格
+  normalized = normalized.replace(/([a-zA-Z])(\d)/g, '$1 $2');
+  normalized = normalized.replace(/(\d)([a-zA-Z])/g, '$1 $2');
+  // 4. 移除多余空格，保留单词间单个空格
+  return normalized.replace(/\s+/g, ' ').trim();
+}
+
 function getVisibleTextFromXml(xml) {
   const textParts = [];
   const textRegex = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g;
@@ -109,9 +124,33 @@ function getPreviousCellLabel(rowXml, currentCellLocalOffset) {
 }
 
 function isImageUrl(value) {
-  if (!value || typeof value !== 'string') return false;
+  if (!value || typeof value !== 'string') {
+    console.log(`🔍 [isImageUrl] 输入无效:`, value);
+    return false;
+  }
   const v = value.trim();
-  return /^https?:\/\/.+\.(png|jpg|jpeg|gif|bmp|webp|svg)(\?.*)?$/i.test(v) || /^https?:\/\/.+\.(png|jpg|jpeg|gif|bmp|webp|svg)$/i.test(v) || /^https?:\/\/.*\/storage\/v1\/object\/public\//i.test(v);
+  
+  // 检查是否是占位符格式 {{IMG_...}}
+  const isPlaceholder = /^\{\{IMG_.+?\}\}$/.test(v);
+  if (isPlaceholder) {
+    console.log(`🔍 [isImageUrl] 识别为占位符: "${v}"`);
+    return true;
+  }
+  
+  // 检查是否是URL格式
+  const test1 = /^https?:\/\/.+\.(png|jpg|jpeg|gif|bmp|webp|svg)(\?.*)?$/i.test(v);
+  const test2 = /^https?:\/\/.+\.(png|jpg|jpeg|gif|bmp|webp|svg)$/i.test(v);
+  const test3 = /^https?:\/\/.*\/storage\/v1\/object\/public\//i.test(v);
+  const result = test1 || test2 || test3;
+  
+  console.log(`🔍 [isImageUrl] 测试 "${v.substring(0, 50)}...":`, { 
+    isPlaceholder, 
+    test1, 
+    test2, 
+    test3, 
+    result 
+  });
+  return result;
 }
 
 function guessImageMime(url) {
@@ -360,6 +399,14 @@ function getOverlappingNodes(nodes, textStart, textEnd) {
 // ===================== Replace blanks =====================
 
 export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap) {
+  console.log('🔍 [replaceBlanksInXml] 开始替换空白');
+  console.log('🔍 传入参数:', { 
+    blanksCount: blanks.length, 
+    filledValuesCount: Object.keys(filledValues).length,
+    imageRidMapKeys: Object.keys(imageRidMap),
+    imageRidMap: imageRidMap
+  });
+  
   let modifiedXml = xmlString;
   const processedIds = new Set();
 
@@ -372,39 +419,70 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
     paragraphs.push({ start: pMatch.index, end: pMatch.index + pMatch[0].length, xml: pMatch[0], text: getVisibleTextFromXml(pMatch[0]), paraIndex: pIdx });
     pIdx++;
   }
+  
+  console.log('🔍 解析出段落数:', paragraphs.length);
 
   for (const blank of blanks) {
     const value = filledValues[blank.id];
-    if (value === undefined || value === null || value === '') continue;
-    if (processedIds.has(blank.id)) continue;
+    console.log(`🔍 处理空白 ${blank.id}:`, { 
+      value, 
+      blankType: blank.type,
+      matchText: blank.matchText,
+      paraIndex: blank.paraIndex,
+      isImageUrl: isImageUrl(value),
+      hasImageRid: !!(imageRidMap && imageRidMap[blank.id])
+    });
+    
+    if (value === undefined || value === null || value === '') {
+      console.log(`🔍 空白 ${blank.id} 值为空，跳过`);
+      continue;
+    }
+    if (processedIds.has(blank.id)) {
+      console.log(`🔍 空白 ${blank.id} 已处理过，跳过`);
+      continue;
+    }
     processedIds.add(blank.id);
 
     const matchingParagraph = paragraphs.find(p => p.paraIndex === blank.paraIndex);
-    if (!matchingParagraph) continue;
+    if (!matchingParagraph) {
+      console.log(`🔍 找不到段落 paraIndex=${blank.paraIndex}，跳过`);
+      continue;
+    }
 
     const paraXml = matchingParagraph.xml;
     const isImage = isImageUrl(value) && imageRidMap && imageRidMap[blank.id];
+    console.log(`🔍 空白 ${blank.id} 是否为图片: ${isImage}, imageRidMap[blank.id]:`, imageRidMap?.[blank.id]);
     let newParaXml = paraXml;
 
     if (blank.type === 'empty_cell' || blank.matchText === '[空白单元格]') {
+      console.log(`🔍 空白 ${blank.id} 类型: empty_cell`);
       if (isImage) {
         const imgInfo = imageRidMap[blank.id];
+        console.log(`🔍 插入图片到 empty_cell: rId=${imgInfo.rId}, cx=${imgInfo.cxEmu}, cy=${imgInfo.cyEmu}`);
         newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
+        console.log(`✅ empty_cell 图片插入完成`);
       } else {
+        console.log(`🔍 插入文本到 empty_cell: ${value.substring(0, 50)}...`);
         newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
       }
     } else {
+      console.log(`🔍 空白 ${blank.id} 类型: ${blank.type}, matchText: ${blank.matchText}`);
       const { nodes, fullText } = buildTextNodeMap(paraXml);
       let matchText = blank.matchText;
       
       const searchBlank = { ...blank, matchText };
       const blankPos = findBlankInFullText(fullText, searchBlank);
+      console.log(`🔍 在段落中查找空白位置: blankPos=${blankPos}, fullText长度=${fullText.length}`);
       
       if (blankPos === -1 || blank.type === 'attachment') {
+        console.log(`🔍 空白位置未找到或类型为attachment: blankPos=${blankPos}, type=${blank.type}`);
         if (isImage) {
           const imgInfo = imageRidMap[blank.id];
+          console.log(`🔍 插入图片到段落末尾: rId=${imgInfo.rId}`);
           newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
+          console.log(`✅ attachment 图片插入完成`);
         } else {
+          console.log(`🔍 插入文本到段落末尾: ${value.substring(0, 50)}...`);
           newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
         }
       } else {
@@ -557,28 +635,83 @@ export function extractDocumentXml(file) {
 
 // ===================== Async export with image injection =====================
 
-export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues) {
+export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues, imageUrlMap = {}) {
+  console.log('🔍 [generateFilledDocx] 开始生成填充的Word文档');
+  console.log('🔍 传入参数:', { 
+    blanksCount: blanks.length, 
+    filledValuesCount: Object.keys(filledValues).length,
+    imageUrlMapCount: Object.keys(imageUrlMap).length 
+  });
+  console.log('🔍 imageUrlMap内容:', imageUrlMap);
+  
   const imageRidMap = {};
   const imageEntries = [];
 
   for (const blank of blanks) {
-    const val = filledValues[blank.id];
+    let val = filledValues[blank.id];
+    console.log(`🔍 检查空白 ${blank.id}:`, { 
+      value: val, 
+      isImageUrl: isImageUrl(val),
+      blankType: blank.type,
+      matchText: blank.matchText,
+      context: blank.context?.substring(0, 50) + '...'
+    });
+    
+    // 如果是占位符，替换为真实URL
+    if (val && typeof val === 'string' && val.startsWith('{{IMG_')) {
+      console.log(`🔍 空白 ${blank.id} 包含占位符: "${val}"`);
+      // 查找匹配的占位符（使用模糊匹配）
+      for (const [placeholder, realUrl] of Object.entries(imageUrlMap)) {
+        // 标准化比较
+        const normalizedVal = normalizeProductName(val);
+        const normalizedPlaceholder = normalizeProductName(placeholder);
+        
+        if (normalizedVal.includes(normalizedPlaceholder)) {
+          console.log(`✅ 找到占位符匹配: ${placeholder} -> ${realUrl}`);
+          // 使用正则表达式替换，忽略空格差异
+          const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const regex = new RegExp(escapedPlaceholder.replace(/\s+/g, '\\s*'), 'g');
+          val = val.replace(regex, realUrl);
+          break;
+        }
+      }
+      console.log(`🔍 空白 ${blank.id} 替换后值: "${val}"`);
+    }
+    
     if (!val || !isImageUrl(val)) continue;
     imageEntries.push({ blankId: blank.id, url: val.trim() });
   }
+  
+  console.log('🔍 图片条目收集结果:', { imageEntriesCount: imageEntries.length, imageEntries });
 
   const fetchedImages = [];
   if (imageEntries.length > 0) {
+    console.log('🔍 开始下载图片，共', imageEntries.length, '个图片需要下载');
     const results = await Promise.allSettled(
       imageEntries.map(async (entry) => {
-        const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
-        const { w, h } = await loadImageNaturalSize(buffer);
-        return { ...entry, buffer, mime, naturalW: w, naturalH: h };
+        try {
+          console.log(`🔍 下载图片 ${entry.blankId}: ${entry.url}`);
+          const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
+          const { w, h } = await loadImageNaturalSize(buffer);
+          console.log(`✅ 图片下载成功 ${entry.blankId}: ${w}x${h}, ${mime}`);
+          return { ...entry, buffer, mime, naturalW: w, naturalH: h };
+        } catch (error) {
+          console.error(`❌ 图片下载失败 ${entry.blankId}:`, error.message);
+          throw error;
+        }
       })
     );
     for (const r of results) {
-      if (r.status === 'fulfilled') fetchedImages.push(r.value);
+      if (r.status === 'fulfilled') {
+        fetchedImages.push(r.value);
+        console.log(`✅ 图片处理完成: ${r.value.blankId}`);
+      } else {
+        console.error('❌ 图片处理失败:', r.reason);
+      }
     }
+    console.log('🔍 图片下载结果:', { fetchedImagesCount: fetchedImages.length, fetchedImages });
+  } else {
+    console.log('🔍 没有需要下载的图片');
   }
 
   let relsObj = null;
@@ -586,13 +719,21 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
   const RELS_PATH = 'word/_rels/document.xml.rels';
 
   if (fetchedImages.length > 0) {
+    console.log('🔍 开始将图片插入Word文档');
     let relsXml = zip.file(RELS_PATH)?.asText();
-    if (!relsXml) relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    if (!relsXml) {
+      console.log('🔍 创建新的关系文件');
+      relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+    }
     relsObj = parseRelsXml(relsXml);
+    console.log('🔍 关系文件解析完成，当前最大rId:', relsObj.maxId);
 
     let ctXml = zip.file('[Content_Types].xml')?.asText() || '';
     const ensureExt = (ext, mime) => {
-      if (!ctXml.includes(`Extension="${ext}"`)) ctXml = ctXml.replace('</Types>', `<Default Extension="${ext}" ContentType="${mime}"/></Types>`);
+      if (!ctXml.includes(`Extension="${ext}"`)) {
+        console.log(`🔍 添加Content-Type: ${ext} -> ${mime}`);
+        ctXml = ctXml.replace('</Types>', `<Default Extension="${ext}" ContentType="${mime}"/></Types>`);
+      }
     };
     ensureExt('png', 'image/png'); ensureExt('jpeg', 'image/jpeg'); ensureExt('gif', 'image/gif'); ensureExt('bmp', 'image/bmp');
     zip.file('[Content_Types].xml', ctXml);
@@ -602,13 +743,18 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues)
       const ext = guessImageExt(img.mime);
       const mediaFileName = `word/media/injected_${i + 1}.${ext}`;
       const target = `media/injected_${i + 1}.${ext}`;
+      console.log(`🔍 写入图片文件: ${mediaFileName}, 大小: ${img.buffer.byteLength} bytes`);
       zip.file(mediaFileName, img.buffer);
       const rId = addRelationship(relsObj, target, IMAGE_REL_TYPE);
       const TARGET_PX = 160;
       const { cx, cy } = getImageDimensionsEmu(TARGET_PX, img.naturalW, img.naturalH);
       imageRidMap[img.blankId] = { rId, cxEmu: cx, cyEmu: cy };
+      console.log(`✅ 图片 ${img.blankId} 映射到 rId: ${rId}, 尺寸: ${cx}x${cy} EMU`);
     }
     zip.file(RELS_PATH, relsObj.xml);
+    console.log('🔍 关系文件更新完成，imageRidMap:', imageRidMap);
+  } else {
+    console.log('🔍 没有图片需要插入到Word文档');
   }
 
   const finalXml = replaceBlanksInXml(modifiedXml, blanks, filledValues, imageRidMap);

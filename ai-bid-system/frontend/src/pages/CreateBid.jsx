@@ -56,6 +56,31 @@ export default function CreateBid() {
   const [isScanning, setIsScanning] = useState(false);
   const [isFilling, setIsFilling] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState(null);
+  const [imageUrlMap, setImageUrlMap] = useState({}); // 保存占位符到URL的映射
+
+  // 标准化产品名称：处理中英文混合的空格问题
+  const normalizeProductName = useCallback((name) => {
+    if (!name || typeof name !== 'string') return '';
+    // 1. 移除所有空格
+    let normalized = name.replace(/\s+/g, '');
+    // 2. 在英文单词和中文之间添加空格（可选，根据需求）
+    // 例如：CoremailXT电子邮件系统 -> Coremail XT 电子邮件系统
+    normalized = normalized.replace(/([a-zA-Z])([\u4e00-\u9fa5])/g, '$1 $2');
+    normalized = normalized.replace(/([\u4e00-\u9fa5])([a-zA-Z])/g, '$1 $2');
+    // 3. 在英文单词和数字之间添加空格
+    normalized = normalized.replace(/([a-zA-Z])(\d)/g, '$1 $2');
+    normalized = normalized.replace(/(\d)([a-zA-Z])/g, '$1 $2');
+    // 4. 移除多余空格，保留单词间单个空格
+    return normalized.replace(/\s+/g, ' ').trim();
+  }, []);
+
+  // 模糊匹配占位符：标准化后进行比较
+  const fuzzyMatchPlaceholder = useCallback((value, placeholder) => {
+    if (!value || !placeholder) return false;
+    const normalizedValue = normalizeProductName(value);
+    const normalizedPlaceholder = normalizeProductName(placeholder);
+    return normalizedValue.includes(normalizedPlaceholder);
+  }, [normalizeProductName]);
 
   const [highlightBlankId, setHighlightBlankId] = useState(null);
   const previewRef = useRef(null);
@@ -139,6 +164,10 @@ export default function CreateBid() {
 
       try {
         setLoadingProducts(true);
+        console.log('🔍 [loadProductsForCompany] 开始加载产品数据');
+        console.log('🔍 查询条件 company_name:', productCompanyName.trim());
+        console.log('🔍 用户ID:', user.id);
+        
         const { data, error } = await supabase
           .from('products')
           .select('*')
@@ -149,9 +178,13 @@ export default function CreateBid() {
 
         if (error) throw error;
 
+        console.log('🔍 查询到的产品数据:', data);
+        console.log('🔍 查询到的产品数量:', data?.length || 0);
+
         const productMap = {};
         const rawData = data || [];
         rawData.forEach(product => {
+          console.log(`🔍 处理产品: ${product.product_name} ${product.version || '无版本'}, ID: ${product.id}`);
           if (!productMap[product.product_name]) {
             productMap[product.product_name] = {
               title: product.product_name,
@@ -183,6 +216,7 @@ export default function CreateBid() {
           return group;
         });
 
+        console.log('🔍 构建的产品树数据:', treeData);
         setProductTreeData(treeData);
       } catch (error) {
         console.error('加载产品数据失败:', error);
@@ -313,24 +347,39 @@ export default function CreateBid() {
   };
 
   const handleAutoFill = async () => {
+    if (!scannedBlanks.length) {
+      message.warning('请先扫描文档空白');
+      return;
+    }
     if (!targetCompany.trim()) {
-      return message.warning('请先输入或选择投标主体公司名称！');
+      message.warning('请先输入或选择投标主体公司');
+      return;
     }
 
     setIsFilling(true);
     try {
       message.loading({ content: `正在调用 AI 分析并填写 ${scannedBlanks.length} 处空白...`, key: 'fill', duration: 0 });
 
+      console.log('🔍 [handleAutoFill] 调试信息开始');
+      console.log('🔍 targetCompany:', targetCompany);
+      console.log('🔍 productCompanyName:', productCompanyName);
+      console.log('🔍 selectedProductIds:', selectedProductIds);
+      console.log('🔍 selectedProductIds长度:', selectedProductIds.length);
+      
       const structuredProfile = buildStructuredProfile(selectedCompany);
       
       // 组装产品资产提示词
       let assetPrompt = '';
-      const imageUrlMap = {}; // 占位符 -> 真实 URL 映射
+      const localImageUrlMap = {}; // 局部变量，用于构建映射
       
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const productUuids = selectedProductIds.filter(id => uuidRegex.test(id));
+      
+      console.log('🔍 productUuids过滤后:', productUuids);
+      console.log('🔍 productUuids长度:', productUuids.length);
 
       if (productUuids.length > 0 && user) {
+        console.log('🔍 开始查询产品资产，产品UUID列表:', productUuids);
         try {
           const { data: assets, error } = await supabase
             .from('product_assets')
@@ -339,33 +388,49 @@ export default function CreateBid() {
 
           if (error) throw error;
 
-          // 按产品分组
+          console.log('🔍 查询到的产品资产数据:', assets);
+          console.log('🔍 查询到的资产数量:', assets?.length || 0);
+
+          // 按产品分组（使用标准化后的产品名称）
           const grouped = {};
           (assets || []).forEach(asset => {
+            const productName = normalizeProductName(asset.products.product_name);
             const key = asset.products.version
-              ? `${asset.products.product_name} ${asset.products.version}`
-              : asset.products.product_name;
+              ? `${productName} ${asset.products.version}`
+              : productName;
             if (!grouped[key]) grouped[key] = [];
             grouped[key].push(asset);
           });
+
+          console.log('🔍 分组后的产品资产:', grouped);
+          console.log('🔍 分组数量:', Object.keys(grouped).length);
 
           // 构建提示词
           if (Object.keys(grouped).length > 0) {
             assetPrompt = '\n\n【产品资产库（如需引用产品信息或插入图片，请严格使用以下占位符和文本内容）】\n';
             Object.entries(grouped).forEach(([productLabel, items]) => {
+              console.log(`🔍 处理产品: ${productLabel}, 资产数量: ${items.length}`);
               assetPrompt += `\n--- [产品：${productLabel}] ---\n`;
               
               const images = items.filter(i => i.asset_type === 'image');
               const texts = items.filter(i => i.asset_type === 'text' || i.asset_type === 'document');
               
+              console.log(`🔍 产品 ${productLabel} 的图片资产数量: ${images.length}`);
+              
               if (images.length > 0) {
                 assetPrompt += '包含图片占位符（如需插入本产品图片，请严格输出此占位符，严禁输出真实链接）：\n';
                 images.forEach(img => {
-                  const placeholder = `{{IMG_${productLabel}_${img.asset_name}}}`;
+                  // 标准化产品标签和资产名称
+                  const normalizedProductLabel = normalizeProductName(productLabel);
+                  const normalizedAssetName = normalizeProductName(img.asset_name);
+                  const placeholder = `{{IMG_${normalizedProductLabel}_${normalizedAssetName}}}`;
                   assetPrompt += `- ${placeholder}\n`;
                   // 建立占位符到真实 URL 的映射
                   if (img.file_url) {
-                    imageUrlMap[placeholder] = img.file_url;
+                    localImageUrlMap[placeholder] = img.file_url;
+                    console.log(`🔍 建立映射: ${placeholder} -> ${img.file_url}`);
+                  } else {
+                    console.warn(`🔍 资产 ${img.asset_name} 没有 file_url`);
                   }
                 });
               }
@@ -385,6 +450,16 @@ export default function CreateBid() {
           console.warn('加载产品资产失败，继续执行:', assetError);
         }
       }
+      
+      console.log('🔍 localImageUrlMap构建结果:', localImageUrlMap);
+      console.log('🔍 localImageUrlMap条目数量:', Object.keys(localImageUrlMap).length);
+      console.log('🔍 localImageUrlMap键列表（标准化后）:');
+      Object.keys(localImageUrlMap).forEach(key => {
+        console.log(`  - "${key}" (标准化: "${normalizeProductName(key)}")`);
+      });
+      
+      // 保存到状态，供导出时使用
+      setImageUrlMap(localImageUrlMap);
 
       // === 新增：查询知识库中与目标公司相关的资质图片 ===
       try {
@@ -409,29 +484,83 @@ export default function CreateBid() {
         + (tenderContext || '') 
         + assetPrompt;
       
+      console.log('🔍 [handleAutoFill] 调用AI填空API');
+      console.log('🔍 localImageUrlMap 内容:', localImageUrlMap);
+      console.log('🔍 localImageUrlMap 键列表（标准化调试）:');
+      Object.keys(localImageUrlMap).forEach(key => {
+        console.log(`  - 原始: "${key}"`);
+        console.log(`    标准化: "${normalizeProductName(key)}"`);
+      });
+      console.log('🔍 发送给AI的空白列表:', scannedBlanks.map(b => ({ 
+        id: b.id, 
+        type: b.type, 
+        context: b.context,
+        matchText: b.matchText,
+        need_image: b.need_image 
+      })));
+      
+      console.log('🔍 富文本上下文预览（前500字符）:', enrichedContext.substring(0, 500) + '...');
+      
       const result = await fillDocumentBlanks(scannedBlanks, targetCompany, enrichedContext);
+      console.log('🔍 AI返回结果:', result);
+      console.log('🔍 AI返回结果键:', Object.keys(result));
 
       // 处理 AI 返回结果：将占位符替换为真实 URL
       const processedResult = {};
       for (const blankId in result) {
         let value = result[blankId] || '';
+        console.log(`🔍 处理空白 ${blankId}: 原始值="${value}"`);
+        console.log(`🔍 空白 ${blankId} 原始值长度:`, value.length);
         
-        // 替换所有图片占位符为真实 URL
-        if (value && typeof value === 'string') {
-          for (const [placeholder, realUrl] of Object.entries(imageUrlMap)) {
-            if (value.includes(placeholder)) {
-              value = value.replace(new RegExp(placeholder, 'g'), realUrl);
+          // 替换所有图片占位符为真实 URL
+          if (value && typeof value === 'string') {
+            let replaced = false;
+            console.log(`🔍 检查空白 ${blankId} 的占位符替换，localImageUrlMap条目数:`, Object.keys(localImageUrlMap).length);
+            
+            for (const [placeholder, realUrl] of Object.entries(localImageUrlMap)) {
+              console.log(`🔍 检查占位符匹配:`);
+              console.log(`  - 空白值: "${value}"`);
+              console.log(`  - 占位符: "${placeholder}"`);
+              console.log(`  - 空白值标准化: "${normalizeProductName(value)}"`);
+              console.log(`  - 占位符标准化: "${normalizeProductName(placeholder)}"`);
+              console.log(`  - 是否包含: ${value.includes(placeholder)}`);
+              console.log(`  - 模糊匹配: ${fuzzyMatchPlaceholder(value, placeholder)}`);
+              
+              // 使用模糊匹配
+              if (fuzzyMatchPlaceholder(value, placeholder)) {
+                console.log(`✅ 模糊匹配占位符 ${placeholder}，替换为 ${realUrl}`);
+                // 使用正则表达式替换，忽略空格差异
+                const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                const regex = new RegExp(escapedPlaceholder.replace(/\s+/g, '\\s*'), 'g');
+                value = value.replace(regex, realUrl);
+                replaced = true;
+                break; // 找到匹配后跳出循环
+              } else if (value.includes(placeholder)) {
+                console.log(`✅ 精确匹配占位符 ${placeholder}，替换为 ${realUrl}`);
+                value = value.replace(new RegExp(placeholder, 'g'), realUrl);
+                replaced = true;
+                break; // 找到匹配后跳出循环
+              }
             }
+          if (replaced) {
+            console.log(`✅ 空白 ${blankId} 占位符替换完成，新值="${value.substring(0, 100)}..."`);
+          } else {
+            console.log(`🔍 空白 ${blankId} 未找到匹配的占位符`);
           }
           // === 新增：如果 LLM 输出了 Markdown 图片格式，提取纯 URL ===
           const mdImgMatch = value.match(/!\[.*?\]\((https?:\/\/[^\s)]+)\)/);
           if (mdImgMatch) {
+            console.log(`🔍 提取Markdown图片URL: ${mdImgMatch[1]}`);
             value = mdImgMatch[1];
           }
         }
         
         processedResult[blankId] = value;
+        console.log(`🔍 空白 ${blankId} 最终值="${value.substring(0, 100)}..."`);
       }
+      
+      console.log('🔍 processedResult 最终结果:', processedResult);
+      console.log('🔍 processedResult 键:', Object.keys(processedResult));
 
       const merged = { ...manualEdits };
       for (const blank of scannedBlanks) {
@@ -465,8 +594,18 @@ export default function CreateBid() {
     }
 
     try {
+      console.log('🔍 [handleExportFilledWord] 开始导出Word文档');
+      console.log('🔍 导出参数:', {
+        scannedBlanksCount: scannedBlanks.length,
+        manualEditsCount: Object.keys(manualEdits).length,
+        manualEdits: manualEdits,
+        imageUrlMapCount: Object.keys(imageUrlMap).length,
+        imageUrlMap: imageUrlMap
+      });
+      
       message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
-      const blob = await generateFilledDocx(originalZip, originalXml, scannedBlanks, manualEdits);
+      const blob = await generateFilledDocx(originalZip, originalXml, scannedBlanks, manualEdits, imageUrlMap);
+      console.log('🔍 Word文档生成完成，blob大小:', blob.size, 'bytes');
       saveAs(blob, `已填报_${originalFile.name}`);
       message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
     } catch (err) {
@@ -889,7 +1028,12 @@ export default function CreateBid() {
                   <TreeSelect
                     treeData={productTreeData}
                     value={selectedProductIds}
-                    onChange={setSelectedProductIds}
+                    onChange={(value) => {
+                      console.log('🔍 TreeSelect onChange:', value);
+                      console.log('🔍 TreeSelect value类型:', typeof value);
+                      console.log('🔍 TreeSelect value长度:', Array.isArray(value) ? value.length : '非数组');
+                      setSelectedProductIds(value);
+                    }}
                     treeCheckable={true}
                     showCheckedStrategy={TreeSelect.SHOW_CHILD}
                     placeholder="关联产品资质"
