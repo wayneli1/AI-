@@ -522,13 +522,15 @@ function getOverlappingNodes(nodes, textStart, textEnd) {
 
 // ===================== Replace blanks =====================
 
-export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap) {
+export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap, hyperlinkRidMap = {}) {
   console.log('🔍 [replaceBlanksInXml] 开始替换空白');
   console.log('🔍 传入参数:', { 
     blanksCount: blanks.length, 
     filledValuesCount: Object.keys(filledValues).length,
-    imageRidMapKeys: Object.keys(imageRidMap),
-    imageRidMap: imageRidMap
+    imageRidMapKeys: Object.keys(imageRidMap || {}),
+    imageRidMap: imageRidMap,
+    hyperlinkRidMapKeys: Object.keys(hyperlinkRidMap),
+    hyperlinkRidMap: hyperlinkRidMap
   });
   
   let modifiedXml = xmlString;
@@ -576,7 +578,8 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
     const paraXml = matchingParagraph.xml;
     const isImage = isImageUrl(value) && imageRidMap && imageRidMap[blank.id];
     const isDocUrl = isDocumentUrl(value);
-    console.log(`🔍 空白 ${blank.id} 是否为图片: ${isImage}, 是否为文档URL: ${isDocUrl}, imageRidMap[blank.id]:`, imageRidMap?.[blank.id]);
+    const hyperlinkRId = hyperlinkRidMap && hyperlinkRidMap[blank.id];
+    console.log(`🔍 空白 ${blank.id} 是否为图片: ${isImage}, 是否为文档URL: ${isDocUrl}, imageRidMap[blank.id]:`, imageRidMap?.[blank.id], `hyperlinkRidMap[blank.id]:`, hyperlinkRId);
     let newParaXml = paraXml;
 
     if (blank.type === 'empty_cell' || blank.matchText === '[空白单元格]') {
@@ -589,10 +592,14 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
       } else if (isDocUrl) {
         // 处理文档URL：插入超链接
         const displayText = getDisplayTextFromUrl(value, blank.context);
-        const hyperlinkRId = `rId_doc_${Math.floor(Math.random() * 10000)}`;
-        console.log(`🔍 插入文档超链接到 empty_cell: ${displayText} -> ${value}`);
-        newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
-        console.log(`✅ empty_cell 文档超链接插入完成`);
+        if (hyperlinkRId) {
+          console.log(`🔍 插入文档超链接到 empty_cell: ${displayText} -> ${value}, 使用映射ID: ${hyperlinkRId}`);
+          newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
+          console.log(`✅ empty_cell 文档超链接插入完成`);
+        } else {
+          console.warn(`⚠️ 空白 ${blank.id} 是文档URL但没有对应的超链接关系ID，插入为纯文本`);
+          newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
+        }
       } else {
         console.log(`🔍 插入文本到 empty_cell: ${value.substring(0, 50)}...`);
         newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
@@ -616,10 +623,14 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
         } else if (isDocUrl) {
           // 处理文档URL：插入超链接
           const displayText = getDisplayTextFromUrl(value, blank.context);
-          const hyperlinkRId = `rId_doc_${Math.floor(Math.random() * 10000)}`;
-          console.log(`🔍 插入文档超链接到段落末尾: ${displayText} -> ${value}`);
-          newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
-          console.log(`✅ attachment 文档超链接插入完成`);
+          if (hyperlinkRId) {
+            console.log(`🔍 插入文档超链接到段落末尾: ${displayText} -> ${value}, 使用映射ID: ${hyperlinkRId}`);
+            newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
+            console.log(`✅ attachment 文档超链接插入完成`);
+          } else {
+            console.warn(`⚠️ 空白 ${blank.id} 是文档URL但没有对应的超链接关系ID，插入为纯文本`);
+            newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
+          }
         } else {
           console.log(`🔍 插入文本到段落末尾: ${value.substring(0, 50)}...`);
           newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
@@ -636,16 +647,24 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
           } else if (isDocUrl) {
             // 处理文档URL：插入超链接
             const displayText = getDisplayTextFromUrl(value, blank.context);
-            const hyperlinkRId = `rId_doc_${Math.floor(Math.random() * 10000)}`;
-            console.log(`🔍 插入文档超链接替换空白: ${displayText} -> ${value}`);
-            
-            // 清空原有文本节点
-            for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
-            let tempParaXml = rebuildParagraphXml(paraXml, nodes);
-            
-            // 插入超链接
-            newParaXml = tempParaXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
-            console.log(`✅ 文档超链接替换完成`);
+            if (hyperlinkRId) {
+              console.log(`🔍 插入文档超链接替换空白: ${displayText} -> ${value}, 使用映射ID: ${hyperlinkRId}`);
+              
+              // 清空原有文本节点
+              for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
+              let tempParaXml = rebuildParagraphXml(paraXml, nodes);
+              
+              // 插入超链接
+              newParaXml = tempParaXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
+              console.log(`✅ 文档超链接替换完成`);
+            } else {
+              console.warn(`⚠️ 空白 ${blank.id} 是文档URL但没有对应的超链接关系ID，插入为纯文本`);
+              for (let i = 0; i < coveredNodes.length; i++) {
+                coveredNodes[i]._replaced = true;
+                coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
+              }
+              newParaXml = rebuildParagraphXml(paraXml, nodes);
+            }
           } else {
             for (let i = 0; i < coveredNodes.length; i++) {
               coveredNodes[i]._replaced = true;
@@ -797,6 +816,7 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
   console.log('🔍 imageUrlMap内容:', imageUrlMap);
   
   const imageRidMap = {};
+  const hyperlinkRidMap = {};
   const imageEntries = [];
   const hyperlinkEntries = [];
 
@@ -946,21 +966,24 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
     const HYPERLINK_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
     let updatedRelsXml = relsXml;
     
-    // 为每个超链接添加关系
+    // 为每个超链接添加关系并创建映射
     hyperlinkEntries.forEach((entry, index) => {
       const rId = `rId_hyperlink_${index + 1}`;
       // 在</Relationships>标签前插入关系
       updatedRelsXml = updatedRelsXml.replace('</Relationships>', 
         `<Relationship Id="${rId}" Type="${HYPERLINK_REL_TYPE}" Target="${entry.url}" TargetMode="External"/>\n</Relationships>`);
       
-      console.log(`✅ 添加超链接关系: ${rId} -> ${entry.url.substring(0, 50)}...`);
+      // 创建超链接ID映射
+      hyperlinkRidMap[entry.blankId] = rId;
+      
+      console.log(`✅ 添加超链接关系: ${rId} -> ${entry.url.substring(0, 50)}..., 映射到空白ID: ${entry.blankId}`);
     });
     
     zip.file(RELS_PATH, updatedRelsXml);
-    console.log('🔍 超链接关系添加完成');
+    console.log('🔍 超链接关系添加完成, hyperlinkRidMap:', hyperlinkRidMap);
   }
 
-  const finalXml = replaceBlanksInXml(modifiedXml, blanks, filledValues, imageRidMap);
+  const finalXml = replaceBlanksInXml(modifiedXml, blanks, filledValues, imageRidMap, hyperlinkRidMap);
   zip.file('word/document.xml', finalXml);
   return zip.generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 }
