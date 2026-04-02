@@ -164,6 +164,105 @@ function isImageUrl(value) {
   return result;
 }
 
+// 检测是否为文档URL（Word、PDF等）
+function isDocumentUrl(value) {
+  if (!value || typeof value !== 'string') {
+    console.log(`🔍 [isDocumentUrl] 输入无效:`, value);
+    return false;
+  }
+  const v = value.trim();
+  
+  // 检查是否是文档URL（Word、PDF等）
+  const docPatterns = [
+    /^https?:\/\/.*\.(docx?|pdf|txt)(\?.*)?$/i,
+    /^https?:\/\/.*\/storage\/v1\/object\/public\/.*\.(docx?|pdf|txt)/i,
+    /^https?:\/\/.*\.supabase\.(co|in)\/storage\/v1\/object\/public\/.*/i
+  ];
+  
+  const result = docPatterns.some(pattern => pattern.test(v));
+  
+  console.log(`🔍 [isDocumentUrl] 测试 "${v.substring(0, 50)}...":`, { 
+    result,
+    patterns: docPatterns.map(p => p.test(v))
+  });
+  
+  return result;
+}
+
+// 从URL提取显示文本
+function getDisplayTextFromUrl(url, context) {
+  if (!url || typeof url !== 'string') return '服务手册';
+  
+  console.log(`🔍 [getDisplayTextFromUrl] 提取显示文本:`, { url: url.substring(0, 50), context: context?.substring(0, 50) });
+  
+  // 如果有上下文，尝试从中提取产品名称
+  if (context && typeof context === 'string') {
+    // 尝试匹配类似"Coremail产品VIP级售后服务手册"的模式
+    // 先检查是否已经包含"售后服务手册"
+    if (context.includes('售后服务手册')) {
+      const manualMatch = context.match(/([^：:（）(]+)(?:售后服务手册)/);
+      if (manualMatch && manualMatch[1]) {
+        const productName = manualMatch[1].trim();
+        if (productName && productName.length > 0) {
+          const displayText = `${productName}售后服务手册`;
+          console.log(`🔍 [getDisplayTextFromUrl] 从上下文提取: "${displayText}"`);
+          return displayText;
+        }
+      }
+    }
+    // 检查是否包含"服务手册"
+    else if (context.includes('服务手册')) {
+      const manualMatch = context.match(/([^：:（）(]+)(?:服务手册)/);
+      if (manualMatch && manualMatch[1]) {
+        const productName = manualMatch[1].trim();
+        if (productName && productName.length > 0) {
+          const displayText = `${productName}服务手册`;
+          console.log(`🔍 [getDisplayTextFromUrl] 从上下文提取: "${displayText}"`);
+          return displayText;
+        }
+      }
+    }
+    
+    // 尝试提取产品名称（更通用的模式）
+    const productMatch = context.match(/([a-zA-Z0-9\u4e00-\u9fa5]+产品|[a-zA-Z0-9\u4e00-\u9fa5]+系统)/);
+    if (productMatch && productMatch[1]) {
+      const productName = productMatch[1].trim();
+      const displayText = `${productName}售后服务手册`;
+      console.log(`🔍 [getDisplayTextFromUrl] 提取产品名称: "${displayText}"`);
+      return displayText;
+    }
+  }
+  
+  // 从URL提取文件名
+  const fileName = url.split('/').pop().split('?')[0];
+  const cleanName = fileName.replace(/[_-]/g, ' ').replace(/\.[^/.]+$/, '');
+  
+  console.log(`🔍 [getDisplayTextFromUrl] 从URL提取文件名: "${fileName}" -> "${cleanName}"`);
+  
+  // 如果文件名有意义，使用它
+  if (cleanName && cleanName.length > 3 && !cleanName.match(/^[0-9a-f]{32}$/i)) {
+    // 尝试美化文件名
+    let prettyName = cleanName;
+    
+    // 移除常见的时间戳和ID
+    prettyName = prettyName.replace(/\d{4}[-_]?\d{2}[-_]?\d{2}/g, ''); // 日期
+    prettyName = prettyName.replace(/\d{10,}/g, ''); // 长数字
+    prettyName = prettyName.replace(/^[\s_-]+|[\s_-]+$/g, ''); // 首尾空格和下划线
+    
+    // 如果美化后有内容，使用它
+    if (prettyName && prettyName.length > 2) {
+      console.log(`🔍 [getDisplayTextFromUrl] 美化文件名: "${prettyName}"`);
+      return prettyName;
+    }
+    
+    console.log(`🔍 [getDisplayTextFromUrl] 使用原始文件名: "${cleanName}"`);
+    return cleanName;
+  }
+  
+  console.log(`🔍 [getDisplayTextFromUrl] 使用默认文本: "服务手册"`);
+  return '服务手册';
+}
+
 function guessImageMime(url) {
   const lower = url.toLowerCase().split('?')[0];
   if (lower.endsWith('.png')) return 'image/png';
@@ -189,6 +288,20 @@ async function fetchImageAsArrayBuffer(url) {
 
 function buildImageRunXml(rId, cxEmu, cyEmu) {
   return `<w:r><w:rPr><w:noProof/></w:rPr><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cxEmu}" cy="${cyEmu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${Math.floor(Math.random() * 100000)}" name="injected_image"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="injected.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cxEmu}" cy="${cyEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+}
+
+// 构建超链接XML
+function buildHyperlinkXml(rId, displayText, url) {
+  return `<w:hyperlink r:id="${rId}" w:history="1" w:tooltip="${escapeXml(url)}">
+    <w:r>
+      <w:rPr>
+        <w:rStyle w:val="Hyperlink"/>
+        <w:color w:val="0000FF"/>
+        <w:u w:val="single"/>
+      </w:rPr>
+      <w:t>${escapeXml(displayText)}</w:t>
+    </w:r>
+  </w:hyperlink>`;
 }
 
 function parseRelsXml(relsXml) {
@@ -462,7 +575,8 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
 
     const paraXml = matchingParagraph.xml;
     const isImage = isImageUrl(value) && imageRidMap && imageRidMap[blank.id];
-    console.log(`🔍 空白 ${blank.id} 是否为图片: ${isImage}, imageRidMap[blank.id]:`, imageRidMap?.[blank.id]);
+    const isDocUrl = isDocumentUrl(value);
+    console.log(`🔍 空白 ${blank.id} 是否为图片: ${isImage}, 是否为文档URL: ${isDocUrl}, imageRidMap[blank.id]:`, imageRidMap?.[blank.id]);
     let newParaXml = paraXml;
 
     if (blank.type === 'empty_cell' || blank.matchText === '[空白单元格]') {
@@ -472,6 +586,13 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
         console.log(`🔍 插入图片到 empty_cell: rId=${imgInfo.rId}, cx=${imgInfo.cxEmu}, cy=${imgInfo.cyEmu}`);
         newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
         console.log(`✅ empty_cell 图片插入完成`);
+      } else if (isDocUrl) {
+        // 处理文档URL：插入超链接
+        const displayText = getDisplayTextFromUrl(value, blank.context);
+        const hyperlinkRId = `rId_doc_${Math.floor(Math.random() * 10000)}`;
+        console.log(`🔍 插入文档超链接到 empty_cell: ${displayText} -> ${value}`);
+        newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
+        console.log(`✅ empty_cell 文档超链接插入完成`);
       } else {
         console.log(`🔍 插入文本到 empty_cell: ${value.substring(0, 50)}...`);
         newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
@@ -492,6 +613,13 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
           console.log(`🔍 插入图片到段落末尾: rId=${imgInfo.rId}`);
           newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
           console.log(`✅ attachment 图片插入完成`);
+        } else if (isDocUrl) {
+          // 处理文档URL：插入超链接
+          const displayText = getDisplayTextFromUrl(value, blank.context);
+          const hyperlinkRId = `rId_doc_${Math.floor(Math.random() * 10000)}`;
+          console.log(`🔍 插入文档超链接到段落末尾: ${displayText} -> ${value}`);
+          newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
+          console.log(`✅ attachment 文档超链接插入完成`);
         } else {
           console.log(`🔍 插入文本到段落末尾: ${value.substring(0, 50)}...`);
           newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
@@ -505,6 +633,19 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
             for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
             let tempParaXml = rebuildParagraphXml(paraXml, nodes);
             newParaXml = tempParaXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
+          } else if (isDocUrl) {
+            // 处理文档URL：插入超链接
+            const displayText = getDisplayTextFromUrl(value, blank.context);
+            const hyperlinkRId = `rId_doc_${Math.floor(Math.random() * 10000)}`;
+            console.log(`🔍 插入文档超链接替换空白: ${displayText} -> ${value}`);
+            
+            // 清空原有文本节点
+            for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
+            let tempParaXml = rebuildParagraphXml(paraXml, nodes);
+            
+            // 插入超链接
+            newParaXml = tempParaXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
+            console.log(`✅ 文档超链接替换完成`);
           } else {
             for (let i = 0; i < coveredNodes.length; i++) {
               coveredNodes[i]._replaced = true;
@@ -657,12 +798,14 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
   
   const imageRidMap = {};
   const imageEntries = [];
+  const hyperlinkEntries = [];
 
   for (const blank of blanks) {
     let val = filledValues[blank.id];
     console.log(`🔍 检查空白 ${blank.id}:`, { 
       value: val, 
       isImageUrl: isImageUrl(val),
+      isDocumentUrl: isDocumentUrl(val),
       blankType: blank.type,
       matchText: blank.matchText,
       context: blank.context?.substring(0, 50) + '...'
@@ -702,8 +845,16 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
       console.log(`🔍 空白 ${blank.id} 替换后值: "${val}"`);
     }
     
-    if (!val || !isImageUrl(val)) continue;
-    imageEntries.push({ blankId: blank.id, url: val.trim() });
+    // 收集图片条目
+    if (val && isImageUrl(val)) {
+      imageEntries.push({ blankId: blank.id, url: val.trim() });
+    }
+    
+    // 收集文档URL条目（用于超链接）
+    if (val && isDocumentUrl(val)) {
+      hyperlinkEntries.push({ blankId: blank.id, url: val.trim() });
+      console.log(`✅ 收集文档URL: ${blank.id} -> ${val.substring(0, 50)}...`);
+    }
   }
   
   console.log('🔍 图片条目收集结果:', { imageEntriesCount: imageEntries.length, imageEntries });
@@ -779,6 +930,34 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
     console.log('🔍 关系文件更新完成，imageRidMap:', imageRidMap);
   } else {
     console.log('🔍 没有图片需要插入到Word文档');
+  }
+
+  // 处理超链接关系（如果需要）
+  if (hyperlinkEntries.length > 0) {
+    console.log('🔍 发现超链接条目，需要添加到关系文件:', hyperlinkEntries.length);
+    
+    // 确保有_rels文件
+    let relsXml = zip.file(RELS_PATH)?.asText();
+    if (!relsXml) {
+      relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+      zip.file(RELS_PATH, relsXml);
+    }
+    
+    const HYPERLINK_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
+    let updatedRelsXml = relsXml;
+    
+    // 为每个超链接添加关系
+    hyperlinkEntries.forEach((entry, index) => {
+      const rId = `rId_hyperlink_${index + 1}`;
+      // 在</Relationships>标签前插入关系
+      updatedRelsXml = updatedRelsXml.replace('</Relationships>', 
+        `<Relationship Id="${rId}" Type="${HYPERLINK_REL_TYPE}" Target="${entry.url}" TargetMode="External"/>\n</Relationships>`);
+      
+      console.log(`✅ 添加超链接关系: ${rId} -> ${entry.url.substring(0, 50)}...`);
+    });
+    
+    zip.file(RELS_PATH, updatedRelsXml);
+    console.log('🔍 超链接关系添加完成');
   }
 
   const finalXml = replaceBlanksInXml(modifiedXml, blanks, filledValues, imageRidMap);

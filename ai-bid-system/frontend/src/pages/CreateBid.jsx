@@ -178,23 +178,64 @@ export default function CreateBid() {
         console.log('🔍 查询条件 company_name:', productCompanyName.trim());
         console.log('🔍 用户ID:', user.id);
         
-        const { data, error } = await supabase
+        // 1. 先查询产品
+        const { data: products, error: productsError } = await supabase
           .from('products')
           .select('*')
           .eq('user_id', user.id)
           .eq('company_name', productCompanyName.trim())
           .order('product_name')
           .order('version');
-
-        if (error) throw error;
-
-        console.log('🔍 查询到的产品数据:', data);
-        console.log('🔍 查询到的产品数量:', data?.length || 0);
+        
+        if (productsError) throw productsError;
+        
+        console.log('🔍 查询到的产品数据:', products);
+        console.log('🔍 查询到的产品数量:', products?.length || 0);
+        
+        // 2. 如果有产品，查询相关资产
+        let assets = [];
+        if (products && products.length > 0) {
+          const productIds = products.map(p => p.id);
+          console.log('🔍 产品ID列表:', productIds);
+          
+          const { data: assetsData, error: assetsError } = await supabase
+            .from('product_assets')
+            .select('product_id, asset_name, asset_type, file_url')
+            .in('product_id', productIds);
+          
+          if (assetsError) throw assetsError;
+          assets = assetsData || [];
+          console.log('🔍 查询到的产品资产:', assets);
+          console.log('🔍 查询到的资产数量:', assets.length || 0);
+        } else {
+          console.log('🔍 没有找到产品，跳过资产查询');
+        }
+        
+        const data = products || [];
 
         const productMap = {};
         const rawData = data || [];
+        
+        // 创建产品ID到服务手册状态的映射
+        const productHasServiceManual = {};
+        assets.forEach(asset => {
+          if (asset.asset_type === 'document') {
+            const isServiceManual = asset.asset_name && (
+              asset.asset_name.includes('售后服务手册') || 
+              asset.asset_name.includes('服务手册') ||
+              (asset.file_url && (asset.file_url.includes('.doc') || asset.file_url.includes('.docx')))
+            );
+            if (isServiceManual) {
+              productHasServiceManual[asset.product_id] = true;
+              console.log(`🔍 产品 ${asset.product_id} 有服务手册: ${asset.asset_name}`);
+            }
+          }
+        });
+        
         rawData.forEach(product => {
           console.log(`🔍 处理产品: ${product.product_name} ${product.version || '无版本'}, ID: ${product.id}`);
+          const hasServiceManual = productHasServiceManual[product.id] || false;
+          
           if (!productMap[product.product_name]) {
             productMap[product.product_name] = {
               title: product.product_name,
@@ -204,10 +245,15 @@ export default function CreateBid() {
             };
           }
           const versionTitle = product.version ? product.version : '默认版本';
+          const titleWithIcon = hasServiceManual 
+            ? `${versionTitle} 📚`  // 添加服务手册图标
+            : versionTitle;
+          
           productMap[product.product_name].children.push({
-            title: versionTitle,
+            title: titleWithIcon,
             value: product.id,
-            key: product.id
+            key: product.id,
+            hasServiceManual: hasServiceManual
           });
         });
 
@@ -215,11 +261,19 @@ export default function CreateBid() {
           if (group.children.length === 1) {
             const childProduct = rawData.find(p => p.id === group.children[0].value);
             if (childProduct && !childProduct.version) {
+              // 单版本产品，直接显示为叶子节点
+              const hasServiceManual = group.children[0].hasServiceManual || false;
+              const titleWithIcon = hasServiceManual 
+                ? `${group.title} 📚`  // 添加服务手册图标
+                : group.title;
+              
               return {
                 ...group,
+                title: titleWithIcon,
                 children: undefined,
                 value: group.children[0].value,
                 isLeaf: true,
+                hasServiceManual: hasServiceManual
               };
             }
           }
@@ -446,12 +500,27 @@ export default function CreateBid() {
               }
               
               if (texts.length > 0) {
-                assetPrompt += '包含文本资产内容（如需引用本产品条款，请直接参考以下文本）：\n';
+                assetPrompt += '包含文本资产内容（如需引用产品信息，请参考以下内容）：\n';
                 texts.forEach(txt => {
-                  const contentPreview = txt.text_content && txt.text_content.length > 5000 
-                    ? `${txt.text_content.substring(0, 5000)}...(全文共 ${txt.text_content.length} 字，已截断)` 
-                    : txt.text_content || '';
-                  assetPrompt += `- [${txt.asset_name}]：${contentPreview}\n`;
+                  // 判断是否为服务手册
+                  const isServiceManual = txt.asset_name && (
+                    txt.asset_name.includes('售后服务手册') || 
+                    txt.asset_name.includes('服务手册') ||
+                    (txt.asset_type === 'document' && txt.file_url && 
+                     (txt.file_url.includes('.doc') || txt.file_url.includes('.docx')))
+                  );
+                  
+                  if (isServiceManual && txt.file_url) {
+                    // 服务手册：提供URL，不提供内容预览
+                    assetPrompt += `- [${txt.asset_name}]：文档URL - ${txt.file_url}\n`;
+                    console.log(`🔍 识别为服务手册: ${txt.asset_name}, URL: ${txt.file_url}`);
+                  } else {
+                    // 普通文档：截断显示内容
+                    const contentPreview = txt.text_content && txt.text_content.length > 5000 
+                      ? `${txt.text_content.substring(0, 5000)}...(全文共 ${txt.text_content.length} 字，已截断)` 
+                      : txt.text_content || '';
+                    assetPrompt += `- [${txt.asset_name}]：${contentPreview}\n`;
+                  }
                 });
               }
             });

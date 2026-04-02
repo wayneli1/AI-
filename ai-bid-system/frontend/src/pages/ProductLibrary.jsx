@@ -184,7 +184,36 @@ const ProductLibrary = () => {
         try {
           const extractedText = await extractTextFromDocument(file);
           setTextContent(extractedText);
-          message.success('文档上传成功，文本已自动提取');
+          
+          // 自动识别服务手册
+          const isServiceManual = 
+            // 通过文件名识别
+            file.name.includes('服务手册') || 
+            file.name.includes('售后') ||
+            file.name.includes('manual') ||
+            file.name.includes('Manual') ||
+            // 通过内容识别
+            extractedText.includes('售后服务') ||
+            extractedText.includes('服务手册') ||
+            extractedText.includes('服务条款') ||
+            extractedText.includes('保修') ||
+            extractedText.includes('维护');
+          
+          if (isServiceManual) {
+            message.success('服务手册上传成功，已自动识别');
+            
+            // 自动填写资产名称（如果为空）
+            if (!assetName.trim()) {
+              // 从文件名提取有意义的名称
+              const fileName = file.name.replace(/\.[^/.]+$/, ''); // 移除扩展名
+              const cleanName = fileName.replace(/[_-]/g, ' ').replace(/\d{4}[-_]?\d{2}[-_]?\d{2}/g, '').trim();
+              if (cleanName && cleanName.length > 0) {
+                setAssetName(cleanName);
+              }
+            }
+          } else {
+            message.success('文档上传成功，文本已自动提取');
+          }
         } catch (extractError) {
           console.error('文本提取失败:', extractError);
           message.warning('文档上传成功，但文本提取失败，请手动输入或重新上传');
