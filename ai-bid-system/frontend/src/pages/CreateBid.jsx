@@ -49,6 +49,7 @@ export default function CreateBid() {
 
   // 产品资产库相关状态
   const [selectedProductIds, setSelectedProductIds] = useState([]);
+  const [selectedServiceManualIds, setSelectedServiceManualIds] = useState([]);
   const [productTreeData, setProductTreeData] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [productCompanyName, setProductCompanyName] = useState('');
@@ -200,7 +201,7 @@ export default function CreateBid() {
           
           const { data: assetsData, error: assetsError } = await supabase
             .from('product_assets')
-            .select('product_id, asset_name, asset_type, file_url')
+            .select('id, product_id, asset_name, asset_type, file_url, text_content')
             .in('product_id', productIds);
           
           if (assetsError) throw assetsError;
@@ -212,29 +213,43 @@ export default function CreateBid() {
         }
         
         const data = products || [];
-
-        const productMap = {};
         const rawData = data || [];
         
-        // 创建产品ID到服务手册状态的映射
-        const productHasServiceManual = {};
+        // 1. 按产品ID分组资产
+        const assetsByProductId = {};
+        const serviceManualsByProductId = {};
+        
         assets.forEach(asset => {
+          const productId = asset.product_id;
+          
+          if (!assetsByProductId[productId]) {
+            assetsByProductId[productId] = [];
+          }
+          assetsByProductId[productId].push(asset);
+          
+          // 识别服务手册
           if (asset.asset_type === 'document') {
             const isServiceManual = asset.asset_name && (
               asset.asset_name.includes('售后服务手册') || 
               asset.asset_name.includes('服务手册') ||
               (asset.file_url && (asset.file_url.includes('.doc') || asset.file_url.includes('.docx')))
             );
+            
             if (isServiceManual) {
-              productHasServiceManual[asset.product_id] = true;
-              console.log(`🔍 产品 ${asset.product_id} 有服务手册: ${asset.asset_name}`);
+              if (!serviceManualsByProductId[productId]) {
+                serviceManualsByProductId[productId] = [];
+              }
+              serviceManualsByProductId[productId].push(asset);
+              console.log(`🔍 产品 ${productId} 有服务手册: ${asset.asset_name}`);
             }
           }
         });
         
+        // 2. 构建产品树
+        const productMap = {};
+        
         rawData.forEach(product => {
           console.log(`🔍 处理产品: ${product.product_name} ${product.version || '无版本'}, ID: ${product.id}`);
-          const hasServiceManual = productHasServiceManual[product.id] || false;
           
           if (!productMap[product.product_name]) {
             productMap[product.product_name] = {
@@ -244,19 +259,49 @@ export default function CreateBid() {
               children: []
             };
           }
+          
+          const productAssets = assetsByProductId[product.id] || [];
+          const productServiceManuals = serviceManualsByProductId[product.id] || [];
+          const hasServiceManual = productServiceManuals.length > 0;
+          
           const versionTitle = product.version ? product.version : '默认版本';
           const titleWithIcon = hasServiceManual 
             ? `${versionTitle} 📚`  // 添加服务手册图标
             : versionTitle;
           
-          productMap[product.product_name].children.push({
+          // 创建产品版本节点
+          const productNode = {
             title: titleWithIcon,
             value: product.id,
             key: product.id,
-            hasServiceManual: hasServiceManual
-          });
+            isProduct: true,
+            hasServiceManual: hasServiceManual,
+            children: []
+          };
+          
+          // 添加服务手册子节点
+          if (productServiceManuals.length > 0) {
+            productServiceManuals.forEach((manual, index) => {
+              const manualId = `manual-${product.id}-${manual.id}`;
+              productNode.children.push({
+                title: `${manual.asset_name} 📄`,
+                value: manualId,
+                key: manualId,
+                isServiceManual: true,
+                assetId: manual.id,
+                assetName: manual.asset_name,
+                fileUrl: manual.file_url,
+                productId: product.id,
+                productName: product.product_name,
+                productVersion: product.version
+              });
+            });
+          }
+          
+          productMap[product.product_name].children.push(productNode);
         });
-
+        
+        // 3. 处理单版本产品（无版本号）
         let treeData = Object.values(productMap).map(group => {
           if (group.children.length === 1) {
             const childProduct = rawData.find(p => p.id === group.children[0].value);
@@ -267,20 +312,34 @@ export default function CreateBid() {
                 ? `${group.title} 📚`  // 添加服务手册图标
                 : group.title;
               
-              return {
+              const singleProductNode = {
                 ...group,
                 title: titleWithIcon,
-                children: undefined,
                 value: group.children[0].value,
+                key: group.children[0].value,
                 isLeaf: true,
+                isProduct: true,
                 hasServiceManual: hasServiceManual
               };
+              
+              // 如果有服务手册，添加为子节点
+              if (group.children[0].children && group.children[0].children.length > 0) {
+                singleProductNode.children = group.children[0].children;
+                singleProductNode.isLeaf = false;
+              }
+              
+              return singleProductNode;
             }
           }
           return group;
         });
-
+        
         console.log('🔍 构建的产品树数据:', treeData);
+        console.log('🔍 服务手册统计:', {
+          总产品数: rawData.length,
+          有服务手册的产品数: Object.keys(serviceManualsByProductId).length,
+          总服务手册数: Object.values(serviceManualsByProductId).reduce((sum, arr) => sum + arr.length, 0)
+        });
         setProductTreeData(treeData);
       } catch (error) {
         console.error('加载产品数据失败:', error);
@@ -294,6 +353,40 @@ export default function CreateBid() {
     return () => clearTimeout(debounceTimer);
   }, [productCompanyName, user]);
 
+  // 处理树选择变化
+  const handleTreeSelectChange = useCallback((selectedValues) => {
+    console.log('🔍 handleTreeSelectChange 收到选择值:', selectedValues);
+    
+    if (!Array.isArray(selectedValues)) {
+      selectedValues = [];
+    }
+    
+    // 分离产品ID和服务手册ID
+    const productIds = [];
+    const serviceManualIds = [];
+    
+    selectedValues.forEach(value => {
+      if (typeof value === 'string') {
+        if (value.startsWith('manual-')) {
+          // 服务手册ID格式: manual-{productId}-{assetId}
+          serviceManualIds.push(value);
+        } else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+          // UUID格式的产品ID
+          productIds.push(value);
+        }
+      }
+    });
+    
+    console.log('🔍 分离后的ID:', {
+      产品ID: productIds,
+      服务手册ID: serviceManualIds,
+      产品数量: productIds.length,
+      服务手册数量: serviceManualIds.length
+    });
+    
+    setSelectedProductIds(productIds);
+    setSelectedServiceManualIds(serviceManualIds);
+  }, []);
 
   const previewParagraphs = useMemo(() => {
     if (!originalXml || scannedBlanks.length === 0) return [];
@@ -424,11 +517,13 @@ export default function CreateBid() {
     try {
       message.loading({ content: `正在调用 AI 分析并填写 ${scannedBlanks.length} 处空白...`, key: 'fill', duration: 0 });
 
-      console.log('🔍 [handleAutoFill] 调试信息开始');
+       console.log('🔍 [handleAutoFill] 调试信息开始');
       console.log('🔍 targetCompany:', targetCompany);
       console.log('🔍 productCompanyName:', productCompanyName);
       console.log('🔍 selectedProductIds:', selectedProductIds);
       console.log('🔍 selectedProductIds长度:', selectedProductIds.length);
+      console.log('🔍 selectedServiceManualIds:', selectedServiceManualIds);
+      console.log('🔍 selectedServiceManualIds长度:', selectedServiceManualIds.length);
       
       const structuredProfile = buildStructuredProfile(selectedCompany);
       
@@ -442,17 +537,48 @@ export default function CreateBid() {
       console.log('🔍 productUuids过滤后:', productUuids);
       console.log('🔍 productUuids长度:', productUuids.length);
 
-      if (productUuids.length > 0 && user) {
-        console.log('🔍 开始查询产品资产，产品UUID列表:', productUuids);
+      // 处理服务手册选择
+      const serviceManualAssetIds = [];
+      selectedServiceManualIds.forEach(id => {
+        // 解析服务手册ID格式: manual-{productId}-{assetId}
+        const parts = id.split('-');
+        if (parts.length >= 3 && parts[0] === 'manual') {
+          const assetId = parts.slice(2).join('-'); // 获取assetId部分
+          serviceManualAssetIds.push(assetId);
+        }
+      });
+      
+      console.log('🔍 服务手册资产ID:', serviceManualAssetIds);
+
+      if ((productUuids.length > 0 || serviceManualAssetIds.length > 0) && user) {
+        console.log('🔍 开始查询产品资产');
         try {
-          const { data: assets, error } = await supabase
-            .from('product_assets')
-            .select('*, products!inner(product_name, version)')
-            .in('product_id', productUuids);
-
-          if (error) throw error;
-
-          console.log('🔍 查询到的产品资产数据:', assets);
+          let assets = [];
+          
+          if (serviceManualAssetIds.length > 0) {
+            // 只查询选中的服务手册
+            console.log('🔍 查询选中的服务手册资产，资产ID列表:', serviceManualAssetIds);
+            const { data: manualAssets, error: manualError } = await supabase
+              .from('product_assets')
+              .select('*, products!inner(product_name, version)')
+              .in('id', serviceManualAssetIds);
+            
+            if (manualError) throw manualError;
+            assets = manualAssets || [];
+            console.log('🔍 查询到的服务手册资产:', assets);
+          } else if (productUuids.length > 0) {
+            // 查询选中产品的所有资产
+            console.log('🔍 查询产品所有资产，产品UUID列表:', productUuids);
+            const { data: productAssets, error: productError } = await supabase
+              .from('product_assets')
+              .select('*, products!inner(product_name, version)')
+              .in('product_id', productUuids);
+            
+            if (productError) throw productError;
+            assets = productAssets || [];
+            console.log('🔍 查询到的产品资产数据:', assets);
+          }
+          
           console.log('🔍 查询到的资产数量:', assets?.length || 0);
 
           // 按产品分组（使用标准化后的产品名称）
@@ -1122,13 +1248,8 @@ export default function CreateBid() {
                   <Package size={14} className="text-gray-500 mr-1" />
                   <TreeSelect
                     treeData={productTreeData}
-                    value={selectedProductIds}
-                    onChange={(value) => {
-                      console.log('🔍 TreeSelect onChange:', value);
-                      console.log('🔍 TreeSelect value类型:', typeof value);
-                      console.log('🔍 TreeSelect value长度:', Array.isArray(value) ? value.length : '非数组');
-                      setSelectedProductIds(value);
-                    }}
+                     value={[...selectedProductIds, ...selectedServiceManualIds]}
+                     onChange={handleTreeSelectChange}
                     treeCheckable={true}
                     showCheckedStrategy={TreeSelect.SHOW_CHILD}
                     placeholder="关联产品资质"
