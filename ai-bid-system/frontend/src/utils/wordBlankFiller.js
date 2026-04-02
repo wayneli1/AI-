@@ -14,16 +14,27 @@ function determineFillRole(text) {
 // 标准化产品名称：处理中英文混合的空格问题
 function normalizeProductName(name) {
   if (!name || typeof name !== 'string') return '';
-  // 1. 移除所有空格
-  let normalized = name.replace(/\s+/g, '');
-  // 2. 在英文单词和中文之间添加空格
+  // 1. 统一处理连字符前后的空格
+  let normalized = name.replace(/\s*-\s*/g, '-');
+  // 2. 移除所有空格
+  normalized = normalized.replace(/\s+/g, '');
+  // 3. 在英文单词和中文之间添加空格
   normalized = normalized.replace(/([a-zA-Z])([\u4e00-\u9fa5])/g, '$1 $2');
   normalized = normalized.replace(/([\u4e00-\u9fa5])([a-zA-Z])/g, '$1 $2');
-  // 3. 在英文单词和数字之间添加空格
+  // 4. 在英文单词和数字之间添加空格
   normalized = normalized.replace(/([a-zA-Z])(\d)/g, '$1 $2');
   normalized = normalized.replace(/(\d)([a-zA-Z])/g, '$1 $2');
-  // 4. 移除多余空格，保留单词间单个空格
+  // 5. 移除多余空格，保留单词间单个空格
   return normalized.replace(/\s+/g, ' ').trim();
+}
+
+// 构建占位符正则表达式
+function buildPlaceholderRegex(placeholder) {
+  // 转义特殊字符
+  const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // 将空格替换为 \\s*（允许0个或多个空格）
+  const pattern = escaped.replace(/\\s+/g, '\\\\s*');
+  return new RegExp(pattern, 'g');
 }
 
 function getVisibleTextFromXml(xml) {
@@ -669,9 +680,22 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
         if (normalizedVal.includes(normalizedPlaceholder)) {
           console.log(`✅ 找到占位符匹配: ${placeholder} -> ${realUrl}`);
           // 使用正则表达式替换，忽略空格差异
-          const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const regex = new RegExp(escapedPlaceholder.replace(/\s+/g, '\\s*'), 'g');
-          val = val.replace(regex, realUrl);
+          const oldVal = val;
+          const regex = buildPlaceholderRegex(placeholder);
+          const newVal = val.replace(regex, realUrl);
+          
+          console.log(`🔍 [generateFilledDocx] 替换测试: 正则表达式 ${regex}`);
+          console.log(`🔍 [generateFilledDocx] 替换测试: 旧值 "${oldVal}"`);
+          console.log(`🔍 [generateFilledDocx] 替换测试: 新值 "${newVal}"`);
+          
+          if (oldVal !== newVal) {
+            val = newVal;
+            console.log(`✅ [generateFilledDocx] 替换成功`);
+          } else {
+            console.log(`❌ [generateFilledDocx] 正则表达式替换失败，尝试直接替换`);
+            // 如果正则表达式替换失败，尝试直接替换
+            val = realUrl;
+          }
           break;
         }
       }

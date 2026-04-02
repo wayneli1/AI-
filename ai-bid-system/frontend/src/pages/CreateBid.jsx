@@ -61,16 +61,17 @@ export default function CreateBid() {
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
     if (!name || typeof name !== 'string') return '';
-    // 1. 移除所有空格
-    let normalized = name.replace(/\s+/g, '');
-    // 2. 在英文单词和中文之间添加空格（可选，根据需求）
-    // 例如：CoremailXT电子邮件系统 -> Coremail XT 电子邮件系统
+    // 1. 统一处理连字符前后的空格
+    let normalized = name.replace(/\s*-\s*/g, '-');
+    // 2. 移除所有空格
+    normalized = normalized.replace(/\s+/g, '');
+    // 3. 在英文单词和中文之间添加空格
     normalized = normalized.replace(/([a-zA-Z])([\u4e00-\u9fa5])/g, '$1 $2');
     normalized = normalized.replace(/([\u4e00-\u9fa5])([a-zA-Z])/g, '$1 $2');
-    // 3. 在英文单词和数字之间添加空格
+    // 4. 在英文单词和数字之间添加空格
     normalized = normalized.replace(/([a-zA-Z])(\d)/g, '$1 $2');
     normalized = normalized.replace(/(\d)([a-zA-Z])/g, '$1 $2');
-    // 4. 移除多余空格，保留单词间单个空格
+    // 5. 移除多余空格，保留单词间单个空格
     return normalized.replace(/\s+/g, ' ').trim();
   }, []);
 
@@ -81,6 +82,15 @@ export default function CreateBid() {
     const normalizedPlaceholder = normalizeProductName(placeholder);
     return normalizedValue.includes(normalizedPlaceholder);
   }, [normalizeProductName]);
+
+  // 构建占位符正则表达式
+  const buildPlaceholderRegex = useCallback((placeholder) => {
+    // 转义特殊字符
+    const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // 将空格替换为 \\s*（允许0个或多个空格）
+    const pattern = escaped.replace(/\\s+/g, '\\\\s*');
+    return new RegExp(pattern, 'g');
+  }, []);
 
   const [highlightBlankId, setHighlightBlankId] = useState(null);
   const previewRef = useRef(null);
@@ -529,11 +539,27 @@ export default function CreateBid() {
               // 使用模糊匹配
               if (fuzzyMatchPlaceholder(value, placeholder)) {
                 console.log(`✅ 模糊匹配占位符 ${placeholder}，替换为 ${realUrl}`);
-                // 使用正则表达式替换，忽略空格差异
-                const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-                const regex = new RegExp(escapedPlaceholder.replace(/\s+/g, '\\s*'), 'g');
-                value = value.replace(regex, realUrl);
-                replaced = true;
+                
+                // 使用新的正则表达式构建函数
+                const oldValue = value;
+                const regex = buildPlaceholderRegex(placeholder);
+                const newValue = value.replace(regex, realUrl);
+                
+                console.log(`🔍 替换测试: 正则表达式 ${regex}`);
+                console.log(`🔍 替换测试: 旧值 "${oldValue}"`);
+                console.log(`🔍 替换测试: 新值 "${newValue}"`);
+                console.log(`🔍 替换测试: 是否改变 ${oldValue !== newValue}`);
+                
+                if (oldValue !== newValue) {
+                  value = newValue;
+                  replaced = true;
+                  console.log(`✅ 替换成功: ${placeholder} -> ${realUrl}`);
+                } else {
+                  console.log(`❌ 正则表达式替换失败，尝试直接替换`);
+                  // 如果正则表达式替换失败，尝试直接替换
+                  value = realUrl;
+                  replaced = true;
+                }
                 break; // 找到匹配后跳出循环
               } else if (value.includes(placeholder)) {
                 console.log(`✅ 精确匹配占位符 ${placeholder}，替换为 ${realUrl}`);
