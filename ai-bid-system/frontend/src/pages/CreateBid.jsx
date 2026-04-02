@@ -541,10 +541,32 @@ export default function CreateBid() {
       const serviceManualAssetIds = [];
       selectedServiceManualIds.forEach(id => {
         // 解析服务手册ID格式: manual-{productId}-{assetId}
-        const parts = id.split('-');
-        if (parts.length >= 3 && parts[0] === 'manual') {
-          const assetId = parts.slice(2).join('-'); // 获取assetId部分
-          serviceManualAssetIds.push(assetId);
+        // 示例: manual-0b5e5bd1-b437-441d-b048-63b6ee218464-7437b908-2b65-4551-af95-9a728e998078
+        if (id.startsWith('manual-')) {
+          // 移除 "manual-" 前缀
+          const idWithoutPrefix = id.substring(7); // "manual-".length = 7
+          
+          // UUID格式: 8-4-4-4-12 字符，共36个字符
+          // productId是前36个字符
+          if (idWithoutPrefix.length >= 36) {
+            const productId = idWithoutPrefix.substring(0, 36);
+            const assetId = idWithoutPrefix.substring(37); // 跳过中间的连字符
+            
+            console.log(`🔍 解析服务手册ID: ${id}`);
+            console.log(`🔍   productId: ${productId}`);
+            console.log(`🔍   assetId: ${assetId}`);
+            
+            // 验证assetId是否是有效的UUID格式
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (uuidRegex.test(assetId)) {
+              serviceManualAssetIds.push(assetId);
+              console.log(`✅ 有效assetId: ${assetId}`);
+            } else {
+              console.warn(`⚠️ 无效的assetId格式: ${assetId}`);
+            }
+          } else {
+            console.warn(`⚠️ 服务手册ID格式错误: ${id}`);
+          }
         }
       });
       
@@ -563,9 +585,22 @@ export default function CreateBid() {
               .select('*, products!inner(product_name, version)')
               .in('id', serviceManualAssetIds);
             
-            if (manualError) throw manualError;
+             if (manualError) {
+              console.error('❌ 查询服务手册资产失败:', manualError);
+              throw manualError;
+            }
             assets = manualAssets || [];
             console.log('🔍 查询到的服务手册资产:', assets);
+            console.log('🔍 查询到的服务手册数量:', assets.length);
+            if (assets.length > 0) {
+              console.log('🔍 第一个服务手册详情:', {
+                id: assets[0].id,
+                asset_name: assets[0].asset_name,
+                asset_type: assets[0].asset_type,
+                file_url: assets[0].file_url,
+                product_name: assets[0].products?.product_name
+              });
+            }
           } else if (productUuids.length > 0) {
             // 查询选中产品的所有资产
             console.log('🔍 查询产品所有资产，产品UUID列表:', productUuids);
@@ -650,13 +685,18 @@ export default function CreateBid() {
                 });
               }
             });
-          }
-        } catch (assetError) {
-          console.warn('加载产品资产失败，继续执行:', assetError);
-        }
-      }
-      
-      console.log('🔍 localImageUrlMap构建结果:', localImageUrlMap);
+           }
+           
+           // 记录assetPrompt内容
+           console.log('🔍 assetPrompt内容预览（前1000字符）:', assetPrompt.substring(0, 1000));
+           console.log('🔍 assetPrompt总长度:', assetPrompt.length);
+           console.log('🔍 assetPrompt是否包含服务手册URL:', assetPrompt.includes('文档URL - http'));
+         } catch (assetError) {
+           console.warn('加载产品资产失败，继续执行:', assetError);
+         }
+       }
+       
+       console.log('🔍 localImageUrlMap构建结果:', localImageUrlMap);
       console.log('🔍 localImageUrlMap条目数量:', Object.keys(localImageUrlMap).length);
       console.log('🔍 localImageUrlMap键列表（标准化后）:');
       Object.keys(localImageUrlMap).forEach(key => {
