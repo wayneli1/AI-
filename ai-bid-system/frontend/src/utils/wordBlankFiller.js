@@ -237,9 +237,14 @@ export function scanBlanksFromXml(xmlString) {
 
       const attachmentKeywords = ['营业执照', '审计报告', '资信证明', '法人证书', '资质证书', '财务报表', '无重大违法记录', '资格证明文件', '声明', '承诺函'];
       const hasAttachmentHint = attachmentKeywords.some(kw => text.includes(kw));
-      const isRequirement = /复印件|原件|提供|出具|须具备|副本|声明|加盖公章/.test(text);
+      const hasBlankMarker = /_{3,}|-{4,}|[：:]\s{3,}/.test(text);
+      const isRequirement = /复印件|原件|提供|出具|须具备|副本|声明|加盖公章/.test(text) || hasBlankMarker;
+      const alreadyHasBlank = blanks.some(
+        b => b.paraIndex === currentParaIndex && 
+             ['underscore', 'dash', 'keyword_space', 'brackets', 'placeholder'].includes(b.type)
+      );
 
-      if (hasAttachmentHint && isRequirement && text.length > 5 && text.length < 300) {
+      if (hasAttachmentHint && isRequirement && !alreadyHasBlank && text.length > 5 && text.length < 300) {
         blanks.push({
           id: `blank_${++blankCounter}`,
           context: text,
@@ -293,6 +298,13 @@ export function scanBlanksFromXml(xmlString) {
   for (const b of blanks) {
     const key = `${b.paraIndex}::${b.matchText}::${b.index}`;
     if (!seen.has(key)) { seen.add(key); uniqueBlanks.push(b); }
+  }
+  const attachmentKeywordsList = ['营业执照', '审计报告', '资信证明', '法人证书', '资质证书', '财务报表', '无重大违法记录', '资格证明文件', '声明', '承诺函'];
+  for (const b of uniqueBlanks) {
+    if (['underscore', 'dash', 'keyword_space'].includes(b.type) && 
+        attachmentKeywordsList.some(kw => (b.context || '').includes(kw))) {
+      b.need_image = true;
+    }
   }
   return uniqueBlanks;
 }
@@ -479,13 +491,18 @@ export function mergeBlanks(regexBlanks, aiBlanks) {
   const merged = [...regexBlanks];
   const existingKeys = new Set(regexBlanks.map(b => `${b.paraIndex}|${b.matchText}|${b.index ?? 0}`));
   aiBlanks.forEach(aiBlank => {
-    const key = `${aiBlank.paraIndex}|${aiBlank.matchText}|${aiBlank.index ?? 0}`;
+    const computedIndex = aiBlank.index ?? 
+      (aiBlank.context && aiBlank.matchText 
+        ? aiBlank.context.indexOf(aiBlank.matchText) 
+        : 0);
+    const key = `${aiBlank.paraIndex}|${aiBlank.matchText}|${computedIndex}`;
     if (!existingKeys.has(key)) {
       merged.push({ 
         ...aiBlank, 
         id: `blank_ai_${merged.length + 1}`, 
         confidence: aiBlank.confidence || 'medium',
-        fill_role: aiBlank.fill_role || determineFillRole(aiBlank.context || '', aiBlank.type || '')
+        fill_role: aiBlank.fill_role || determineFillRole(aiBlank.context || '', aiBlank.type || ''),
+        index: computedIndex >= 0 ? computedIndex : 0
       });
       existingKeys.add(key);
     }

@@ -116,7 +116,7 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
     let markedContext = b.context;
     if (b.index !== undefined && b.matchText && b.matchText !== '[空白单元格]' && b.type !== 'attachment') {
       markedContext = b.context.substring(0, b.index) + "【🎯此处为本字段要填的位置🎯】" + b.context.substring(b.index + b.matchText.length);
-    } else if (b.type === 'empty_cell' || b.matchText === '[空白单元格]' || b.type === 'attachment') {
+    } else if (b.type === 'empty_cell' || b.matchText === '[空白单元格]' || b.type === 'attachment' || b.need_image) {
       markedContext = "【🎯此处需要插入对应资质图片，请从知识库资质图片中找到匹配的图片并输出其纯URL🎯】 " + b.context;
     }
     return { id: b.id, context: markedContext, type: b.type };
