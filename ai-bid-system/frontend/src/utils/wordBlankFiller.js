@@ -19,28 +19,73 @@ function getVisibleTextFromXml(xml) {
   return textParts.join('');
 }
 
+// 🚀🚀🚀 核心重构：2D 表格空间雷达（精准抓取表头和行号）
 function buildTableStructureMap(xmlString) {
   const cellInfos = [];
-  const rowRegex = /<w:tr[\s>]([\s\S]*?)<\/w:tr>/g;
-  let rowMatch;
-  while ((rowMatch = rowRegex.exec(xmlString)) !== null) {
-    const rowXml = rowMatch[0];
-    const rowStartGlobal = rowMatch.index;
-    const tcRegex = /<w:tc[\s>]([\s\S]*?)<\/w:tc>/g;
-    let tcMatch;
-    while ((tcMatch = tcRegex.exec(rowXml)) !== null) {
-      const tcXml = tcMatch[0];
-      const tcLocalOffset = tcMatch.index;
-      const tcGlobalOffset = rowStartGlobal + tcLocalOffset;
-      const pRegex = /<w:p[\s>]([\s\S]*?)<\/w:p>/g;
-      let pMatch;
-      while ((pMatch = pRegex.exec(tcXml)) !== null) {
-        const pLocalOffset = pMatch.index;
-        const pGlobalOffset = tcGlobalOffset + pLocalOffset;
-        const paraIdx = countParagraphsBefore(xmlString, pGlobalOffset);
-        const text = getVisibleTextFromXml(pMatch[0]).trim();
-        cellInfos.push({ paraIndex: paraIdx, cellXml: tcXml, cellLocalOffset: tcLocalOffset, rowXml, rowLocalStart: 0, cellText: text, cellGlobalOffset: tcGlobalOffset });
+  const tblRegex = /<w:tbl[\s>][\s\S]*?<\/w:tbl>/g;
+  let tblMatch;
+
+  while ((tblMatch = tblRegex.exec(xmlString)) !== null) {
+    const tblXml = tblMatch[0];
+    const tblGlobalOffset = tblMatch.index;
+
+    const rowRegex = /<w:tr[\s>][\s\S]*?<\/w:tr>/g;
+    let rowMatch;
+    let rowIndex = 0;
+    const columnHeaders = []; // 用于记忆第一行的表头
+
+    while ((rowMatch = rowRegex.exec(tblXml)) !== null) {
+      const rowXml = rowMatch[0];
+      const rowGlobalOffset = tblGlobalOffset + rowMatch.index;
+
+      // 抓取该行第一个单元格的文本，作为行标识（如：序号 1）
+      const tempTcRegex = /<w:tc[\s>][\s\S]*?<\/w:tc>/g;
+      let tempTcMatch;
+      const rowCells = [];
+      while ((tempTcMatch = tempTcRegex.exec(rowXml)) !== null) {
+         rowCells.push(getVisibleTextFromXml(tempTcMatch[0]).trim());
       }
+      const rowHeader = rowCells[0] || '';
+
+      const tcRegex = /<w:tc[\s>][\s\S]*?<\/w:tc>/g;
+      let tcMatch;
+      let colIndex = 0;
+
+      while ((tcMatch = tcRegex.exec(rowXml)) !== null) {
+        const tcXml = tcMatch[0];
+        const tcGlobalOffset = rowGlobalOffset + tcMatch.index;
+        const text = getVisibleTextFromXml(tcXml).trim();
+
+        // 识别单元格合并（跨列），确保表头对齐不错位
+        let span = 1;
+        const spanMatch = tcXml.match(/<w:gridSpan w:val="(\d+)"/);
+        if (spanMatch) span = parseInt(spanMatch[1], 10);
+
+        // 如果是第一行，死死记住列名（表头）
+        if (rowIndex === 0) {
+          for(let s=0; s<span; s++) columnHeaders[colIndex + s] = text;
+        }
+
+        const pRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
+        let pMatch;
+        while ((pMatch = pRegex.exec(tcXml)) !== null) {
+          const pLocalOffset = pMatch.index;
+          const pGlobalOffset = tcGlobalOffset + pLocalOffset;
+          const paraIdx = countParagraphsBefore(xmlString, pGlobalOffset);
+
+          cellInfos.push({
+            paraIndex: paraIdx,
+            cellXml: tcXml,
+            cellText: getVisibleTextFromXml(pMatch[0]).trim(),
+            rowIndex,
+            colIndex,
+            headerText: columnHeaders[colIndex] || '', // 头顶上的表头
+            rowHeader // 左侧的行标识
+          });
+        }
+        colIndex += span;
+      }
+      rowIndex++;
     }
   }
   return cellInfos;
@@ -50,6 +95,7 @@ function countParagraphsBefore(xmlString, globalOffset) {
   return (xmlString.substring(0, globalOffset).match(/<w:p[\s>]/g) || []).length;
 }
 
+// （保留该函数以防其他地方可能用到，但表格扫描核心已不再依赖它）
 function getPreviousCellLabel(rowXml, currentCellLocalOffset) {
   const tcRegex = /<w:tc[\s>]([\s\S]*?)<\/w:tc>/g;
   let tcMatch;
@@ -166,9 +212,6 @@ export function scanBlanksFromXml(xmlString) {
         }
       }
 
-      // 💡 重点修改：此处彻底删除了 date_pattern（日期）的匹配代码！
-      // 遇到 年 月 日 将不再视为填空。
-
       const spacePattern = /([：:])(\s{3,})/g;
       while ((m = spacePattern.exec(text)) !== null) {
         const colonStr = m[1];
@@ -212,39 +255,37 @@ export function scanBlanksFromXml(xmlString) {
     currentParaIndex++;
   }
 
+  // 🚀🚀🚀 全新升级的表格结构处理
   const cellInfos = buildTableStructureMap(xmlString);
-  const rowBuckets = new Map();
-  for (const ci of cellInfos) {
-    const rowKey = ci.rowXml;
-    if (!rowBuckets.has(rowKey)) rowBuckets.set(rowKey, []);
-    rowBuckets.get(rowKey).push(ci);
-  }
+  
+  for (const cell of cellInfos) {
+    if (cell.cellText !== '' && !/^[\s　_－-]+$/.test(cell.cellText)) continue;
+    if (cell.rowIndex === 0) continue; // 绝对跳过第一行表头
 
-  for (const [, cells] of rowBuckets) {
-    for (let i = 0; i < cells.length; i++) {
-      const cell = cells[i];
-      if (cell.cellText !== '' && !/^[\s　_－-]+$/.test(cell.cellText)) continue;
-      let label = '';
-      if (i > 0) label = getPreviousCellLabel(cell.rowXml, cell.cellLocalOffset);
-      if (!label && i === 0 && cells.length > 1) {
-        label = cells[1] ? getVisibleTextFromXml(cells[1].cellXml).trim() : '';
-      }
-      const rowFullText = getVisibleTextFromXml(cell.rowXml).trim();
-      const checkText = label || rowFullText;
-      
-      const context = label ? `${label}：[空白单元格]` : `${rowFullText}`;
-      blanks.push({
-        id: `blank_${++blankCounter}`,
-        context,
-        matchText: '[空白单元格]',
-        _cellLabel: label,
-        index: label ? label.length + 1 : 0, 
-        type: 'empty_cell',
-        confidence: 'medium',
-        paraIndex: cell.paraIndex,
-        fill_role: determineFillRole(checkText, 'empty_cell')
-      });
+    let label = '';
+    // 智能拼接：表头（项：行号） => 偏差说明（项：1）
+    if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
+      label = `${cell.headerText}（项：${cell.rowHeader}）`;
+    } else if (cell.headerText) {
+      label = cell.headerText;
+    } else if (cell.rowHeader) {
+      label = cell.rowHeader;
     }
+
+    if (!label || /^[0-9]+$/.test(label)) continue; // 过滤无意义的纯数字
+
+    const context = `${label}：[空白单元格]`;
+    blanks.push({
+      id: `blank_${++blankCounter}`,
+      context,
+      matchText: '[空白单元格]',
+      _cellLabel: label,
+      index: label.length + 1, 
+      type: 'empty_cell',
+      confidence: 'medium',
+      paraIndex: cell.paraIndex,
+      fill_role: determineFillRole(label, 'empty_cell')
+    });
   }
 
   const uniqueBlanks = [];
@@ -344,8 +385,6 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
       const { nodes, fullText } = buildTextNodeMap(paraXml);
       let matchText = blank.matchText;
       
-      // 💡 重点修改：此处也彻底移除了 date_pattern 的映射回填逻辑
-      
       const searchBlank = { ...blank, matchText };
       const blankPos = findBlankInFullText(fullText, searchBlank);
       
@@ -392,6 +431,7 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap)
 
 // ===================== Public helpers =====================
 
+// 🚀🚀🚀 同步升级：为左侧预览提供准确标签
 export function extractIndexedParagraphs(xmlString) {
   const paragraphs = [];
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
@@ -401,13 +441,21 @@ export function extractIndexedParagraphs(xmlString) {
   const cellInfos = buildTableStructureMap(xmlString);
   const tableParaSet = new Set();
   const paraToLabel = new Map();
-  const paraToRowText = new Map();
 
-  for (const ci of cellInfos) {
-    tableParaSet.add(ci.paraIndex);
-    if (ci.cellText === '' || /^[\s　_－-]+$/.test(ci.cellText)) {
-      paraToLabel.set(ci.paraIndex, getPreviousCellLabel(ci.rowXml, ci.cellLocalOffset) || '');
-      paraToRowText.set(ci.paraIndex, getVisibleTextFromXml(ci.rowXml).trim());
+  for (const cell of cellInfos) {
+    tableParaSet.add(cell.paraIndex);
+    if (cell.cellText === '' || /^[\s　_－-]+$/.test(cell.cellText)) {
+      if (cell.rowIndex === 0) continue;
+      
+      let label = '';
+      if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
+        label = `${cell.headerText}（项：${cell.rowHeader}）`;
+      } else if (cell.headerText) {
+        label = cell.headerText;
+      } else if (cell.rowHeader) {
+        label = cell.rowHeader;
+      }
+      paraToLabel.set(cell.paraIndex, label);
     }
   }
 
@@ -418,8 +466,9 @@ export function extractIndexedParagraphs(xmlString) {
       paragraphs.push({ paraIndex, text, xml }); 
     } else if (tableParaSet.has(paraIndex)) {
       const label = paraToLabel.get(paraIndex) || '';
-      const rowText = paraToRowText.get(paraIndex) || '';
-      paragraphs.push({ paraIndex, text: label ? `${label}：[空白单元格]` : (rowText || '[表格空单元格]'), xml });
+      if (label && !/^[0-9]+$/.test(label)) { // 同样过滤掉纯数字标签
+        paragraphs.push({ paraIndex, text: `${label}：[空白单元格]`, xml });
+      }
     }
     paraIndex++;
   }
