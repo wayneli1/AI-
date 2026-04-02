@@ -122,7 +122,7 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
     return { id: b.id, context: markedContext, type: b.type };
   });
 
-  const CHUNK_SIZE = 15;
+  const CHUNK_SIZE = 10;
   const chunks = [];
   for (let i = 0; i < blankList.length; i += CHUNK_SIZE) {
     chunks.push(blankList.slice(i, i + CHUNK_SIZE));

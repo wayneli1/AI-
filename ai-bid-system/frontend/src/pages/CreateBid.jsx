@@ -395,7 +395,7 @@ export default function CreateBid() {
             .eq('image_categories.name', targetCompany.trim());
 
           if (!kbError && kbImages && kbImages.length > 0) {
-            assetPrompt += '\n\n【知识库资质图片（如需插入对应图片，请直接输出纯 URL，不要输出 Markdown）】\n';
+            assetPrompt += '\n\n【公司资质图片（如需插入营业执照等公司资质，请直接输出纯 URL，不要输出 Markdown）】\n';
             kbImages.forEach(img => {
               assetPrompt += `- ${img.image_name}：${img.image_url}\n`;
             });
