@@ -386,6 +386,25 @@ export default function CreateBid() {
         }
       }
 
+      // === 新增：查询知识库中与目标公司相关的资质图片 ===
+      try {
+        if (targetCompany.trim() && user) {
+          const { data: kbImages, error: kbError } = await supabase
+            .from('images')
+            .select('image_name, image_url, image_categories!inner(name)')
+            .eq('image_categories.name', targetCompany.trim());
+
+          if (!kbError && kbImages && kbImages.length > 0) {
+            assetPrompt += '\n\n【知识库资质图片（如需插入对应图片，请直接输出纯 URL，不要输出 Markdown）】\n';
+            kbImages.forEach(img => {
+              assetPrompt += `- ${img.image_name}：${img.image_url}\n`;
+            });
+          }
+        }
+      } catch (kbImageError) {
+        console.warn('加载知识库图片失败，继续执行:', kbImageError);
+      }
+
       const enrichedContext = (structuredProfile ? structuredProfile + '\n' : '') 
         + (tenderContext || '') 
         + assetPrompt;
@@ -403,6 +422,11 @@ export default function CreateBid() {
             if (value.includes(placeholder)) {
               value = value.replace(new RegExp(placeholder, 'g'), realUrl);
             }
+          }
+          // === 新增：如果 LLM 输出了 Markdown 图片格式，提取纯 URL ===
+          const mdImgMatch = value.match(/!\[.*?\]\((https?:\/\/[^\s)]+)\)/);
+          if (mdImgMatch) {
+            value = mdImgMatch[1];
           }
         }
         
