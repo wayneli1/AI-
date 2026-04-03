@@ -580,7 +580,7 @@ export default function CreateBid() {
           let assets = [];
           
           if (serviceManualAssetIds.length > 0) {
-            // 只查询选中的服务手册
+            // 查询选中的服务手册
             console.log('🔍 查询选中的服务手册资产，资产ID列表:', serviceManualAssetIds);
             const { data: manualAssets, error: manualError } = await supabase
               .from('product_assets')
@@ -591,20 +591,12 @@ export default function CreateBid() {
               console.error('❌ 查询服务手册资产失败:', manualError);
               throw manualError;
             }
-            assets = manualAssets || [];
-            console.log('🔍 查询到的服务手册资产:', assets);
-            console.log('🔍 查询到的服务手册数量:', assets.length);
-            if (assets.length > 0) {
-              console.log('🔍 第一个服务手册详情:', {
-                id: assets[0].id,
-                asset_name: assets[0].asset_name,
-                asset_type: assets[0].asset_type,
-                file_url: assets[0].file_url,
-                product_name: assets[0].products?.product_name
-              });
-            }
-          } else if (productUuids.length > 0) {
-            // 查询选中产品的所有资产
+            assets.push(...(manualAssets || []));
+            console.log('🔍 查询到的服务手册数量:', (manualAssets || []).length);
+          }
+          
+          if (productUuids.length > 0) {
+            // 查询选中产品的所有资产（包括图片）
             console.log('🔍 查询产品所有资产，产品UUID列表:', productUuids);
             const { data: productAssets, error: productError } = await supabase
               .from('product_assets')
@@ -612,8 +604,8 @@ export default function CreateBid() {
               .in('product_id', productUuids);
             
             if (productError) throw productError;
-            assets = productAssets || [];
-            console.log('🔍 查询到的产品资产数据:', assets);
+            assets.push(...(productAssets || []));
+            console.log('🔍 查询到的产品资产数量:', (productAssets || []).length);
           }
           
           console.log('🔍 查询到的资产数量:', assets?.length || 0);
