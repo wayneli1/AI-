@@ -2,7 +2,7 @@ import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   FilePlus, FileText, Compass, 
-  Image, BookOpen, LogOut, User, Building2, Package
+  Image, BookOpen, LogOut, User, Building2, Package, Book
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Dropdown, message } from 'antd';
@@ -23,6 +23,7 @@ const Sidebar = () => {
     { name: '产品资产库', icon: <Package size={18} />, path: '/product-library' },
     { name: '图片库', icon: <Image size={18} />, path: '/image-library' },
     { name: '知识库', icon: <BookOpen size={18} />, path: '/knowledge-base' },
+    { name: '学习投标文件', icon: <Book size={18} />, path: '/learn-bid' },
   ];
 
   const isActive = (path) => {

@@ -1,11 +1,56 @@
 // src/utils/documentParser.js
 import * as pdfjsLib from 'pdfjs-dist';
 import mammoth from 'mammoth';
+import TurndownService from 'turndown';
 
 // 【魔法修复】：使用 Vite 的 ?url 语法，把本地的 worker 文件当做静态资源引入
 // 这样既不需要外网，也不会报 Invalid type 的错！
 import workerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+
+// 初始化Turndown服务，配置中文友好的Markdown转换
+const turndownService = new TurndownService({
+  headingStyle: 'atx',
+  codeBlockStyle: 'fenced',
+  emDelimiter: '*',
+  strongDelimiter: '**',
+  linkStyle: 'inlined',
+  linkReferenceStyle: 'full'
+});
+
+// 添加自定义规则，优化中文文档转换
+turndownService.addRule('chineseSpaces', {
+  filter: ['p', 'div', 'span'],
+  replacement: function(content) {
+    // 保留中文排版中的空格处理
+    return content.replace(/\s+/g, ' ').trim();
+  }
+});
+
+turndownService.addRule('tableOptimization', {
+  filter: ['table'],
+  replacement: function(content, node) {
+    // 表格转换为Markdown表格
+    const rows = node.querySelectorAll('tr');
+    if (rows.length === 0) return '';
+    
+    const tableData = [];
+    rows.forEach(row => {
+      const cells = row.querySelectorAll('td, th');
+      const rowData = Array.from(cells).map(cell => cell.textContent.trim());
+      tableData.push(rowData);
+    });
+    
+    if (tableData.length === 0) return '';
+    
+    // 生成Markdown表格
+    const header = tableData[0];
+    const separator = header.map(() => '---').join(' | ');
+    const rowsMarkdown = tableData.map(row => row.join(' | ')).join('\n');
+    
+    return `\n${header.join(' | ')}\n${separator}\n${rowsMarkdown}\n`;
+  }
+});
 
 /**
  * 智能提取 PDF 或 Word 文档纯文本
@@ -25,6 +70,28 @@ export const extractTextFromDocument = async (file) => {
     }
   } catch (error) {
     console.error("❌ 文档解析报错:", error);
+    throw error;
+  }
+};
+
+/**
+ * 将 PDF 或 Word 文档转换为 Markdown 格式
+ * @param {File} file - 用户上传的 PDF 或 Word 文件对象
+ * @returns {Promise<string>} - 转换后的 Markdown 内容
+ */
+export const convertToMarkdown = async (file) => {
+  const fileExt = file.name.split('.').pop().toLowerCase();
+
+  try {
+    if (fileExt === 'pdf') {
+      return await parsePDFToMarkdown(file);
+    } else if (fileExt === 'docx') {
+      return await parseWordToMarkdown(file);
+    } else {
+      throw new Error('不支持的文件格式，仅支持 PDF 和 Word');
+    }
+  } catch (error) {
+    console.error("❌ Markdown 转换报错:", error);
     throw error;
   }
 };
@@ -130,5 +197,124 @@ const blockElementToText = (el) => {
       .join('\n');
   }
   return el.textContent.trim();
+};
+
+// --- Markdown 转换函数 ---
+
+/**
+ * 将 PDF 转换为 Markdown 格式
+ */
+const parsePDFToMarkdown = async (file) => {
+  // 先提取纯文本
+  const text = await parsePDF(file);
+  
+  // 增强文本结构识别，转换为Markdown
+  return enhanceTextToMarkdown(text);
+};
+
+/**
+ * 将 Word 文档转换为 Markdown 格式
+ */
+const parseWordToMarkdown = async (file) => {
+  const arrayBuffer = await file.arrayBuffer();
+  const result = await mammoth.convertToHtml({ arrayBuffer });
+  const html = result.value;
+  
+  // 使用turndown将HTML转换为Markdown
+  let markdown = turndownService.turndown(html);
+  
+  // 清理和优化Markdown格式
+  markdown = cleanMarkdown(markdown);
+  
+  console.log(`✅ Word 转 Markdown 成功，共 ${markdown.length} 个字符`);
+  return markdown;
+};
+
+/**
+ * 增强纯文本，识别结构并转换为Markdown
+ */
+const enhanceTextToMarkdown = (text) => {
+  let markdown = text;
+  
+  // 识别标题（基于字体大小、位置等启发式规则）
+  // 这里可以添加更复杂的标题识别逻辑
+  markdown = markdown.replace(/^第[一二三四五六七八九十]+章\s+([^\n]+)/gm, '## $1');
+  markdown = markdown.replace(/^第[一二三四五六七八九十]+条\s+([^\n]+)/gm, '### $1');
+  markdown = markdown.replace(/^[一二三四五六七八九十]+、\s+([^\n]+)/gm, '1. $1');
+  
+  // 识别列表项
+  markdown = markdown.replace(/^（[一二三四五六七八九十]+）\s+([^\n]+)/gm, '- $1');
+  markdown = markdown.replace(/^[0-9]+\.\s+([^\n]+)/gm, '1. $1');
+  
+  // 清理多余的空行
+  markdown = markdown.replace(/\n{3,}/g, '\n\n');
+  
+  console.log(`✅ PDF 转 Markdown 成功，共 ${markdown.length} 个字符`);
+  return markdown;
+};
+
+/**
+ * 清理和优化Markdown格式
+ */
+const cleanMarkdown = (markdown) => {
+  // 移除多余的HTML标签
+  let cleaned = markdown.replace(/<[^>]*>/g, '');
+  
+  // 标准化换行符
+  cleaned = cleaned.replace(/\r\n/g, '\n');
+  
+  // 清理多余的空格
+  cleaned = cleaned.replace(/[ \t]+/g, ' ');
+  
+  // 确保标题前后有空行
+  cleaned = cleaned.replace(/(\n)(#{1,6}\s+[^\n]+)(\n)/g, '$1$2$3');
+  
+  // 清理连续的空行
+  cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
+  
+  return cleaned.trim();
+};
+
+/**
+ * 验证投标文件格式和大小
+ * @param {File} file - 要验证的文件
+ * @returns {Object} - 验证结果 {isValid: boolean, message: string}
+ */
+export const validateBidFile = (file) => {
+  if (!file) {
+    return { isValid: false, message: '请选择文件' };
+  }
+  
+  // 检查文件格式
+  const allowedFormats = ['.pdf', '.docx'];
+  const fileExtension = '.' + file.name.split('.').pop().toLowerCase();
+  
+  if (!allowedFormats.includes(fileExtension)) {
+    return { 
+      isValid: false, 
+      message: '仅支持 PDF 和 DOCX 格式的文件' 
+    };
+  }
+  
+  // 检查文件大小（最大50MB）
+  const maxSize = 50 * 1024 * 1024; // 50MB
+  if (file.size > maxSize) {
+    return { 
+      isValid: false, 
+      message: `文件大小不能超过 50MB，当前文件大小为 ${(file.size / 1024 / 1024).toFixed(2)}MB` 
+    };
+  }
+  
+  // 检查文件名（避免特殊字符）
+  const fileName = file.name;
+  const invalidChars = /[<>:"/\\|?*]/;
+  if (invalidChars.test(fileName)) {
+    return { 
+      isValid: false, 
+      message: '文件名包含无效字符，请重命名文件' 
+    };
+  }
+  
+  return { isValid: true, message: '文件验证通过' };
 };
 

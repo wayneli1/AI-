@@ -184,3 +184,183 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
     throw error;
   }
 };
+
+// ============================================================
+// 投标文件智能分块函数
+// ============================================================
+
+/**
+ * 智能分块Markdown文档
+ * @param {string} markdownContent - Markdown格式的文档内容
+ * @param {Object} options - 分块选项
+ * @returns {Array} 分块数组
+ */
+export const intelligentChunking = (markdownContent, options = {}) => {
+  const {
+    chunkSize = 1500,           // 每块字符数
+    overlap = 300,              // 重叠字符数
+    strategy = 'semantic',      // 分块策略: 'semantic', 'fixed', 'hybrid'
+    minChunkSize = 500,         // 最小分块大小
+    maxChunks = 20              // 最大分块数
+  } = options;
+
+  console.log(`开始智能分块，内容长度: ${markdownContent.length} 字符，策略: ${strategy}`);
+
+  // 清理内容
+  let content = markdownContent.trim();
+  if (content.length === 0) {
+    return [];
+  }
+
+  // 策略1: 语义分块（按标题）
+  if (strategy === 'semantic' || strategy === 'hybrid') {
+    const semanticChunks = chunkByHeadings(content, chunkSize, overlap);
+    if (semanticChunks.length > 0 && semanticChunks.length <= maxChunks) {
+      console.log(`语义分块成功: ${semanticChunks.length} 个分块`);
+      return semanticChunks;
+    }
+  }
+
+  // 策略2: 固定大小分块（备用）
+  const fixedChunks = chunkByFixedSize(content, chunkSize, overlap, minChunkSize, maxChunks);
+  console.log(`固定大小分块: ${fixedChunks.length} 个分块`);
+  
+  return fixedChunks;
+};
+
+/**
+ * 按标题进行语义分块
+ */
+const chunkByHeadings = (content, chunkSize, overlap) => {
+  const chunks = [];
+  
+  // 识别标题（# 标题）
+  const headingRegex = /^(#{1,6})\s+(.+)$/gm;
+  const lines = content.split('\n');
+  
+  let currentChunk = '';
+  let currentChunkSize = 0;
+  let lastHeadingIndex = -1;
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // 检查是否是标题
+    const isHeading = headingRegex.test(line);
+    headingRegex.lastIndex = 0; // 重置正则
+    
+    if (isHeading) {
+      // 如果当前分块已经有内容，保存它
+      if (currentChunkSize > 0) {
+        chunks.push(currentChunk.trim());
+        currentChunk = '';
+        currentChunkSize = 0;
+      }
+      lastHeadingIndex = i;
+    }
+    
+    // 添加当前行到分块
+    currentChunk += line + '\n';
+    currentChunkSize += line.length + 1;
+    
+    // 如果分块太大，在段落边界分割
+    if (currentChunkSize >= chunkSize && i > lastHeadingIndex) {
+      // 向前查找段落边界
+      let splitIndex = i;
+      for (let j = i; j > Math.max(lastHeadingIndex, i - 10); j--) {
+        if (lines[j].trim() === '') {
+          splitIndex = j;
+          break;
+        }
+      }
+      
+      // 分割分块
+      const chunkLines = lines.slice(lastHeadingIndex + 1, splitIndex + 1);
+      if (chunkLines.length > 0) {
+        chunks.push(chunkLines.join('\n').trim());
+      }
+      
+      // 重置当前分块（从分割点开始，包含重叠）
+      const overlapStart = Math.max(splitIndex - Math.floor(overlap / 50), lastHeadingIndex + 1);
+      currentChunk = lines.slice(overlapStart, i + 1).join('\n') + '\n';
+      currentChunkSize = currentChunk.length;
+      lastHeadingIndex = overlapStart - 1;
+    }
+  }
+  
+  // 添加最后一个分块
+  if (currentChunk.trim().length > 0) {
+    chunks.push(currentChunk.trim());
+  }
+  
+  return chunks.filter(chunk => chunk.length >= 100); // 过滤掉太小的分块
+};
+
+/**
+ * 按固定大小分块
+ */
+const chunkByFixedSize = (content, chunkSize, overlap, minChunkSize, maxChunks) => {
+  const chunks = [];
+  const contentLength = content.length;
+  
+  if (contentLength <= chunkSize) {
+    return [content];
+  }
+  
+  let start = 0;
+  while (start < contentLength && chunks.length < maxChunks) {
+    let end = start + chunkSize;
+    
+    // 如果没到结尾，尝试在段落边界分割
+    if (end < contentLength) {
+      // 查找最近的段落边界
+      const paragraphBoundary = content.lastIndexOf('\n\n', end);
+      if (paragraphBoundary > start + minChunkSize) {
+        end = paragraphBoundary;
+      }
+    }
+    
+    // 确保不会超过内容长度
+    end = Math.min(end, contentLength);
+    
+    // 提取分块
+    const chunk = content.substring(start, end).trim();
+    if (chunk.length >= minChunkSize) {
+      chunks.push(chunk);
+    }
+    
+    // 移动起始位置（考虑重叠）
+    start = end - overlap;
+    if (start < 0) start = 0;
+    
+    // 防止无限循环
+    if (start >= end) {
+      start = end;
+    }
+  }
+  
+  return chunks;
+};
+
+/**
+ * 计算分块统计信息
+ */
+export const getChunkStats = (chunks) => {
+  if (!chunks || chunks.length === 0) {
+    return { count: 0, avgSize: 0, totalSize: 0 };
+  }
+  
+  const totalSize = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+  const avgSize = Math.round(totalSize / chunks.length);
+  
+  return {
+    count: chunks.length,
+    avgSize,
+    totalSize,
+    sizeDistribution: chunks.map((chunk, i) => ({
+      index: i,
+      size: chunk.length,
+      preview: chunk.substring(0, 100) + '...'
+    }))
+  };
+};

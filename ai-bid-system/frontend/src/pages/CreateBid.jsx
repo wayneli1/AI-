@@ -58,6 +58,7 @@ export default function CreateBid() {
   const [isFilling, setIsFilling] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const [imageUrlMap, setImageUrlMap] = useState({}); // 保存占位符到URL的映射
+  const [manualUrlMap, setManualUrlMap] = useState({}); // 保存服务手册暗号到URL的映射
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -530,6 +531,7 @@ export default function CreateBid() {
       // 组装产品资产提示词
       let assetPrompt = '';
       const localImageUrlMap = {}; // 局部变量，用于构建映射
+      const localManualUrlMap = {}; // 局部变量，用于构建服务手册暗号到URL的映射
       
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const productUuids = selectedProductIds.filter(id => uuidRegex.test(id));
@@ -671,11 +673,24 @@ export default function CreateBid() {
                      (txt.file_url.includes('.doc') || txt.file_url.includes('.docx')))
                   );
                   
-                  if (isServiceManual && txt.file_url) {
-                    // 服务手册：提供URL，不提供内容预览
-                    assetPrompt += `- [${txt.asset_name}]：文档URL - ${txt.file_url}\n`;
-                    console.log(`🔍 识别为服务手册: ${txt.asset_name}, URL: ${txt.file_url}`);
-                  } else {
+                   if (isServiceManual && txt.file_url) {
+                     // 服务手册：提供暗号标记，不提供URL
+                     // 从资产名称生成简化的暗号名称
+                     let manualName = txt.asset_name;
+                     // 移除括号和日期等冗余信息
+                     manualName = manualName.replace(/[（）()]/g, '');
+                     manualName = manualName.replace(/\d{4,}/g, ''); // 移除年份
+                     manualName = manualName.replace(/[\s_-]+/g, ' ').trim();
+                     
+                     // 生成暗号标记
+                     const docCode = `[INSERT_DOC:${manualName}]`;
+                     assetPrompt += `- [${txt.asset_name}]：文档暗号 - ${docCode}\n`;
+                     
+                     // 建立暗号到URL的映射
+                     localManualUrlMap[docCode] = txt.file_url;
+                     
+                     console.log(`🔍 识别为服务手册: ${txt.asset_name}, 暗号: ${docCode}, URL: ${txt.file_url}`);
+                   } else {
                     // 普通文档：截断显示内容
                     const contentPreview = txt.text_content && txt.text_content.length > 5000 
                       ? `${txt.text_content.substring(0, 5000)}...(全文共 ${txt.text_content.length} 字，已截断)` 
@@ -703,8 +718,12 @@ export default function CreateBid() {
         console.log(`  - "${key}" (标准化: "${normalizeProductName(key)}")`);
       });
       
-      // 保存到状态，供导出时使用
-      setImageUrlMap(localImageUrlMap);
+       // 保存到状态，供导出时使用
+       setImageUrlMap(localImageUrlMap);
+       setManualUrlMap(localManualUrlMap);
+       
+       console.log('🔍 localManualUrlMap构建结果:', localManualUrlMap);
+       console.log('🔍 localManualUrlMap条目数量:', Object.keys(localManualUrlMap).length);
 
       // === 新增：查询知识库中与目标公司相关的资质图片 ===
       try {
@@ -855,20 +874,33 @@ export default function CreateBid() {
     }
 
     try {
-      console.log('🔍 [handleExportFilledWord] 开始导出Word文档');
-      console.log('🔍 导出参数:', {
-        scannedBlanksCount: scannedBlanks.length,
-        manualEditsCount: Object.keys(manualEdits).length,
-        manualEdits: manualEdits,
-        imageUrlMapCount: Object.keys(imageUrlMap).length,
-        imageUrlMap: imageUrlMap
-      });
-      
-      message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
-      const blob = await generateFilledDocx(originalZip, originalXml, scannedBlanks, manualEdits, imageUrlMap);
-      console.log('🔍 Word文档生成完成，blob大小:', blob.size, 'bytes');
-      saveAs(blob, `已填报_${originalFile.name}`);
-      message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
+       console.log('🔍 [handleExportFilledWord] 开始导出Word文档');
+       console.log('🔍 导出参数:', {
+         scannedBlanksCount: scannedBlanks.length,
+         manualEditsCount: Object.keys(manualEdits).length,
+         manualEdits: manualEdits,
+         imageUrlMapCount: Object.keys(imageUrlMap).length,
+         imageUrlMap: imageUrlMap,
+         manualUrlMapCount: Object.keys(manualUrlMap).length,
+         manualUrlMap: manualUrlMap
+       });
+       
+       message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
+       const blob = await generateFilledDocx(originalZip, originalXml, scannedBlanks, manualEdits, imageUrlMap);
+       console.log('🔍 Word文档生成完成，blob大小:', blob.size, 'bytes');
+       
+       // 保存Word文档
+       saveAs(blob, `已填报_${originalFile.name}`);
+       
+       // 同时导出mapping.json（如果存在服务手册映射）
+       if (Object.keys(manualUrlMap).length > 0) {
+         const mappingJson = JSON.stringify(manualUrlMap, null, 2);
+         const mappingBlob = new Blob([mappingJson], { type: 'application/json' });
+         saveAs(mappingBlob, `mapping_${originalFile.name.replace('.docx', '.json')}`);
+         console.log('🔍 同时导出mapping.json:', manualUrlMap);
+       }
+       
+       message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
     } catch (err) {
       console.error('导出失败:', err);
       message.error({ content: `导出失败: ${err.message}`, key: 'export' });

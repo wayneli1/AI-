@@ -15,6 +15,7 @@ import Profile from './pages/Profile';
 import BidDetail from './pages/BidDetail';
 import CompanyProfile from './pages/CompanyProfile';
 import ProductLibrary from './pages/ProductLibrary';
+import LearnBid from './pages/LearnBid';
 
 const App = () => {
   return (
@@ -41,6 +42,7 @@ const App = () => {
             <Route path="knowledge-base" element={<KnowledgeBase />} />
             <Route path="company-profiles" element={<CompanyProfile />} />
             <Route path="product-library" element={<ProductLibrary />} />
+            <Route path="learn-bid" element={<LearnBid />} />
             <Route path="profile" element={<Profile />} />
           </Route>
           
