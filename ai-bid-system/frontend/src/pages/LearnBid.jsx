@@ -1,13 +1,13 @@
 import { useState, useRef, useEffect } from 'react';
 import { 
   Upload, FileText, Building2, CheckCircle, X, Loader2,
-  BookOpen, FileCheck, Target, Clock, BarChart
+  BookOpen, Clock, Check, AlertCircle
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import { convertToMarkdown, validateBidFile } from '../utils/documentParser';
-import { runDifyMarkdownExtraction } from '../utils/difyExtractor';
-import { message, Progress, Card, Button, Select, Input, Tag } from 'antd';
+import { runDifyMarkdownExtraction, analyzeCrossDocumentFrequency } from '../utils/difyExtractor';
+import { message, Progress, Card, Button, Select, Input, Tag, Table, Checkbox, Tooltip } from 'antd';
 import { useNavigate } from 'react-router-dom';
 
 const { Option } = Select;
@@ -17,9 +17,9 @@ const LearnBid = () => {
   const navigate = useNavigate();
   
   // 文件上传状态
-  const [uploadedFile, setUploadedFile] = useState(null);
+  const [uploadedFiles, setUploadedFiles] = useState([]);
   const [isDragging, setIsDragging] = useState(false);
-  const [processingStatus, setProcessingStatus] = useState('idle'); // idle, converting, chunking, extracting, merging, awaiting_verification
+  const [processingStatus, setProcessingStatus] = useState('idle'); // idle, converting, chunking, extracting, analyzing, awaiting_verification
   const [progress, setProgress] = useState(0);
   const [chunkProgress, setChunkProgress] = useState({
     current: 0,
@@ -29,16 +29,18 @@ const LearnBid = () => {
   });
   
   // 处理结果状态
-  const [extractionResult, setExtractionResult] = useState(null);
-  const [learningSession, setLearningSession] = useState(null);
+  const [extractionResults, setExtractionResults] = useState([]); // 每份文档的提取结果
+  const [crossAnalysis, setCrossAnalysis] = useState([]); // 跨文档分析结果
+  const [learningSessions, setLearningSessions] = useState([]);
   
   // 公司关联状态
   const [companies, setCompanies] = useState([]);
   const [selectedCompanyId, setSelectedCompanyId] = useState(null);
   const [isSaving, setIsSaving] = useState(false);
   
-  // 校验编辑状态
-  const [editingFields, setEditingFields] = useState({});
+  // 字段选择状态
+  const [selectedFields, setSelectedFields] = useState({}); // {key: true/false}
+  const [editingFields, setEditingFields] = useState({}); // {key: value}
 
   const fileInputRef = useRef(null);
   const dropZoneRef = useRef(null);
@@ -66,24 +68,8 @@ const LearnBid = () => {
     loadCompanies();
   }, [user]);
 
-  // 文件上传处理
-  const handleFileSelect = async (file) => {
-    if (!user) {
-      message.error('请先登录');
-      return;
-    }
-
-    // 验证文件
-    const validation = validateBidFile(file);
-    if (!validation.isValid) {
-      message.error(validation.message);
-      return;
-    }
-
-    setUploadedFile(file);
-    setProcessingStatus('converting');
-    setProgress(10);
-
+  // 处理单个文件
+  const processSingleFile = async (file, fileIndex, totalFiles) => {
     try {
       // 1. 创建学习记录
       const { data: session, error: sessionError } = await supabase
@@ -98,12 +84,9 @@ const LearnBid = () => {
         .single();
 
       if (sessionError) throw sessionError;
-      setLearningSession(session);
-      setProgress(20);
 
       // 2. 转换为Markdown
       const markdown = await convertToMarkdown(file);
-      setProgress(40);
 
       // 更新学习记录
       await supabase
@@ -115,24 +98,21 @@ const LearnBid = () => {
         })
         .eq('id', session.id);
 
-      setProcessingStatus('chunking');
-      setProgress(50);
-
-      // 3. 调用Dify提取信息（带分块进度跟踪）
+      // 3. 调用Dify提取信息
       const extractionResult = await runDifyMarkdownExtraction(
         markdown, 
         file.name,
         {
           onProgress: (progress) => {
+            // 更新分块进度
             setChunkProgress(progress);
-            // 更新总体进度：50% + (50% * 分块进度百分比)
+            // 更新总体进度：每个文件占20%，分块占80%
+            const fileBaseProgress = (fileIndex / totalFiles) * 20;
             const chunkProgressPercent = progress.percent || 0;
-            setProgress(50 + (chunkProgressPercent * 0.5));
+            setProgress(fileBaseProgress + (chunkProgressPercent * 0.8));
           }
         }
       );
-      setExtractionResult(extractionResult);
-      setProgress(80);
 
       // 4. 更新学习记录
       await supabase
@@ -141,30 +121,95 @@ const LearnBid = () => {
           extraction_result: extractionResult,
           extraction_metadata: {
             extracted_at: new Date().toISOString(),
-            field_count: Object.keys(extractionResult || {}).length,
-            confidence_score: extractionResult?.metadata?.overall_confidence || 0,
-            chunk_stats: extractionResult?.metadata?.processing_stats
+            field_count: extractionResult.fields?.length || 0,
+            chunk_stats: extractionResult.metadata?.processing_stats
           },
-          status: 'awaiting_verification'
+          status: 'completed'
         })
         .eq('id', session.id);
 
-      setProcessingStatus('awaiting_verification');
-      setProgress(100);
-      setChunkProgress({ current: 0, total: 0, percent: 0, message: '' });
-
-      message.success('文件分析完成！请校验提取的信息');
+      return {
+        session,
+        extractionResult
+      };
 
     } catch (error) {
-      console.error('处理文件失败:', error);
-      message.error(`处理失败: ${error.message}`);
-      
-      if (learningSession?.id) {
-        await supabase
-          .from('bid_learning_sessions')
-          .update({ status: 'failed' })
-          .eq('id', learningSession.id);
+      console.error(`处理文件 ${file.name} 失败:`, error);
+      throw error;
+    }
+  };
+
+  // 批量处理文件
+  const handleFilesSelect = async (files) => {
+    if (!user) {
+      message.error('请先登录');
+      return;
+    }
+
+    // 验证所有文件
+    const validFiles = [];
+    for (const file of files) {
+      const validation = validateBidFile(file);
+      if (!validation.isValid) {
+        message.error(`${file.name}: ${validation.message}`);
+        continue;
       }
+      validFiles.push(file);
+    }
+
+    if (validFiles.length === 0) {
+      message.error('没有有效的文件');
+      return;
+    }
+
+    setUploadedFiles(validFiles);
+    setProcessingStatus('converting');
+    setProgress(0);
+    setChunkProgress({ current: 0, total: 0, percent: 0, message: '' });
+
+    try {
+      const results = [];
+      const sessions = [];
+
+      // 逐个处理文件
+      for (let i = 0; i < validFiles.length; i++) {
+        const file = validFiles[i];
+        
+        message.info(`正在处理文件 ${i + 1}/${validFiles.length}: ${file.name}`);
+        
+        const result = await processSingleFile(file, i, validFiles.length);
+        results.push(result.extractionResult);
+        sessions.push(result.session);
+        
+        // 更新进度
+        setProgress(((i + 1) / validFiles.length) * 100);
+      }
+
+      setExtractionResults(results);
+      setLearningSessions(sessions);
+
+      // 进行跨文档分析
+      setProcessingStatus('analyzing');
+      message.info('正在进行跨文档分析...');
+      
+      const analysis = analyzeCrossDocumentFrequency(results);
+      setCrossAnalysis(analysis);
+      
+      // 默认选中高频且一致的字段
+      const defaultSelected = {};
+      analysis.forEach(item => {
+        if (item.frequencyNumber >= 2 && item.consistent) {
+          defaultSelected[item.key] = true;
+        }
+      });
+      setSelectedFields(defaultSelected);
+
+      setProcessingStatus('awaiting_verification');
+      message.success(`分析完成！共处理 ${validFiles.length} 份文档，提取 ${analysis.length} 个字段`);
+
+    } catch (error) {
+      console.error('批量处理文件失败:', error);
+      message.error(`处理失败: ${error.message}`);
       
       setProcessingStatus('idle');
       setProgress(0);
@@ -184,22 +229,37 @@ const LearnBid = () => {
   const handleDrop = (e) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) handleFileSelect(file);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) handleFilesSelect(files);
+  };
+
+  // 字段选择处理
+  const handleFieldSelect = (key, checked) => {
+    setSelectedFields(prev => ({
+      ...prev,
+      [key]: checked
+    }));
   };
 
   // 字段编辑处理
-  const handleFieldEdit = (section, field, value) => {
+  const handleFieldEdit = (key, value) => {
     setEditingFields(prev => ({
       ...prev,
-      [`${section}.${field}`]: value
+      [key]: value
     }));
   };
 
   // 保存到公司信息库
   const handleSaveToCompany = async () => {
-    if (!selectedCompanyId || !extractionResult) {
+    if (!selectedCompanyId || crossAnalysis.length === 0) {
       message.error('请选择关联的公司');
+      return;
+    }
+
+    // 获取选中的字段
+    const selectedKeys = Object.keys(selectedFields).filter(key => selectedFields[key]);
+    if (selectedKeys.length === 0) {
+      message.error('请至少选择一个字段保存');
       return;
     }
 
@@ -215,11 +275,33 @@ const LearnBid = () => {
 
       if (fetchError) throw fetchError;
 
-      // 2. 合并提取结果到custom_fields
-      const currentFields = company.custom_fields || {};
-      const updatedFields = mergeExtractionToCustomFields(currentFields, extractionResult, learningSession.id);
+      // 2. 构建要保存的字段
+      const fieldsToSave = {};
+      selectedKeys.forEach(key => {
+        const analysisItem = crossAnalysis.find(item => item.key === key);
+        if (analysisItem) {
+          // 使用编辑后的值或原始值
+          fieldsToSave[key] = editingFields[key] || analysisItem.value;
+        }
+      });
 
-      // 3. 更新公司信息
+      // 3. 合并到custom_fields
+      const currentFields = company.custom_fields || {};
+      const updatedFields = {
+        ...currentFields,
+        ...fieldsToSave,
+        _learning_sources: [
+          ...(currentFields._learning_sources || []),
+          {
+            session_ids: learningSessions.map(s => s.id),
+            filenames: uploadedFiles.map(f => f.name),
+            extraction_date: new Date().toISOString(),
+            field_count: selectedKeys.length
+          }
+        ]
+      };
+
+      // 4. 更新公司信息
       const { error: updateError } = await supabase
         .from('company_profiles')
         .update({ 
@@ -230,20 +312,22 @@ const LearnBid = () => {
 
       if (updateError) throw updateError;
 
-      // 4. 更新学习记录状态
-      const { error: sessionError } = await supabase
-        .from('bid_learning_sessions')
-        .update({
-          company_profile_id: selectedCompanyId,
-          verified: true,
-          verified_at: new Date().toISOString(),
-          status: 'completed'
-        })
-        .eq('id', learningSession.id);
+      // 5. 更新学习记录状态
+      const updatePromises = learningSessions.map(session =>
+        supabase
+          .from('bid_learning_sessions')
+          .update({
+            company_profile_id: selectedCompanyId,
+            verified: true,
+            verified_at: new Date().toISOString(),
+            status: 'completed'
+          })
+          .eq('id', session.id)
+      );
 
-      if (sessionError) throw sessionError;
+      await Promise.all(updatePromises);
 
-      message.success('学习完成！信息已保存到公司信息库');
+      message.success(`学习完成！${selectedKeys.length} 个字段已保存到公司信息库`);
       
       // 跳转到公司信息页面
       setTimeout(() => {
@@ -258,223 +342,227 @@ const LearnBid = () => {
     }
   };
 
-  // 合并提取结果到custom_fields
-  const mergeExtractionToCustomFields = (currentFields, extractionResult, sessionId) => {
-    const merged = { ...currentFields };
-    
-    // 公司基本信息
-    if (extractionResult.company_info) {
-      merged.learned_company_name = extractionResult.company_info.name || merged.learned_company_name;
-      merged.learned_legal_representative = extractionResult.company_info.legal_rep || merged.learned_legal_representative;
-      merged.learned_uscc = extractionResult.company_info.uscc || merged.learned_uscc;
-      merged.learned_address = extractionResult.company_info.address || merged.learned_address;
-      merged.learned_phone = extractionResult.company_info.phone || merged.learned_phone;
-      merged.learned_email = extractionResult.company_info.email || merged.learned_email;
-    }
-    
-    // 项目模板
-    if (extractionResult.project_info) {
-      merged.project_templates = merged.project_templates || [];
-      merged.project_templates.push({
-        type: extractionResult.project_info.type,
-        name: extractionResult.project_info.name,
-        amount_range: extractionResult.project_info.amount,
-        duration: extractionResult.project_info.duration,
-        requirements: extractionResult.project_info.requirements,
-        source_session: sessionId,
-        learned_date: new Date().toISOString()
-      });
-    }
-    
-    // 技术要求库
-    if (extractionResult.technical_requirements) {
-      merged.technical_requirements_library = merged.technical_requirements_library || [];
-      extractionResult.technical_requirements.forEach(req => {
-        merged.technical_requirements_library.push({
-          ...req,
-          source_session: sessionId,
-          learned_date: new Date().toISOString()
-        });
-      });
-    }
-    
-    // 评分标准库
-    if (extractionResult.scoring_criteria) {
-      merged.scoring_criteria_library = merged.scoring_criteria_library || [];
-      extractionResult.scoring_criteria.forEach(criteria => {
-        merged.scoring_criteria_library.push({
-          ...criteria,
-          source_session: sessionId,
-          learned_date: new Date().toISOString()
-        });
-      });
-    }
-    
-    // 学习来源记录
-    merged._learning_sources = merged._learning_sources || [];
-    merged._learning_sources.push({
-      session_id: sessionId,
-      filename: learningSession?.original_filename,
-      extraction_date: new Date().toISOString(),
-      confidence_score: extractionResult.metadata?.overall_confidence || 0
-    });
-    
-    return merged;
-  };
+  // 渲染跨文档分析结果
+  const renderCrossAnalysis = () => {
+    if (crossAnalysis.length === 0) return null;
 
-  // 渲染提取结果
-  const renderExtractionResult = () => {
-    if (!extractionResult) return null;
+    const columns = [
+      {
+        title: '选择',
+        dataIndex: 'key',
+        key: 'select',
+        width: 60,
+        render: (key) => (
+          <Checkbox 
+            checked={!!selectedFields[key]} 
+            onChange={(e) => handleFieldSelect(key, e.target.checked)}
+          />
+        )
+      },
+      {
+        title: '字段名',
+        dataIndex: 'key',
+        key: 'key',
+        width: 150,
+        render: (key) => (
+          <div className="font-medium text-gray-800">{key}</div>
+        )
+      },
+      {
+        title: '提取值',
+        dataIndex: 'value',
+        key: 'value',
+        render: (value, record) => {
+          const isEditing = editingFields[record.key] !== undefined;
+          const displayValue = editingFields[record.key] || value || '未提取';
+          
+          return (
+            <div 
+              className="p-2 border border-transparent hover:border-gray-300 rounded cursor-text min-h-[40px]"
+              onClick={() => handleFieldEdit(record.key, value)}
+            >
+              {isEditing ? (
+                <Input
+                  value={editingFields[record.key]}
+                  onChange={(e) => handleFieldEdit(record.key, e.target.value)}
+                  onBlur={() => handleFieldEdit(record.key, undefined)}
+                  autoFocus
+                  size="small"
+                />
+              ) : (
+                <span className="text-gray-800">{displayValue}</span>
+              )}
+            </div>
+          );
+        }
+      },
+      {
+        title: '出现频率',
+        dataIndex: 'frequency',
+        key: 'frequency',
+        width: 100,
+        render: (frequency, record) => {
+          const [current, total] = frequency.split('/').map(Number);
+          const percent = (current / total) * 100;
+          
+          let color = 'green';
+          if (percent < 40) color = 'red';
+          else if (percent < 70) color = 'orange';
+          
+          return (
+            <div className="flex items-center">
+              <Tag color={color}>{frequency}</Tag>
+              {record.consistent && (
+                <Tooltip title="所有文档中值一致">
+                  <Check size={14} className="text-green-500 ml-1" />
+                </Tooltip>
+              )}
+            </div>
+          );
+        }
+      },
+      {
+        title: '状态',
+        key: 'status',
+        width: 120,
+        render: (_, record) => {
+          const [current, total] = record.frequency.split('/').map(Number);
+          
+          if (current === total && record.consistent) {
+            return <Tag color="success">高频且一致</Tag>;
+          } else if (current >= Math.ceil(total / 2) && record.consistent) {
+            return <Tag color="processing">中频一致</Tag>;
+          } else if (current >= 2) {
+            return <Tag color="warning">低频出现</Tag>;
+          } else {
+            return <Tag color="default">单次出现</Tag>;
+          }
+        }
+      },
+      {
+        title: '详情',
+        key: 'details',
+        width: 100,
+        render: (_, record) => {
+          if (record.allValues.length <= 1) return null;
+          
+          return (
+            <Tooltip 
+              title={
+                <div>
+                  <p>不同值：</p>
+                  {record.allValues.map((item, idx) => (
+                    <div key={idx} className="text-xs">
+                      {item.value} (出现{item.count}次)
+                    </div>
+                  ))}
+                </div>
+              }
+            >
+              <AlertCircle size={16} className="text-gray-400 cursor-help" />
+            </Tooltip>
+          );
+        }
+      }
+    ];
 
     return (
       <div className="space-y-6">
-        {/* 公司信息 */}
-        {extractionResult.company_info && (
-          <Card 
-            title={
-              <div className="flex items-center">
-                <Building2 size={18} className="mr-2" />
-                <span>公司信息</span>
-                <Tag color="blue" className="ml-2">置信度: {(extractionResult.company_info._confidence || 0.8 * 100).toFixed(1)}%</Tag>
-              </div>
-            }
-            className="border border-gray-200"
-          >
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {Object.entries(extractionResult.company_info).map(([key, value]) => {
-                if (key.startsWith('_')) return null;
-                const fieldKey = `company_info.${key}`;
-                const isEditing = editingFields[fieldKey] !== undefined;
-                
-                return (
-                  <div key={key} className="space-y-1">
-                    <label className="text-sm font-medium text-gray-500 capitalize">
-                      {key.replace(/_/g, ' ')}
-                    </label>
-                    {isEditing ? (
-                      <Input
-                        value={editingFields[fieldKey]}
-                        onChange={(e) => handleFieldEdit('company_info', key, e.target.value)}
-                        onBlur={() => handleFieldEdit('company_info', key, undefined)}
-                        autoFocus
-                      />
-                    ) : (
-                      <div 
-                        className="p-2 border border-transparent hover:border-gray-300 rounded cursor-text"
-                        onClick={() => handleFieldEdit('company_info', key, value)}
-                      >
-                        <span className="text-gray-800">{value || '未提取'}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+        <Card 
+          title={
+            <div className="flex items-center">
+              <Building2 size={18} className="mr-2" />
+              <span>跨文档分析结果</span>
+              <Tag color="blue" className="ml-2">
+                共 {uploadedFiles.length} 份文档，{crossAnalysis.length} 个字段
+              </Tag>
             </div>
-          </Card>
-        )}
-
-        {/* 项目信息 */}
-        {extractionResult.project_info && (
-          <Card 
-            title={
-              <div className="flex items-center">
-                <Target size={18} className="mr-2" />
-                <span>项目信息</span>
-              </div>
+          }
+          className="border border-gray-200"
+        >
+          <div className="mb-4 text-sm text-gray-600">
+            建议优先选择高频且值一致的字段保存。已自动选中出现2次以上且值一致的字段。
+          </div>
+          
+          <Table
+            columns={columns}
+            dataSource={crossAnalysis}
+            rowKey="key"
+            pagination={false}
+            size="middle"
+            rowClassName={(record) => 
+              selectedFields[record.key] ? 'bg-blue-50' : ''
             }
-            className="border border-gray-200"
-          >
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {Object.entries(extractionResult.project_info).map(([key, value]) => {
-                if (key.startsWith('_')) return null;
-                const fieldKey = `project_info.${key}`;
-                const isEditing = editingFields[fieldKey] !== undefined;
-                
-                return (
-                  <div key={key} className="space-y-1">
-                    <label className="text-sm font-medium text-gray-500 capitalize">
-                      {key.replace(/_/g, ' ')}
-                    </label>
-                    {isEditing ? (
-                      <Input
-                        value={editingFields[fieldKey]}
-                        onChange={(e) => handleFieldEdit('project_info', key, e.target.value)}
-                        onBlur={() => handleFieldEdit('project_info', key, undefined)}
-                        autoFocus
-                      />
-                    ) : (
-                      <div 
-                        className="p-2 border border-transparent hover:border-gray-300 rounded cursor-text"
-                        onClick={() => handleFieldEdit('project_info', key, value)}
-                      >
-                        <span className="text-gray-800">{value || '未提取'}</span>
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+          />
+          
+          <div className="mt-4 flex items-center justify-between text-sm">
+            <div className="text-gray-600">
+              已选中 {Object.values(selectedFields).filter(v => v).length} 个字段
             </div>
-          </Card>
-        )}
+            <div className="flex items-center space-x-2">
+              <Button 
+                size="small" 
+                onClick={() => {
+                  // 全选高频字段
+                  const newSelected = {};
+                  crossAnalysis.forEach(item => {
+                    if (item.frequencyNumber >= 2 && item.consistent) {
+                      newSelected[item.key] = true;
+                    }
+                  });
+                  setSelectedFields(newSelected);
+                }}
+              >
+                全选高频字段
+              </Button>
+              <Button 
+                size="small" 
+                onClick={() => setSelectedFields({})}
+              >
+                清空选择
+              </Button>
+            </div>
+          </div>
+        </Card>
 
-        {/* 技术要求 */}
-        {extractionResult.technical_requirements && extractionResult.technical_requirements.length > 0 && (
-          <Card 
-            title={
-              <div className="flex items-center">
-                <FileCheck size={18} className="mr-2" />
-                <span>技术要求 ({extractionResult.technical_requirements.length}项)</span>
-              </div>
-            }
-            className="border border-gray-200"
-          >
-            <div className="space-y-3">
-              {extractionResult.technical_requirements.map((req, index) => (
-                <div key={index} className="p-3 bg-gray-50 rounded border border-gray-100">
-                  <div className="font-medium text-gray-800">{req.title || `要求 ${index + 1}`}</div>
-                  <div className="text-sm text-gray-600 mt-1">{req.description}</div>
-                  {req.standards && (
-                    <div className="mt-2">
-                      <span className="text-xs font-medium text-gray-500">标准: </span>
-                      <Tag color="green" className="text-xs">{req.standards}</Tag>
+        {/* 文档详情 */}
+        <Card 
+          title={
+            <div className="flex items-center">
+              <FileText size={18} className="mr-2" />
+              <span>各文档提取详情</span>
+            </div>
+          }
+          className="border border-gray-200"
+        >
+          <div className="space-y-4">
+            {extractionResults.map((result, idx) => (
+              <div key={idx} className="p-4 border border-gray-100 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="font-medium text-gray-800">
+                    {uploadedFiles[idx]?.name}
+                  </div>
+                  <Tag color="blue">
+                    {result.fields?.length || 0} 个字段
+                  </Tag>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                  {result.fields?.slice(0, 6).map((field, fieldIdx) => (
+                    <div key={fieldIdx} className="text-sm">
+                      <span className="text-gray-500">{field.key}:</span>
+                      <span className="ml-1 text-gray-800 truncate">{field.value}</span>
+                    </div>
+                  ))}
+                  {result.fields?.length > 6 && (
+                    <div className="text-sm text-gray-400">
+                      还有 {result.fields.length - 6} 个字段...
                     </div>
                   )}
                 </div>
-              ))}
-            </div>
-          </Card>
-        )}
-
-        {/* 评分标准 */}
-        {extractionResult.scoring_criteria && extractionResult.scoring_criteria.length > 0 && (
-          <Card 
-            title={
-              <div className="flex items-center">
-                <BarChart size={18} className="mr-2" />
-                <span>评分标准 ({extractionResult.scoring_criteria.length}项)</span>
               </div>
-            }
-            className="border border-gray-200"
-          >
-            <div className="space-y-3">
-              {extractionResult.scoring_criteria.map((criteria, index) => (
-                <div key={index} className="p-3 bg-gray-50 rounded border border-gray-100">
-                  <div className="flex justify-between items-start">
-                    <div className="font-medium text-gray-800">{criteria.item}</div>
-                    <Tag color="blue">{criteria.weight || '0'}分</Tag>
-                  </div>
-                  <div className="text-sm text-gray-600 mt-1">{criteria.description}</div>
-                  {criteria.requirements && (
-                    <div className="mt-2 text-sm text-gray-700">
-                      <span className="font-medium">要求: </span>
-                      {criteria.requirements}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </Card>
-        )}
+            ))}
+          </div>
+        </Card>
       </div>
     );
   };
@@ -486,7 +574,7 @@ const LearnBid = () => {
     const statusConfig = {
       converting: {
         title: '转换中',
-        description: '正在将文件转换为Markdown格式...',
+        description: `正在将 ${uploadedFiles.length} 份文件转换为Markdown格式...`,
         icon: <Loader2 className="animate-spin" />
       },
       chunking: {
@@ -494,14 +582,14 @@ const LearnBid = () => {
         description: '正在智能分块并分析文档内容...',
         icon: <Loader2 className="animate-spin" />
       },
-      extracting: {
-        title: 'AI分析中',
-        description: 'AI正在分析文档内容，提取关键信息...',
+      analyzing: {
+        title: '跨文档分析中',
+        description: '正在对比多份文档，分析高频字段...',
         icon: <Loader2 className="animate-spin" />
       },
       awaiting_verification: {
         title: '分析完成',
-        description: '请校验AI提取的信息',
+        description: '请勾选要保存的字段并关联公司',
         icon: <CheckCircle className="text-green-500" />
       }
     };
@@ -534,6 +622,21 @@ const LearnBid = () => {
         )}
         
         <Progress percent={progress} status="active" />
+        
+        {/* 文件处理列表 */}
+        {uploadedFiles.length > 0 && (
+          <div className="mt-4 space-y-2">
+            {uploadedFiles.map((file, idx) => (
+              <div key={idx} className="flex items-center text-sm">
+                <FileText size={14} className="text-gray-400 mr-2" />
+                <span className="text-gray-700 truncate">{file.name}</span>
+                <span className="ml-2 text-gray-500 text-xs">
+                  ({(file.size / 1024 / 1024).toFixed(2)} MB)
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -546,7 +649,7 @@ const LearnBid = () => {
           <BookOpen size={24} className="text-purple-600 mr-3" />
           <div>
             <h1 className="text-2xl font-bold text-gray-900">学习投标文件</h1>
-            <p className="text-gray-600 mt-1">上传投标文件，AI自动提取关键信息并保存到公司信息库</p>
+            <p className="text-gray-600 mt-1">批量上传投标文件，AI自动发现高频字段并保存到公司信息库</p>
           </div>
         </div>
       </div>
@@ -554,7 +657,7 @@ const LearnBid = () => {
       <div className="p-8">
         <div className="max-w-6xl mx-auto">
           {/* 文件上传区域 */}
-          {!extractionResult && (
+          {crossAnalysis.length === 0 && (
             <div className="mb-10">
               <div 
                 ref={dropZoneRef}
@@ -571,9 +674,9 @@ const LearnBid = () => {
                     <div className="w-20 h-20 bg-purple-100 rounded-2xl flex items-center justify-center text-purple-600 mb-6">
                       <Upload size={40} />
                     </div>
-                    <h3 className="text-xl font-bold text-gray-900 mb-3">上传投标文件</h3>
+                    <h3 className="text-xl font-bold text-gray-900 mb-3">批量上传投标文件</h3>
                     <p className="text-gray-600 text-center mb-6 max-w-md">
-                      支持 PDF 和 DOCX 格式，最大50MB。AI将自动分析文档内容，提取公司信息、项目要求等关键信息。
+                      支持 PDF 和 DOCX 格式，最大50MB。AI将对比多份文档，自动发现高频出现的公司信息字段。
                     </p>
                     <div className="flex items-center space-x-4 text-sm text-gray-500">
                       <div className="flex items-center">
@@ -582,7 +685,7 @@ const LearnBid = () => {
                       </div>
                       <div className="flex items-center">
                         <Clock size={16} className="mr-1" />
-                        <span>约1-3分钟处理时间</span>
+                        <span>支持多文件批量上传</span>
                       </div>
                     </div>
                   </>
@@ -603,37 +706,60 @@ const LearnBid = () => {
                   type="file"
                   className="hidden"
                   accept=".pdf,.docx"
+                  multiple
                   onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) handleFileSelect(file);
+                    const files = Array.from(e.target.files || []);
+                    if (files.length > 0) handleFilesSelect(files);
                     if (e.target) e.target.value = '';
                   }}
                   disabled={processingStatus !== 'idle'}
                 />
               </div>
               
-              {uploadedFile && (
-                <div className="mt-6 p-4 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between">
-                  <div className="flex items-center">
-                    <FileText size={20} className="text-blue-600 mr-3" />
-                    <div>
-                      <p className="font-medium text-blue-800">{uploadedFile.name}</p>
-                      <p className="text-blue-600 text-sm mt-1">
-                        {(uploadedFile.size / 1024 / 1024).toFixed(2)} MB
-                      </p>
-                    </div>
+              {uploadedFiles.length > 0 && (
+                <div className="mt-6 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-gray-700">
+                      已选择 {uploadedFiles.length} 个文件
+                    </span>
+                    <button 
+                      onClick={() => {
+                        setUploadedFiles([]);
+                        setProcessingStatus('idle');
+                        setProgress(0);
+                      }}
+                      className="text-sm text-blue-600 hover:text-blue-800"
+                      disabled={processingStatus !== 'idle'}
+                    >
+                      清空列表
+                    </button>
                   </div>
-                  <button 
-                    onClick={() => {
-                      setUploadedFile(null);
-                      setProcessingStatus('idle');
-                      setProgress(0);
-                    }}
-                    className="text-blue-600 hover:text-blue-800"
-                    disabled={processingStatus !== 'idle'}
-                  >
-                    <X size={20} />
-                  </button>
+                  <div className="max-h-60 overflow-y-auto space-y-2">
+                    {uploadedFiles.map((file, idx) => (
+                      <div key={idx} className="p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
+                        <div className="flex items-center">
+                          <FileText size={16} className="text-blue-600 mr-2" />
+                          <div>
+                            <p className="font-medium text-blue-800 text-sm">{file.name}</p>
+                            <p className="text-blue-600 text-xs mt-1">
+                              {(file.size / 1024 / 1024).toFixed(2)} MB
+                            </p>
+                          </div>
+                        </div>
+                        <button 
+                          onClick={() => {
+                            const newFiles = [...uploadedFiles];
+                            newFiles.splice(idx, 1);
+                            setUploadedFiles(newFiles);
+                          }}
+                          className="text-blue-600 hover:text-blue-800"
+                          disabled={processingStatus !== 'idle'}
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>
@@ -642,11 +768,11 @@ const LearnBid = () => {
           {/* 处理状态显示 */}
           {renderProcessingStatus()}
 
-          {/* 提取结果和校验区域 */}
-          {extractionResult && (
+          {/* 跨文档分析结果 */}
+          {crossAnalysis.length > 0 && (
             <div className="space-y-8">
               <div className="flex justify-between items-center">
-                <h2 className="text-xl font-bold text-gray-900">提取结果校验</h2>
+                <h2 className="text-xl font-bold text-gray-900">跨文档分析结果</h2>
                 <div className="flex items-center space-x-4">
                   <span className="text-sm text-gray-500">关联到公司:</span>
                   <Select
@@ -665,40 +791,42 @@ const LearnBid = () => {
                 </div>
               </div>
 
-              {renderExtractionResult()}
+              {renderCrossAnalysis()}
 
               {/* 操作按钮 */}
               <div className="flex justify-end space-x-4 pt-6 border-t border-gray-200">
-                 <Button
-                   onClick={() => {
-                     setExtractionResult(null);
-                     setProcessingStatus('idle');
-                     setProgress(0);
-                     setChunkProgress({ current: 0, total: 0, percent: 0, message: '' });
-                     setUploadedFile(null);
-                     setLearningSession(null);
-                     setSelectedCompanyId(null);
-                     setEditingFields({});
-                   }}
-                   disabled={isSaving}
-                 >
-                   重新上传
-                 </Button>
+                <Button
+                  onClick={() => {
+                    setCrossAnalysis([]);
+                    setExtractionResults([]);
+                    setProcessingStatus('idle');
+                    setProgress(0);
+                    setChunkProgress({ current: 0, total: 0, percent: 0, message: '' });
+                    setUploadedFiles([]);
+                    setLearningSessions([]);
+                    setSelectedCompanyId(null);
+                    setSelectedFields({});
+                    setEditingFields({});
+                  }}
+                  disabled={isSaving}
+                >
+                  重新上传
+                </Button>
                 <Button
                   type="primary"
                   onClick={handleSaveToCompany}
                   loading={isSaving}
-                  disabled={!selectedCompanyId || isSaving}
+                  disabled={!selectedCompanyId || isSaving || Object.values(selectedFields).filter(v => v).length === 0}
                   icon={<CheckCircle size={16} />}
                 >
-                  {isSaving ? '保存中...' : '确认保存到公司信息库'}
+                  {isSaving ? '保存中...' : `确认保存 (${Object.values(selectedFields).filter(v => v).length}个字段)`}
                 </Button>
               </div>
             </div>
           )}
 
           {/* 使用说明 */}
-          {!extractionResult && processingStatus === 'idle' && (
+          {crossAnalysis.length === 0 && processingStatus === 'idle' && (
             <div className="mt-12 pt-8 border-t border-gray-200">
               <h3 className="text-lg font-semibold text-gray-900 mb-4">如何使用</h3>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -706,22 +834,22 @@ const LearnBid = () => {
                   <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center text-purple-600 mb-4">
                     <Upload size={24} />
                   </div>
-                  <h4 className="font-semibold text-gray-900 mb-2">1. 上传文件</h4>
-                  <p className="text-gray-600 text-sm">上传完整的投标文件（PDF或DOCX格式）</p>
+                  <h4 className="font-semibold text-gray-900 mb-2">1. 批量上传</h4>
+                  <p className="text-gray-600 text-sm">上传多份投标文件（PDF或DOCX格式）</p>
                 </div>
                 <div className="bg-white p-6 rounded-xl border border-gray-200">
                   <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600 mb-4">
                     <FileText size={24} />
                   </div>
-                  <h4 className="font-semibold text-gray-900 mb-2">2. AI自动分析</h4>
-                  <p className="text-gray-600 text-sm">AI将提取公司信息、项目要求、评分标准等</p>
+                  <h4 className="font-semibold text-gray-900 mb-2">2. AI跨文档分析</h4>
+                  <p className="text-gray-600 text-sm">AI对比多份文档，发现高频出现的字段</p>
                 </div>
                 <div className="bg-white p-6 rounded-xl border border-gray-200">
                   <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center text-green-600 mb-4">
                     <Building2 size={24} />
                   </div>
-                  <h4 className="font-semibold text-gray-900 mb-2">3. 保存到公司库</h4>
-                  <p className="text-gray-600 text-sm">校验后保存到公司信息库，用于后续标书生成</p>
+                  <h4 className="font-semibold text-gray-900 mb-2">3. 勾选保存</h4>
+                  <p className="text-gray-600 text-sm">勾选高频字段，保存到公司信息库</p>
                 </div>
               </div>
             </div>

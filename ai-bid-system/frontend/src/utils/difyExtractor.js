@@ -1,5 +1,5 @@
 // src/utils/difyExtractor.js
-// Dify投标文件信息提取工具（支持前端分块）
+// Dify投标文件信息提取工具（支持前端分块 + 跨文档频率分析）
 
 const DIFY_API_BASE = import.meta.env.VITE_DIFY_API_BASE || 'https://api.dify.ai/v1';
 const EXTRACTION_API_KEY = import.meta.env.VITE_DIFY_EXTRACTION_API_KEY;
@@ -12,7 +12,7 @@ import { intelligentChunking, getChunkStats } from './difyWorkflow.js';
  * @param {string} markdownContent - Markdown格式的文档内容
  * @param {string} filename - 原始文件名
  * @param {Object} options - 提取选项
- * @returns {Promise<Object>} - 提取的结构化信息
+ * @returns {Promise<Array>} - 提取的字段数组 [{key, value}, ...]
  */
 export const runDifyMarkdownExtraction = async (markdownContent, filename, options = {}) => {
   if (!EXTRACTION_API_KEY) {
@@ -80,12 +80,7 @@ export const runDifyMarkdownExtraction = async (markdownContent, filename, optio
         try {
           updateProgress(completedChunks, chunks.length, `处理分块 ${chunkIndex + 1}/${chunks.length}`);
           
-          const result = await callSimpleDifyWorkflow(
-            chunk,
-            `${filename}_chunk_${chunkIndex}`,
-            chunkIndex,
-            chunks.length
-          );
+          const result = await callSimpleDifyWorkflow(chunk);
           
           completedChunks++;
           updateProgress(completedChunks, chunks.length, `完成分块 ${chunkIndex + 1}/${chunks.length}`);
@@ -130,38 +125,34 @@ export const runDifyMarkdownExtraction = async (markdownContent, filename, optio
       throw new Error('所有分块处理都失败了');
     }
 
-    // 5. 合并提取结果
+    // 5. 合并同一文档多个分块的提取结果
     console.log('🔄 合并分块提取结果...');
     const extractionData = successfulResults.map(r => r.data);
-    const mergedResult = mergeExtractionResults(extractionData, {
-      originalChunks: chunks.length,
-      successfulChunks: successfulResults.length,
-      failedChunks: failedResults.length
-    });
+    const mergedFields = mergeChunkFields(extractionData);
 
     // 6. 添加处理元数据
-    mergedResult.metadata = {
-      ...mergedResult.metadata,
-      processing_stats: {
-        total_chunks: chunks.length,
-        successful_chunks: successfulResults.length,
-        failed_chunks: failedResults.length,
-        chunk_strategy: chunkStrategy,
-        chunk_size: chunkSize,
-        overlap_size: overlap,
-        processing_time: new Date().toISOString()
-      },
-      chunk_previews: successfulResults.slice(0, 3).map(r => r.chunkPreview)
+    const result = {
+      fields: mergedFields,
+      metadata: {
+        filename,
+        processing_stats: {
+          total_chunks: chunks.length,
+          successful_chunks: successfulResults.length,
+          failed_chunks: failedResults.length,
+          chunk_strategy: chunkStrategy,
+          chunk_size: chunkSize,
+          overlap_size: overlap,
+          processing_time: new Date().toISOString()
+        },
+        chunk_previews: successfulResults.slice(0, 3).map(r => r.chunkPreview)
+      }
     };
 
     console.log('✅ Dify信息提取完成!');
-    console.log(`  公司信息字段: ${Object.keys(mergedResult.company_info || {}).length}`);
-    console.log(`  项目信息字段: ${Object.keys(mergedResult.project_info || {}).length}`);
-    console.log(`  技术要求: ${mergedResult.technical_requirements?.length || 0} 项`);
-    console.log(`  评分标准: ${mergedResult.scoring_criteria?.length || 0} 项`);
-    console.log(`  总体置信度: ${(mergedResult.metadata?.overall_confidence || 0) * 100}%`);
+    console.log(`  提取字段数: ${mergedFields.length}`);
+    console.log(`  高频字段: ${mergedFields.slice(0, 5).map(f => f.key).join(', ')}`);
 
-    return mergedResult;
+    return result;
 
   } catch (error) {
     console.error('❌ Dify信息提取过程错误:', error);
@@ -172,17 +163,13 @@ export const runDifyMarkdownExtraction = async (markdownContent, filename, optio
 /**
  * 调用简单的Dify工作流处理单个分块
  */
-const callSimpleDifyWorkflow = async (chunkContent, chunkName, chunkIndex, totalChunks) => {
+const callSimpleDifyWorkflow = async (chunkContent) => {
   const payload = {
     inputs: {
-      markdown_content: chunkContent,
-      filename: chunkName,
-      chunk_index: chunkIndex,
-      total_chunks: totalChunks,
-      extraction_mode: 'structured'
+      markdown_content: chunkContent
     },
     response_mode: 'blocking',
-    user: `bid_learning_chunk_${chunkIndex}`
+    user: 'bid-learner'
   };
 
   const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
@@ -200,13 +187,13 @@ const callSimpleDifyWorkflow = async (chunkContent, chunkName, chunkIndex, total
   }
 
   const result = await response.json();
-  return parseChunkResult(result, chunkIndex);
+  return parseChunkResult(result);
 };
 
 /**
  * 解析单个分块的提取结果
  */
-const parseChunkResult = (difyResponse, chunkIndex) => {
+const parseChunkResult = (difyResponse) => {
   // 尝试从不同位置获取提取结果
   let extractionData = null;
   
@@ -226,7 +213,7 @@ const parseChunkResult = (difyResponse, chunkIndex) => {
         extractionData = JSON.parse(jsonMatch[0]);
       }
     } catch (e) {
-      console.warn(`分块 ${chunkIndex} 从text解析JSON失败:`, e.message);
+      console.warn('从text解析JSON失败:', e.message);
     }
   }
   
@@ -240,323 +227,163 @@ const parseChunkResult = (difyResponse, chunkIndex) => {
     try {
       extractionData = JSON.parse(difyResponse.data.outputs.result);
     } catch (e) {
-      console.warn(`分块 ${chunkIndex} 从result解析JSON失败:`, e.message);
+      console.warn('从result解析JSON失败:', e.message);
     }
   }
   
   // 如果都没有提取到，返回空结构
   if (!extractionData) {
-    console.warn(`分块 ${chunkIndex} 未提取到结构化数据`);
-    return createEmptyChunkResult(chunkIndex);
+    console.warn('未提取到结构化数据');
+    return [];
   }
   
-  // 标准化提取结果
-  return normalizeChunkResult(extractionData, chunkIndex);
+  // 提取fields数组
+  return extractFields(extractionData);
 };
 
 /**
- * 创建空的分块结果
+ * 从提取结果中提取fields数组
  */
-const createEmptyChunkResult = (chunkIndex) => {
-  return {
-    company_info: {},
-    project_info: {},
-    technical_requirements: [],
-    scoring_criteria: [],
-    metadata: {
-      chunk_index: chunkIndex,
-      extraction_time: new Date().toISOString(),
-      confidence: 0.1,
-      empty: true
-    }
-  };
-};
-
-/**
- * 标准化分块提取结果
- */
-const normalizeChunkResult = (extractionData, chunkIndex) => {
-  const normalized = {
-    company_info: {},
-    project_info: {},
-    technical_requirements: [],
-    scoring_criteria: [],
-    metadata: {
-      chunk_index: chunkIndex,
-      extraction_time: new Date().toISOString(),
-      confidence: 0.5
-    }
-  };
-  
-  // 处理公司信息
-  if (extractionData.company_info || extractionData.company) {
-    const companyData = extractionData.company_info || extractionData.company;
-    normalized.company_info = extractCompanyInfo(companyData);
+const extractFields = (extractionData) => {
+  // 如果直接有fields数组，直接返回
+  if (Array.isArray(extractionData.fields)) {
+    return extractionData.fields.filter(field => 
+      field && field.key && field.value && typeof field.key === 'string' && typeof field.value === 'string'
+    );
   }
   
-  // 处理项目信息
-  if (extractionData.project_info || extractionData.project) {
-    const projectData = extractionData.project_info || extractionData.project;
-    normalized.project_info = extractProjectInfo(projectData);
-  }
+  // 如果没有fields数组，尝试从其他格式转换
+  const fields = [];
   
-  // 处理技术要求
-  if (extractionData.technical_requirements) {
-    normalized.technical_requirements = extractTechnicalRequirements(extractionData.technical_requirements);
-  }
-  
-  // 处理评分标准
-  if (extractionData.scoring_criteria) {
-    normalized.scoring_criteria = extractScoringCriteria(extractionData.scoring_criteria);
-  }
-  
-  // 更新置信度
-  updateConfidence(normalized);
-  
-  return normalized;
-};
-
-/**
- * 提取公司信息
- */
-const extractCompanyInfo = (companyData) => {
-  return {
-    name: companyData.name || companyData.company_name,
-    legal_rep: companyData.legal_rep || companyData.legal_representative || companyData.legal_person,
-    uscc: companyData.uscc || companyData.unified_social_credit_code,
-    address: companyData.address || companyData.company_address,
-    phone: companyData.phone || companyData.telephone,
-    email: companyData.email,
-    registered_capital: companyData.registered_capital,
-    company_type: companyData.company_type,
-    _confidence: companyData._confidence || companyData.confidence || 0.5,
-    _source: 'extracted'
-  };
-};
-
-/**
- * 提取项目信息
- */
-const extractProjectInfo = (projectData) => {
-  return {
-    name: projectData.name || projectData.project_name,
-    type: projectData.type || projectData.project_type,
-    amount: projectData.amount || projectData.bid_amount || projectData.budget,
-    duration: projectData.duration || projectData.period,
-    requirements: projectData.requirements || projectData.key_requirements,
-    _confidence: projectData._confidence || projectData.confidence || 0.5,
-    _source: 'extracted'
-  };
-};
-
-/**
- * 提取技术要求
- */
-const extractTechnicalRequirements = (requirements) => {
-  if (Array.isArray(requirements)) {
-    return requirements.map(req => ({
-      title: req.title || '技术要求',
-      description: req.description || req.content,
-      standards: req.standards,
-      priority: req.priority,
-      _confidence: req._confidence || req.confidence || 0.5
-    }));
-  }
-  return [{
-    title: '技术要求',
-    description: requirements,
-    _confidence: 0.5
-  }];
-};
-
-/**
- * 提取评分标准
- */
-const extractScoringCriteria = (criteria) => {
-  if (Array.isArray(criteria)) {
-    return criteria.map(item => ({
-      item: item.item || item.name,
-      weight: item.weight || item.score,
-      description: item.description,
-      requirements: item.requirements,
-      _confidence: item._confidence || item.confidence || 0.5
-    }));
-  }
-  return [{
-    item: '评分标准',
-    description: criteria,
-    _confidence: 0.5
-  }];
-};
-
-/**
- * 更新置信度
- */
-const updateConfidence = (result) => {
-  const confidences = [];
-  
-  // 收集所有置信度
-  if (result.company_info._confidence) confidences.push(result.company_info._confidence);
-  if (result.project_info._confidence) confidences.push(result.project_info._confidence);
-  
-  result.technical_requirements?.forEach(req => {
-    if (req._confidence) confidences.push(req._confidence);
-  });
-  
-  result.scoring_criteria?.forEach(criteria => {
-    if (criteria._confidence) confidences.push(criteria._confidence);
-  });
-  
-  // 计算平均置信度
-  if (confidences.length > 0) {
-    result.metadata.confidence = confidences.reduce((a, b) => a + b, 0) / confidences.length;
-  }
-};
-
-/**
- * 合并多个分块的提取结果
- */
-const mergeExtractionResults = (chunkResults, stats) => {
-  console.log(`🔄 合并 ${chunkResults.length} 个分块结果...`);
-  
-  const merged = {
-    company_info: {},
-    project_info: {},
-    technical_requirements: [],
-    scoring_criteria: [],
-    conflicts: [],
-    metadata: {
-      overall_confidence: 0,
-      extraction_completeness: 0,
-      merge_stats: stats,
-      merged_at: new Date().toISOString()
-    }
-  };
-  
-  // 1. 合并公司信息（取置信度最高的）
-  const companyFields = {};
-  chunkResults.forEach((result, index) => {
-    if (result.company_info && Object.keys(result.company_info).length > 0) {
-      Object.entries(result.company_info).forEach(([key, value]) => {
-        if (key.startsWith('_')) return; // 跳过元数据字段
-        
-        if (!companyFields[key]) {
-          companyFields[key] = [];
-        }
-        
-        companyFields[key].push({
-          value,
-          confidence: result.company_info._confidence || 0.5,
-          source: `chunk_${index}`
-        });
-      });
-    }
-  });
-  
-  // 选择每个字段的最佳值
-  Object.entries(companyFields).forEach(([field, candidates]) => {
-    // 按置信度排序
-    candidates.sort((a, b) => b.confidence - a.confidence);
-    
-    // 选择置信度最高的
-    const bestCandidate = candidates[0];
-    merged.company_info[field] = bestCandidate.value;
-    
-    // 检查冲突（如果有多个不同的高置信度值）
-    if (candidates.length > 1) {
-      const uniqueValues = new Set(candidates.map(c => c.value));
-      if (uniqueValues.size > 1) {
-        merged.conflicts.push({
-          field: `company_info.${field}`,
-          candidates: candidates.slice(0, 3), // 只记录前3个候选
-          resolution: 'highest_confidence'
-        });
+  // 如果是对象，把每个属性转为field
+  if (typeof extractionData === 'object' && !Array.isArray(extractionData)) {
+    Object.entries(extractionData).forEach(([key, value]) => {
+      if (key.startsWith('_')) return; // 跳过元数据字段
+      
+      if (typeof value === 'string' && value.trim() !== '') {
+        fields.push({ key, value: value.trim() });
+      } else if (typeof value === 'number' || typeof value === 'boolean') {
+        fields.push({ key, value: String(value) });
       }
-    }
-  });
+    });
+  }
   
-  // 2. 合并项目信息
-  const projectFields = {};
-  chunkResults.forEach((result, index) => {
-    if (result.project_info && Object.keys(result.project_info).length > 0) {
-      Object.entries(result.project_info).forEach(([key, value]) => {
-        if (key.startsWith('_')) return;
-        
-        if (!projectFields[key]) {
-          projectFields[key] = [];
-        }
-        
-        projectFields[key].push({
-          value,
-          confidence: result.project_info._confidence || 0.5,
-          source: `chunk_${index}`
-        });
-      });
-    }
-  });
+  return fields;
+};
+
+/**
+ * 合并同一文档多个分块的fields
+ */
+const mergeChunkFields = (chunkResults) => {
+  const fieldMap = new Map();
   
-  Object.entries(projectFields).forEach(([field, candidates]) => {
-    candidates.sort((a, b) => b.confidence - a.confidence);
-    merged.project_info[field] = candidates[0].value;
-    
-    if (candidates.length > 1) {
-      const uniqueValues = new Set(candidates.map(c => c.value));
-      if (uniqueValues.size > 1) {
-        merged.conflicts.push({
-          field: `project_info.${field}`,
-          candidates: candidates.slice(0, 3),
-          resolution: 'highest_confidence'
-        });
-      }
-    }
-  });
-  
-  // 3. 合并技术要求（去重）
-  const techReqsMap = new Map();
-  chunkResults.forEach(result => {
-    result.technical_requirements?.forEach(req => {
-      const key = `${req.title}_${req.description?.substring(0, 50)}`;
-      if (!techReqsMap.has(key) || (req._confidence || 0) > (techReqsMap.get(key)._confidence || 0)) {
-        techReqsMap.set(key, req);
+  chunkResults.forEach(fields => {
+    fields.forEach(field => {
+      const existing = fieldMap.get(field.key);
+      if (!existing || field.value.length > existing.value.length) {
+        // 取最长的值（通常更完整）
+        fieldMap.set(field.key, field);
       }
     });
   });
   
-  merged.technical_requirements = Array.from(techReqsMap.values());
+  return Array.from(fieldMap.values());
+};
+
+/**
+ * 分析多份文档的字段频率
+ * @param {Array} docResults - 多份文档的提取结果数组
+ * @returns {Array} - 分析结果 [{key, value, frequency, consistent, values}, ...]
+ */
+export const analyzeCrossDocumentFrequency = (docResults) => {
+  console.log(`📊 开始跨文档分析，共 ${docResults.length} 份文档`);
   
-  // 4. 合并评分标准（去重）
-  const scoringMap = new Map();
-  chunkResults.forEach(result => {
-    result.scoring_criteria?.forEach(criteria => {
-      const key = `${criteria.item}_${criteria.weight}`;
-      if (!scoringMap.has(key) || (criteria._confidence || 0) > (scoringMap.get(key)._confidence || 0)) {
-        scoringMap.set(key, criteria);
+  // 统计每个key出现的文档索引和值
+  const keyStats = new Map();
+  
+  docResults.forEach((docResult, docIndex) => {
+    const fields = docResult.fields || [];
+    
+    fields.forEach(field => {
+      const { key, value } = field;
+      if (!key || !value) return;
+      
+      if (!keyStats.has(key)) {
+        keyStats.set(key, {
+          key,
+          values: new Map(), // value -> [docIndex1, docIndex2, ...]
+          allValues: []      // 所有出现的值（用于检查一致性）
+        });
       }
+      
+      const stat = keyStats.get(key);
+      
+      // 记录值出现的文档索引
+      if (!stat.values.has(value)) {
+        stat.values.set(value, []);
+      }
+      stat.values.get(value).push(docIndex);
+      
+      // 记录所有值
+      stat.allValues.push(value);
     });
   });
   
-  merged.scoring_criteria = Array.from(scoringMap.values());
-  
-  // 5. 计算总体指标
-  const allConfidences = [];
-  chunkResults.forEach(result => {
-    if (result.metadata?.confidence) {
-      allConfidences.push(result.metadata.confidence);
-    }
+  // 转换为分析结果
+  const analysisResults = Array.from(keyStats.entries()).map(([key, stat]) => {
+    const totalDocs = docResults.length;
+    const frequency = stat.values.size > 0 ? stat.values.size : 0;
+    
+    // 检查值是否一致（所有文档的值都相同）
+    const uniqueValues = Array.from(new Set(stat.allValues));
+    const consistent = uniqueValues.length === 1;
+    
+    // 选择最常出现的值
+    let mostCommonValue = '';
+    let mostCommonCount = 0;
+    
+    stat.values.forEach((docIndices, value) => {
+      if (docIndices.length > mostCommonCount) {
+        mostCommonCount = docIndices.length;
+        mostCommonValue = value;
+      }
+    });
+    
+    // 收集所有不同的值（用于显示）
+    const allValues = Array.from(stat.values.entries()).map(([value, docIndices]) => ({
+      value,
+      count: docIndices.length,
+      docIndices
+    }));
+    
+    return {
+      key,
+      value: mostCommonValue,
+      frequency: `${frequency}/${totalDocs}`,
+      frequencyNumber: frequency,
+      consistent,
+      allValues,
+      selected: false // 默认未选中
+    };
   });
   
-  if (allConfidences.length > 0) {
-    merged.metadata.overall_confidence = allConfidences.reduce((a, b) => a + b, 0) / allConfidences.length;
-  }
+  // 按出现频率排序
+  analysisResults.sort((a, b) => {
+    // 先按频率（高到低）
+    if (b.frequencyNumber !== a.frequencyNumber) {
+      return b.frequencyNumber - a.frequencyNumber;
+    }
+    // 再按一致性（一致的在前面）
+    if (a.consistent !== b.consistent) {
+      return a.consistent ? -1 : 1;
+    }
+    // 最后按key字母顺序
+    return a.key.localeCompare(b.key);
+  });
   
-  // 计算提取完整性
-  const expectedFields = ['name', 'legal_rep', 'uscc', 'address', 'phone'];
-  const extractedFields = Object.keys(merged.company_info).filter(key => merged.company_info[key]);
-  merged.metadata.extraction_completeness = extractedFields.length / expectedFields.length;
+  console.log(`✅ 跨文档分析完成，共 ${analysisResults.length} 个字段`);
   
-  console.log(`✅ 合并完成: ${merged.conflicts.length} 个冲突需要人工验证`);
-  
-  return merged;
+  return analysisResults;
 };
 
 /**
@@ -591,4 +418,34 @@ export const testDifyConnection = async () => {
 export const testChunking = (markdownContent, options = {}) => {
   const chunks = intelligentChunking(markdownContent, options);
   return getChunkStats(chunks);
+};
+
+/**
+ * 模拟跨文档分析（用于测试）
+ */
+export const mockCrossDocumentAnalysis = () => {
+  const mockResults = [
+    {
+      fields: [
+        { key: '法定代表人', value: '张三' },
+        { key: '注册资本', value: '500万元' },
+        { key: '联系电话', value: '13800138000' }
+      ]
+    },
+    {
+      fields: [
+        { key: '法定代表人', value: '张三' },
+        { key: '注册资本', value: '500万元' },
+        { key: '项目经理', value: '李四' }
+      ]
+    },
+    {
+      fields: [
+        { key: '法定代表人', value: '张三' },
+        { key: '公司地址', value: '北京市朝阳区' }
+      ]
+    }
+  ];
+  
+  return analyzeCrossDocumentFrequency(mockResults);
 };
