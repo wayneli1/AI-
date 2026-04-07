@@ -126,9 +126,11 @@ const LearnBid = () => {
       await supabase
         .from('bid_learning_sessions')
         .update({
-          markdown_content: markdown,
-          markdown_size: markdown.length,
-          status: 'chunking'
+          status: 'chunking',
+          extraction_metadata: {
+            markdown_size: markdown.length,
+            converted_at: new Date().toISOString()
+          }
         })
         .eq('id', session.id);
 
@@ -274,6 +276,11 @@ const LearnBid = () => {
   };
 
   const handleSaveToCompany = async () => {
+    console.log('🔍 [调试] handleSaveToCompany 开始执行');
+    console.log('🔍 [调试] selectedCompanyId:', selectedCompanyId);
+    console.log('🔍 [调试] learningSessions:', learningSessions);
+    console.log('🔍 [调试] user:', user);
+
     if (!selectedCompanyId || crossAnalysis.length === 0) {
       message.error('请选择关联的公司');
       return;
@@ -288,13 +295,57 @@ const LearnBid = () => {
     setIsSaving(true);
 
     try {
+      // 步骤1：检查Supabase认证状态
+      console.log('🔍 [调试] 步骤1：检查Supabase认证状态');
+      const { data: authData } = await supabase.auth.getSession();
+      console.log('🔍 [调试] Auth Session:', authData?.session);
+      console.log('🔍 [调试] Auth User:', authData?.session?.user);
+
+      if (!authData?.session) {
+        throw new Error('用户未登录或会话已过期');
+      }
+
+      const currentUserId = authData.session.user.id;
+      console.log('🔍 [调试] 当前用户ID:', currentUserId);
+
+      // 步骤2：验证learningSessions的所有权
+      console.log('🔍 [调试] 步骤2：验证learningSessions的所有权');
+      for (const session of learningSessions) {
+        console.log('🔍 [调试] 检查session:', session.id);
+        const { data: sessionData, error: sessionCheckError } = await supabase
+          .from('bid_learning_sessions')
+          .select('id, user_id, status, company_profile_id')
+          .eq('id', session.id)
+          .single();
+
+        if (sessionCheckError) {
+          console.error('❌ [调试] 查询session失败:', sessionCheckError);
+          throw new Error(`无法查询学习记录 ${session.id}: ${sessionCheckError.message}`);
+        }
+
+        console.log('🔍 [调试] Session数据:', sessionData);
+        console.log('🔍 [调试] Session user_id:', sessionData.user_id);
+        console.log('🔍 [调试] 当前用户ID:', currentUserId);
+
+        if (sessionData.user_id !== currentUserId) {
+          throw new Error(`学习记录 ${session.id} 不属于当前用户 (记录所有者: ${sessionData.user_id}, 当前用户: ${currentUserId})`);
+        }
+      }
+
+      // 步骤3：更新公司信息
+      console.log('🔍 [调试] 步骤3：更新公司信息');
       const { data: company, error: fetchError } = await supabase
         .from('company_profiles')
         .select('custom_fields')
         .eq('id', selectedCompanyId)
         .single();
 
-      if (fetchError) throw fetchError;
+      if (fetchError) {
+        console.error('❌ [调试] 查询公司失败:', fetchError);
+        throw fetchError;
+      }
+
+      console.log('🔍 [调试] 公司数据:', company);
 
       const fieldsToSave = {};
       selectedKeys.forEach(key => {
@@ -303,6 +354,8 @@ const LearnBid = () => {
           fieldsToSave[key] = editingFields[key] || analysisItem.value;
         }
       });
+
+      console.log('🔍 [调试] 要保存的字段:', fieldsToSave);
 
       const currentFields = company.custom_fields || {};
       const updatedFields = {
@@ -319,29 +372,64 @@ const LearnBid = () => {
         ]
       };
 
-      const { error: updateError } = await supabase
+      console.log('🔍 [调试] 更新后的字段:', updatedFields);
+
+      const { data: updatedCompany, error: updateError } = await supabase
         .from('company_profiles')
         .update({ 
           custom_fields: updatedFields,
           updated_at: new Date().toISOString()
         })
-        .eq('id', selectedCompanyId);
+        .eq('id', selectedCompanyId)
+        .select();
 
-      if (updateError) throw updateError;
+      if (updateError) {
+        console.error('❌ [调试] 更新公司失败:', updateError);
+        throw updateError;
+      }
 
-      const updatePromises = learningSessions.map(session =>
-        supabase
+      console.log('🔍 [调试] 公司更新成功:', updatedCompany);
+
+      // 步骤4：更新learningSessions
+      console.log('🔍 [调试] 步骤4：更新learningSessions');
+      console.log('🔍 [调试] 要更新的session IDs:', learningSessions.map(s => s.id));
+
+      const updatePromises = learningSessions.map(async (session) => {
+        console.log('🔍 [调试] 更新session:', session.id);
+        
+        const updateData = {
+          company_profile_id: selectedCompanyId,
+          verified: true,
+          verified_at: new Date().toISOString(),
+          status: 'completed'
+        };
+
+        console.log('🔍 [调试] 更新数据:', updateData);
+
+        const { data: updatedSession, error: updateSessionError } = await supabase
           .from('bid_learning_sessions')
-          .update({
-            company_profile_id: selectedCompanyId,
-            verified: true,
-            verified_at: new Date().toISOString(),
-            status: 'completed'
-          })
+          .update(updateData)
           .eq('id', session.id)
-      );
+          .eq('user_id', currentUserId)
+          .select();
 
-      await Promise.all(updatePromises);
+        if (updateSessionError) {
+          console.error('❌ [调试] 更新session失败:', updateSessionError);
+          console.error('❌ [调试] 错误详情:', {
+            code: updateSessionError.code,
+            message: updateSessionError.message,
+            details: updateSessionError.details,
+            hint: updateSessionError.hint
+          });
+          throw new Error(`更新学习记录 ${session.id} 失败: ${updateSessionError.message}`);
+        }
+
+        console.log('🔍 [调试] Session更新成功:', updatedSession);
+        return updatedSession;
+      });
+
+      const updatedSessions = await Promise.all(updatePromises);
+      console.log('🔍 [调试] 所有session更新成功:', updatedSessions);
 
       message.success(`学习完成！${selectedKeys.length} 个字段已保存到公司信息库`);
       
@@ -350,7 +438,8 @@ const LearnBid = () => {
       }, 1500);
 
     } catch (error) {
-      console.error('保存失败:', error);
+      console.error('❌ [调试] 保存失败:', error);
+      console.error('❌ [调试] 错误堆栈:', error.stack);
       message.error(`保存失败: ${error.message}`);
     } finally {
       setIsSaving(false);
