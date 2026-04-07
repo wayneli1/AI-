@@ -870,10 +870,22 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
       imageEntries.push({ blankId: blank.id, url: val.trim() });
     }
     
-    // 收集文档URL条目（用于超链接）
+    // 🔧 关键修复：将文档URL转换为暗号，而不是超链接
+    // 这样后端 merge_server.py 才能识别并合并附件
     if (val && isDocumentUrl(val)) {
-      hyperlinkEntries.push({ blankId: blank.id, url: val.trim() });
-      console.log(`✅ 收集文档URL: ${blank.id} -> ${val.substring(0, 50)}...`);
+      // 从 URL 或 context 中提取服务手册名称
+      let manualName = getDisplayTextFromUrl(val, blank.context);
+      
+      // 生成暗号
+      const docCode = `[INSERT_DOC:${manualName}]`;
+      
+      // 直接替换填充值为暗号文本（重要！）
+      filledValues[blank.id] = docCode;
+      
+      console.log(`🔧 [generateFilledDocx] 将文档URL转换为暗号: ${blank.id}`);
+      console.log(`  原始URL: ${val.substring(0, 80)}...`);
+      console.log(`  转换为暗号: ${docCode}`);
+      console.log(`  manualUrlMap中是否存在此暗号: 需要在CreateBid.jsx中检查`);
     }
   }
   

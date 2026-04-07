@@ -13,6 +13,10 @@ export default defineConfig({
         changeOrigin: true
         // 删掉 rewrite！什么都不写，原汁原味转发！
       },
+      '/api': {
+        target: 'http://localhost:8003',
+        changeOrigin: true
+      },
       '/baidu-api': {
         target: 'https://aip.baidubce.com',
         changeOrigin: true,
