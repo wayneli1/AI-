@@ -197,31 +197,28 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
  */
 export const intelligentChunking = (markdownContent, options = {}) => {
   const {
-    chunkSize = 1500,           // 每块字符数
-    overlap = 300,              // 重叠字符数
-    strategy = 'semantic',      // 分块策略: 'semantic', 'fixed', 'hybrid'
-    minChunkSize = 500,         // 最小分块大小
-    maxChunks = 20              // 最大分块数
+    chunkSize = 3000,
+    overlap = 500,
+    strategy = 'hybrid',
+    minChunkSize = 500,
+    maxChunks = 20
   } = options;
 
   console.log(`开始智能分块，内容长度: ${markdownContent.length} 字符，策略: ${strategy}`);
 
-  // 清理内容
   let content = markdownContent.trim();
   if (content.length === 0) {
     return [];
   }
 
-  // 策略1: 语义分块（按标题）
   if (strategy === 'semantic' || strategy === 'hybrid') {
-    const semanticChunks = chunkByHeadings(content, chunkSize, overlap);
+    const semanticChunks = chunkByHeadings(content, chunkSize, overlap, maxChunks);
     if (semanticChunks.length > 0 && semanticChunks.length <= maxChunks) {
       console.log(`语义分块成功: ${semanticChunks.length} 个分块`);
       return semanticChunks;
     }
   }
 
-  // 策略2: 固定大小分块（备用）
   const fixedChunks = chunkByFixedSize(content, chunkSize, overlap, minChunkSize, maxChunks);
   console.log(`固定大小分块: ${fixedChunks.length} 个分块`);
   
@@ -231,7 +228,7 @@ export const intelligentChunking = (markdownContent, options = {}) => {
 /**
  * 按标题进行语义分块
  */
-const chunkByHeadings = (content, chunkSize, overlap) => {
+const chunkByHeadings = (content, chunkSize, overlap, maxChunks) => {
   const chunks = [];
   
   // 识别标题（# 标题）
