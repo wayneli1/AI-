@@ -1,5 +1,5 @@
 // src/utils/difyExtractor.js
-// Dify投标文件信息提取工具（优化版：减少API调用、跳过空结果、预过滤分块）
+// Dify投标文件信息提取工具（优化版：AI优先、克制清洗、防误杀分块）
 
 const DIFY_API_BASE = import.meta.env.VITE_DIFY_API_BASE || 'https://api.dify.ai/v1';
 const EXTRACTION_API_KEY = import.meta.env.VITE_DIFY_EXTRACTION_API_KEY;
@@ -61,64 +61,14 @@ const classifyField = (key) => {
   return { category: 'other', label: '其他字段', priority: 4 };
 };
 
+// 💡 修复点一：极简清洗，信任 AI 原生输出，不再过度破坏联系方式和金额
 const normalizeFieldValue = (key, value) => {
   if (!value || typeof value !== 'string') return value;
-  
-  let normalized = value.trim();
-  normalized = normalized.replace(/\s+/g, ' ');
-  
-  if (/^(注册资本|注册资金|注册资本金)/i.test(key)) {
-    normalized = normalized.replace(/人民币/i, '').replace(/元$/i, '').trim();
-    if (!normalized.includes('万') && !normalized.includes('亿') && /^\d+$/.test(normalized.replace(/[,，]/g, ''))) {
-      const num = parseInt(normalized.replace(/[,，]/g, ''));
-      if (num > 10000) {
-        normalized = (num / 10000) + '万元';
-      } else {
-        normalized = normalized + '万元';
-      }
-    }
-  }
-  
-  if (/^(成立日期|成立时间|注册日期|投标日期|日期)/i.test(key)) {
-    normalized = normalized.replace(/[年月]/g, '-').replace(/[日号]/g, '').replace(/\.$/g, '').trim();
-    normalized = normalized.replace(/(\d{4})-(\d{1,2})-(\d{1,2})/, (match, y, m, d) => {
-      return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
-    });
-  }
-  
-  if (/^(联系电话|电话|手机|传真)/i.test(key)) {
-    normalized = normalized.replace(/[^\d-]/g, '');
-  }
-  
-  if (/^(邮政编码|邮编)/i.test(key)) {
-    normalized = normalized.replace(/[^\d]/g, '').substring(0, 6);
-  }
-  
-  if (/^(统一社会信用代码|信用代码|USCC)/i.test(key)) {
-    normalized = normalized.replace(/\s+/g, '').toUpperCase();
-  }
-  
-  if (/^(银行账号|账号)/i.test(key)) {
-    normalized = normalized.replace(/[^\d]/g, '');
-  }
-  
-  if (/^(工期|交货期|服务期|计划工期)/i.test(key)) {
-    const numMatch = normalized.match(/(\d+)/);
-    if (numMatch) {
-      normalized = numMatch[1] + '天';
-    }
-  }
-  
-  if (/^(员工人数|职工人数|从业人员|在职员工)/i.test(key)) {
-    const numMatch = normalized.match(/(\d+)/);
-    if (numMatch) {
-      normalized = numMatch[1] + '人';
-    }
-  }
-  
-  return normalized;
+  // 仅去除多余的换行、制表符和连续空格，保留中文、标点符号及原始内容
+  return value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
 };
 
+// 💡 修复点二：调整置信度，AI 绝对优先，防止被死板的正则覆盖
 const computeFieldConfidence = (key, value, source = 'dify') => {
   let confidence = 0.5;
   
@@ -134,20 +84,22 @@ const computeFieldConfidence = (key, value, source = 'dify') => {
     }
   }
   
-  if (source === 'kv_extract') {
-    confidence += 0.15;
-  } else if (source === 'dify') {
-    confidence += 0.05;
+  if (source === 'dify') {
+    confidence += 0.20; // 赋予 AI 提取结果更高的权重
+  } else if (source === 'kv_extract') {
+    confidence += 0.05; // 正则只作为保底兜底，分数低于 AI
   }
   
   return Math.min(confidence, 1.0);
 };
 
+// 💡 修复点三：放宽分块过滤条件，防止误杀 Markdown 表格数据
 const chunkHasPotential = (chunk) => {
   const lower = chunk.toLowerCase();
   
   const infoSignals = [
     /[:：]/,
+    /\|/,  // 新增：识别 Markdown 表格的分隔符
     /\*\*.+?\*\*[:：]/,
     /公司|企业|单位|投标人|供应商/,
     /法定代表人|法人|负责人/,
@@ -161,15 +113,14 @@ const chunkHasPotential = (chunk) => {
     /@/,
   ];
   
-  let signalCount = 0;
+  // 只要命中 1 个特征就发给 AI，宁可错杀一千，不可放过一个表格
   for (const signal of infoSignals) {
     if (signal.test(lower)) {
-      signalCount++;
-      if (signalCount >= 2) return true;
+      return true;
     }
   }
   
-  return signalCount >= 1;
+  return false;
 };
 
 const extractKVFields = (markdownContent) => {
@@ -364,6 +315,7 @@ export const runDifyMarkdownExtraction = async (markdownContent, filename, optio
       mergedMap.set(field.key.toLowerCase(), field);
     });
 
+    // 优先保留高分结果（此时AI分数远高于正则）
     kvFields.forEach(kvField => {
       const existing = mergedMap.get(kvField.key.toLowerCase());
       if (!existing || kvField.confidence > (existing.confidence || 0)) {
@@ -549,6 +501,7 @@ const mergeChunkFields = (chunkResults) => {
           chunkIndex: resultIndex,
         });
         
+        // 核心冲突解决逻辑：保留置信度高的。同等情况下，保留更长的文本（包含更多细节）
         if (field.confidence > existing.confidence) {
           existing.key = field.key;
           existing.value = field.value;
