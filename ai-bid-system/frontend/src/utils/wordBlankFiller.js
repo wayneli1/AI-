@@ -30,21 +30,80 @@ function buildPlaceholderRegex(placeholder) {
 // 💡 核心修复 1：过滤 Fallback 冗余文本，并将 Word 制表符转化为普通空格
 function getVisibleTextFromXml(xml) {
   if (!xml) return '';
-  // 剔除 Fallback 和 删除线内容，防止文本重复提取
-  let cleanXml = xml.replace(/<mc:Fallback[\s\S]*?<\/mc:Fallback>/g, '');
-  cleanXml = cleanXml.replace(/<w:del[\s\S]*?<\/w:del>/g, '');
+  
+  // 智能XML清理：只删除Fallback，保留Choice
+  let cleanXml = xml;
+  
+  // 调试：记录原始XML长度
+  const originalLength = xml.length;
+  
+  // 智能清理逻辑：先处理可能重复的<mc:Fallback>部分
+  // 但保留其他结构以避免过度清理
+  
+  // 1. 先移除所有<mc:Fallback>部分（但保留Choice）
+  cleanXml = cleanXml.replace(/<mc:Fallback[\s\S]*?>[\s\S]*?<\/mc:Fallback>/g, '');
+  
+  // 2. 移除<mc:AlternateContent>标签本身（因为我们已经移除了Fallback，只需清理外壳）
+  // 注意：这比之前更保守，不会删除整个块
+  cleanXml = cleanXml.replace(/<mc:AlternateContent>|<\/mc:AlternateContent>/g, '');
+  cleanXml = cleanXml.replace(/<mc:Choice[\s\S]*?>|<\/mc:Choice>/g, '');
+  
+  // 3. 清理其他不需要的内容
+  cleanXml = cleanXml.replace(/<w:del[\s\S]*?>[\s\S]*?<\/w:del>/g, '');
+  cleanXml = cleanXml.replace(/<w:ins[\s\S]*?>[\s\S]*?<\/w:ins>/g, '');
+  cleanXml = cleanXml.replace(/<w:comment[\s\S]*?>[\s\S]*?<\/w:comment>/g, '');
+  
+  // 调试：检查清理结果
+  if (originalLength > cleanXml.length && originalLength - cleanXml.length > 1000) {
+    console.log(`⚡ XML清理: 原始长度 ${originalLength} -> 清理后 ${cleanXml.length}, 减少了 ${originalLength - cleanXml.length} 字符`);
+    console.log(`⚡ 清理比例: ${((originalLength - cleanXml.length) / originalLength * 100).toFixed(1)}%`);
+    
+    // 特别检查是否有重复问题相关的内容
+    const originalSample = xml.substring(0, Math.min(500, xml.length));
+    const cleanedSample = cleanXml.substring(0, Math.min(500, cleanXml.length));
+    
+    if (originalSample.includes('承诺人') || originalSample.includes('单位名称')) {
+      console.log('🔍 检查清理前后的"承诺人"/"单位名称"相关片段:');
+      console.log('  清理前:', originalSample.replace(/\n/g, ' ').substring(0, 300));
+      console.log('  清理后:', cleanedSample.replace(/\n/g, ' ').substring(0, 300));
+    }
+  }
 
   const textParts = [];
   // 同时匹配普通文本和制表符
   const NODE_REGEX = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab(?:\s[^>]*)?\/>/g;
   let m;
+  
+  // 调试：检测重复文本
+  let lastText = '';
+  let duplicateCount = 0;
+  let duplicateSamples = [];
+  
   while ((m = NODE_REGEX.exec(cleanXml)) !== null) {
     if (m[0].startsWith('<w:tab')) {
       textParts.push('    '); // 将制表符当做 4 个空格提取
-    } else {
-      textParts.push(m[1]);
+      continue;
     }
+    
+    const text = m[1];
+    
+    // 检测重复文本
+    if (text === lastText && text.trim().length > 2) {
+      duplicateCount++;
+      if (duplicateCount <= 3 && !duplicateSamples.includes(text)) {
+        duplicateSamples.push(text);
+        console.warn(`⚠️ getVisibleTextFromXml 检测到重复文本: "${text}"`);
+      }
+    }
+    
+    lastText = text;
+    textParts.push(text);
   }
+  
+  if (duplicateCount > 0) {
+    console.log(`📊 getVisibleTextFromXml: 总共检测到 ${duplicateCount} 次文本重复`);
+  }
+  
   return textParts.join('');
 }
 
@@ -237,6 +296,7 @@ function escapeXml(str) {
 export function scanBlanksFromXml(xmlString) {
   const blanks = [];
   let blankCounter = 0;
+  console.log('🔍 [scanBlanksFromXml] 开始扫描XML空白');
 
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
@@ -329,10 +389,17 @@ export function scanBlanksFromXml(xmlString) {
   }
 
   const cellInfos = buildTableStructureMap(xmlString);
+  console.log(`📊 表格解析结果: ${cellInfos.length} 个单元格`);
   
   for (const cell of cellInfos) {
     if (cell.cellText !== '' && !/^[\s　_－-]+$/.test(cell.cellText)) continue;
     if (cell.rowIndex === 0) continue;
+    
+    // 记录关键单元格信息
+    if (cell.headerText?.includes('承诺人') || cell.rowHeader?.includes('单位名称') || 
+        cell.headerText?.includes('单位名称') || cell.rowHeader?.includes('承诺人')) {
+      console.log(`🔍 发现相关单元格: headerText="${cell.headerText}", rowHeader="${cell.rowHeader}", paraIndex: ${cell.paraIndex}`);
+    }
 
     let label = '';
     if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
@@ -626,6 +693,8 @@ export function mergeBlanks(regexBlanks, aiBlanks) {
 
 export function extractParagraphsForPreview(xmlString, blanks) {
   const paragraphs = [];
+  console.log('🔍 [extractParagraphsForPreview] 开始，空白总数:', blanks.length);
+  
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
   let paraIndex = 0;
@@ -634,6 +703,55 @@ export function extractParagraphsForPreview(xmlString, blanks) {
     const xml = paraMatch[0];
     const text = getVisibleTextFromXml(xml).trim();
     const matchedBlanks = blanks.filter(b => b.paraIndex === paraIndex);
+
+    // 增强的重复检测：使用正则表达式匹配任何文本在冒号后的重复
+    if (text) {
+      // 模式1：检测 "文本：文本："
+      const colonDuplicatePattern = /([^：\n]+：)\1/;
+      // 模式2：检测具体已知的重复模式
+      const specificPatterns = [
+        /承诺人（公章）：承诺人（公章）：/,
+        /单位名称：单位名称：/,
+        /承诺日期：承诺日期：/,
+        /地 址：地 址：/,
+        /单位性质：单位性质：/,
+        /经营期限：经营期限：/
+      ];
+      
+      let hasDuplicate = false;
+      let duplicateMatch = null;
+      
+      // 先检查通用的冒号重复
+      const colonMatch = text.match(colonDuplicatePattern);
+      if (colonMatch) {
+        hasDuplicate = true;
+        duplicateMatch = colonMatch[0];
+      } else {
+        // 检查具体的重复模式
+        for (const pattern of specificPatterns) {
+          if (pattern.test(text)) {
+            hasDuplicate = true;
+            duplicateMatch = pattern.toString().replace(/^\/|\/$/g, '');
+            break;
+          }
+        }
+      }
+      
+      if (hasDuplicate) {
+        console.warn(`⚠️⚠️⚠️ [extractParagraphsForPreview] 段落 ${paraIndex} 检测到重复文本！`);
+        console.log(`  重复模式: ${duplicateMatch}`);
+        console.log(`  完整文本（前200字符）: "${text.substring(0, 200)}${text.length > 200 ? '...' : ''}"`);
+        console.log(`  关联空白数量: ${matchedBlanks.length}`);
+        if (matchedBlanks.length > 0) {
+          console.log('  关联空白详情:', matchedBlanks.map(b => ({
+            id: b.id,
+            type: b.type,
+            matchText: b.matchText,
+            context: b.context ? b.context.substring(0, 80) + (b.context.length > 80 ? '...' : '') : null
+          })));
+        }
+      }
+    }
 
     if (text.length > 0 || matchedBlanks.length > 0) {
       let displayText = text;
@@ -645,11 +763,14 @@ export function extractParagraphsForPreview(xmlString, blanks) {
 
       if (displayText.length === 0 && matchedBlanks.length > 0) {
         displayText = matchedBlanks[0].context; 
+        console.log(`ℹ️ 段落 ${paraIndex} 为空，使用空白上下文: "${displayText}"`);
       }
       paragraphs.push({ text: displayText || '[空段落]', blankIds: matchedBlanks.map(b => b.id) });
     }
     paraIndex++;
   }
+  
+  console.log(`📊 [extractParagraphsForPreview] 生成 ${paragraphs.length} 个段落`);
   return paragraphs;
 }
 

@@ -376,8 +376,24 @@ export default function CreateBid() {
   }, []);
 
   const previewParagraphs = useMemo(() => {
-    if (!originalXml || scannedBlanks.length === 0) return [];
-    return extractParagraphsForPreview(originalXml, scannedBlanks);
+    if (!originalXml || scannedBlanks.length === 0) {
+      console.log('🔍 [previewParagraphs] 条件不满足，返回空数组');
+      return [];
+    }
+    
+    const result = extractParagraphsForPreview(originalXml, scannedBlanks);
+    
+    // 检查是否有重复文本的段落
+    result.forEach((para, idx) => {
+      if (para.text && para.text.includes('承诺人（公章）：承诺人（公章）')) {
+        console.warn(`⚠️ 检测到重复文本段落 at index ${idx}:`);
+        console.log(`  段落内容: "${para.text}"`);
+        console.log(`  关联空白ID: ${para.blankIds.join(', ') || '无'}`);
+      }
+    });
+    
+    console.log(`📊 [previewParagraphs] 生成 ${result.length} 个预览段落`);
+    return result;
   }, [originalXml, scannedBlanks]);
 
   // 💡 【右侧表格】点击后：滚动【左侧原文】
@@ -406,7 +422,9 @@ export default function CreateBid() {
   }, []);
 
   const handleFileUpload = async (event) => {
+    console.log('🔍 [handleFileUpload] 文件上传开始');
     const file = event.target.files[0];
+    console.log('🔍 上传文件:', file.name, '大小:', file.size);
     if (!file || !user) return message.error('请先登录！');
 
     const ext = file.name.split('.').pop().toLowerCase();
@@ -1290,6 +1308,19 @@ export default function CreateBid() {
             </div>
             <div className="flex-1 overflow-y-auto p-3 space-y-0.5" ref={previewRef}>
               {previewParagraphs.map((para, pIdx) => {
+                // 精准调试：检测重复文本
+                if (para.text && (
+                    para.text.includes('承诺人（公章）：承诺人（公章）') || 
+                    para.text.includes('单位名称：单位名称：') ||
+                    para.text.includes('承诺日期：承诺日期：')
+                )) {
+                    console.warn(`🔍🔍🔍 [前端预览渲染] 检测到重复段落 index=${pIdx}`);
+                    console.log(`  完整段落文本（前200字符）: "${para.text.substring(0, 200)}"`);
+                    console.log(`  段落来源: previewParagraphs[${pIdx}]`);
+                    console.log(`  关联空白数量: ${para.blankIds.length}`);
+                    console.log(`  预览段落总数: ${previewParagraphs.length}`);
+                }
+                
                 if (para.blankIds.length === 0) {
                   return (
                     <div key={pIdx} className="text-xs text-gray-500 leading-relaxed py-1 px-2 rounded">
