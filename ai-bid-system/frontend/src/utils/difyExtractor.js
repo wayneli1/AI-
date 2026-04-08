@@ -1,5 +1,5 @@
 // src/utils/difyExtractor.js
-// Dify投标文件信息提取工具（优化版：AI优先、克制清洗、防误杀分块）
+// Dify投标文件信息提取工具（纯净版）
 
 const DIFY_API_BASE = import.meta.env.VITE_DIFY_API_BASE || 'https://api.dify.ai/v1';
 const EXTRACTION_API_KEY = import.meta.env.VITE_DIFY_EXTRACTION_API_KEY;
@@ -54,195 +54,101 @@ Object.entries(CORE_FIELD_CATEGORIES).forEach(([categoryKey, category]) => {
 const classifyField = (key) => {
   const lowerKey = key.toLowerCase();
   for (const [keyword, info] of Object.entries(FIELD_CATEGORY_MAP)) {
-    if (lowerKey.includes(keyword) || keyword.includes(lowerKey)) {
-      return info;
-    }
+    if (lowerKey.includes(keyword) || keyword.includes(lowerKey)) return info;
   }
   return { category: 'other', label: '其他字段', priority: 4 };
 };
 
-// 💡 修复点一：极简清洗，信任 AI 原生输出，不再过度破坏联系方式和金额
 const normalizeFieldValue = (key, value) => {
   if (!value || typeof value !== 'string') return value;
-  // 仅去除多余的换行、制表符和连续空格，保留中文、标点符号及原始内容
   return value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
 };
 
-// 💡 修复点二：调整置信度，AI 绝对优先，防止被死板的正则覆盖
 const computeFieldConfidence = (key, value, source = 'dify') => {
   let confidence = 0.5;
-  
   const classification = classifyField(key);
-  if (classification.priority <= 2) {
-    confidence += 0.15;
-  }
-  
+  if (classification.priority <= 2) confidence += 0.15;
   if (value && value.length > 0) {
     confidence += 0.1;
-    if (value.length > 2 && value.length < 200) {
-      confidence += 0.1;
-    }
+    if (value.length > 2 && value.length < 200) confidence += 0.1;
   }
-  
   if (source === 'dify') {
-    confidence += 0.20; // 赋予 AI 提取结果更高的权重
+    confidence += 0.20;
   } else if (source === 'kv_extract') {
-    confidence += 0.05; // 正则只作为保底兜底，分数低于 AI
+    confidence += 0.05; 
   }
-  
   return Math.min(confidence, 1.0);
 };
 
-// 💡 修复点三：放宽分块过滤条件，防止误杀 Markdown 表格数据
 const chunkHasPotential = (chunk) => {
   const lower = chunk.toLowerCase();
-  
   const infoSignals = [
-    /[:：]/,
-    /\|/,  // 新增：识别 Markdown 表格的分隔符
-    /\*\*.+?\*\*[:：]/,
-    /公司|企业|单位|投标人|供应商/,
-    /法定代表人|法人|负责人/,
-    /注册|成立|地址|电话|邮箱|邮编/,
-    /资本|金额|报价|保证金|银行/,
-    /编号|许可证|资质|证书/,
-    /项目经理|技术负责人|授权代表/,
-    /工期|有效期|质量标准/,
-    /\d{4}[-/年]\d{1,2}[-/月]\d{1,2}/,
-    /\d{6,}/,
-    /@/,
+    /[:：]/, /\|/, /\*\*.+?\*\*[:：]/,
+    /公司|企业|单位|投标人|供应商/, /法定代表人|法人|负责人/,
+    /注册|成立|地址|电话|邮箱|邮编/, /资本|金额|报价|保证金|银行/,
+    /编号|许可证|资质|证书/, /项目经理|技术负责人|授权代表/,
+    /工期|有效期|质量标准/, /\d{4}[-/年]\d{1,2}[-/月]\d{1,2}/,
+    /\d{6,}/, /@/
   ];
-  
-  // 只要命中 1 个特征就发给 AI，宁可错杀一千，不可放过一个表格
   for (const signal of infoSignals) {
-    if (signal.test(lower)) {
-      return true;
-    }
+    if (signal.test(lower)) return true;
   }
-  
   return false;
 };
 
 const extractKVFields = (markdownContent) => {
   const fields = [];
   const lines = markdownContent.split('\n');
-  
   const kvRegex = /^\*\*(.+?)\*\*[:：\s]+(.+)$/;
   const plainKvRegex = /^(.+?)[:：]\s*(.+)$/;
-  
   const coreKeywords = Object.values(CORE_FIELD_CATEGORIES).flatMap(c => c.keywords);
   
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    
     let match = trimmed.match(kvRegex);
-    
     if (!match) {
       match = trimmed.match(plainKvRegex);
       if (match) {
         const key = match[1].trim();
-        const isCoreField = coreKeywords.some(keyword => 
-          key.includes(keyword) || keyword.includes(key)
-        );
+        const isCoreField = coreKeywords.some(keyword => key.includes(keyword) || keyword.includes(key));
         if (!isCoreField) continue;
       }
     }
-    
     if (match) {
       const key = match[1].trim();
       const value = match[2].trim();
-      
       if (value.length > 0 && value.length < 500) {
         const normalizedValue = normalizeFieldValue(key, value);
-        const confidence = computeFieldConfidence(key, normalizedValue, 'kv_extract');
-        
-        fields.push({
-          key,
-          value: normalizedValue,
-          source: 'kv_extract',
-          confidence,
-        });
+        fields.push({ key, value: normalizedValue, source: 'kv_extract', confidence: computeFieldConfidence(key, normalizedValue, 'kv_extract') });
       }
     }
   }
-  
   return fields;
 };
 
 export const runDifyMarkdownExtraction = async (markdownContent, filename, options = {}) => {
-  if (!EXTRACTION_API_KEY) {
-    throw new Error('未配置Dify信息提取API Key (VITE_DIFY_EXTRACTION_API_KEY)');
-  }
+  if (!EXTRACTION_API_KEY) throw new Error('未配置Dify信息提取API Key');
+  if (!markdownContent || markdownContent.trim() === '') throw new Error('Markdown内容为空');
 
-  if (!markdownContent || markdownContent.trim() === '') {
-    throw new Error('Markdown内容为空');
-  }
-
-  console.log('🚀 开始Dify信息提取，内容长度:', markdownContent.length, '字符');
-
-  const {
-    chunkStrategy = 'hybrid',
-    maxConcurrent = 3,
-    chunkSize = 3000,
-    overlap = 500,
-    enableProgress = true,
-    maxRetries = 1,
-    maxChunks = 20,
-  } = options;
+  const { chunkStrategy = 'hybrid', maxConcurrent = 3, chunkSize = 3000, overlap = 500, enableProgress = true, maxRetries = 1, maxChunks = 20 } = options;
 
   try {
     const kvFields = extractKVFields(markdownContent);
-    console.log(`📋 键值对预提取: ${kvFields.length} 个字段`);
-
-    console.log('📊 进行智能分块...');
-    const allChunks = intelligentChunking(markdownContent, {
-      chunkSize,
-      overlap,
-      strategy: chunkStrategy,
-      maxChunks,
-    });
-
-    const chunksToProcess = allChunks.filter(chunk => chunkHasPotential(chunk));
+    const allChunks = intelligentChunking(markdownContent, { chunkSize, overlap, strategy: chunkStrategy, maxChunks });
+    const chunksToProcess = allChunks.filter(chunkHasPotential);
     const skippedCount = allChunks.length - chunksToProcess.length;
     
-    const stats = getChunkStats(chunksToProcess);
-    console.log(`📊 分块: ${allChunks.length} 总块 → ${chunksToProcess.length} 有效块（跳过 ${skippedCount} 个无信息量分块），平均大小: ${stats.avgSize} 字符`);
-
     if (chunksToProcess.length === 0) {
-      console.log('⚠️ 没有需要Dify处理的分块，返回键值对提取结果');
-      return {
-        fields: kvFields,
-        metadata: {
-          filename,
-          kv_extract_count: kvFields.length,
-          processing_stats: {
-            total_chunks: allChunks.length,
-            processed_chunks: 0,
-            skipped_chunks: skippedCount,
-            dify_calls: 0,
-            chunk_strategy: chunkStrategy,
-            chunk_size: chunkSize,
-            overlap_size: overlap,
-            processing_time: new Date().toISOString()
-          },
-        }
-      };
+      return { fields: kvFields, metadata: { filename, kv_extract_count: kvFields.length, processing_stats: { total_chunks: allChunks.length, processed_chunks: 0 } } };
     }
 
     const chunkResults = [];
     let completedChunks = 0;
-    let difyCalls = 0;
-    let emptyResults = 0;
 
     const updateProgress = (current, total, message = '') => {
       if (enableProgress && options.onProgress) {
-        options.onProgress({
-          current,
-          total,
-          percent: Math.round((current / total) * 100),
-          message
-        });
+        options.onProgress({ current, total, percent: Math.round((current / total) * 100), message });
       }
     };
 
@@ -250,82 +156,43 @@ export const runDifyMarkdownExtraction = async (markdownContent, filename, optio
     for (let batchStart = 0; batchStart < chunksToProcess.length; batchStart += batchSize) {
       const batchEnd = Math.min(batchStart + batchSize, chunksToProcess.length);
       const batch = chunksToProcess.slice(batchStart, batchEnd);
-      
-      console.log(`🔄 处理批次 ${Math.floor(batchStart / batchSize) + 1}: ${batch.length} 个分块`);
 
       const batchPromises = batch.map(async (chunk, index) => {
         const chunkIndex = batchStart + index;
         try {
           updateProgress(completedChunks, chunksToProcess.length, `处理分块 ${chunkIndex + 1}/${chunksToProcess.length}`);
-          
-          difyCalls++;
           const result = await callDifyOnce(chunk, maxRetries);
-          
           completedChunks++;
           updateProgress(completedChunks, chunksToProcess.length, `完成分块 ${chunkIndex + 1}/${chunksToProcess.length}`);
-          
-          if (!result || result.length === 0) {
-            emptyResults++;
-            return {
-              index: chunkIndex,
-              success: true,
-              data: [],
-              isEmpty: true,
-            };
-          }
-          
-          return {
-            index: chunkIndex,
-            success: true,
-            data: result,
-            chunkPreview: chunk.substring(0, 80) + '...'
-          };
+          if (!result || result.length === 0) return { index: chunkIndex, success: true, data: [], isEmpty: true };
+          return { index: chunkIndex, success: true, data: result, chunkPreview: chunk.substring(0, 80) + '...' };
         } catch (error) {
-          console.warn(`⚠️ 分块 ${chunkIndex} API调用失败:`, error.message);
           completedChunks++;
           updateProgress(completedChunks, chunksToProcess.length, `分块 ${chunkIndex + 1} 调用失败`);
-          
-          return {
-            index: chunkIndex,
-            success: false,
-            error: error.message,
-            data: null
-          };
+          return { index: chunkIndex, success: false, error: error.message, data: null };
         }
       });
 
       const batchResults = await Promise.all(batchPromises);
       chunkResults.push(...batchResults);
-      
-      if (batchEnd < chunksToProcess.length) {
-        await new Promise(resolve => setTimeout(resolve, 300));
-      }
+      if (batchEnd < chunksToProcess.length) await new Promise(resolve => setTimeout(resolve, 300));
     }
 
     const successfulResults = chunkResults.filter(r => r.success && !r.isEmpty);
-    const apiFailures = chunkResults.filter(r => !r.success);
-    
-    console.log(`📈 处理完成: ${successfulResults.length} 块提取到字段, ${emptyResults} 块无字段(正常), ${apiFailures.length} 块API失败`);
-
     const extractionData = successfulResults.map(r => r.data);
     const mergedFields = mergeChunkFields(extractionData);
 
     const mergedMap = new Map();
-    mergedFields.forEach(field => {
-      mergedMap.set(field.key.toLowerCase(), field);
-    });
+    mergedFields.forEach(field => mergedMap.set(field.key.toLowerCase(), field));
 
-    // 优先保留高分结果（此时AI分数远高于正则）
     kvFields.forEach(kvField => {
       const existing = mergedMap.get(kvField.key.toLowerCase());
-      if (!existing || kvField.confidence > (existing.confidence || 0)) {
-        mergedMap.set(kvField.key.toLowerCase(), kvField);
-      }
+      if (!existing || kvField.confidence > (existing.confidence || 0)) mergedMap.set(kvField.key.toLowerCase(), kvField);
     });
 
     const allFields = Array.from(mergedMap.values());
 
-    const result = {
+    return {
       fields: allFields,
       metadata: {
         filename,
@@ -334,41 +201,20 @@ export const runDifyMarkdownExtraction = async (markdownContent, filename, optio
           total_chunks: allChunks.length,
           processed_chunks: chunksToProcess.length,
           skipped_chunks: skippedCount,
-          successful_chunks: successfulResults.length,
-          empty_chunks: emptyResults,
-          api_failures: apiFailures.length,
-          dify_calls: difyCalls,
-          chunk_strategy: chunkStrategy,
-          chunk_size: chunkSize,
-          overlap_size: overlap,
-          processing_time: new Date().toISOString()
-        },
-        chunk_previews: successfulResults.slice(0, 3).map(r => r.chunkPreview)
+          successful_chunks: successfulResults.length
+        }
       }
     };
-
-    console.log('✅ Dify信息提取完成!');
-    console.log(`  提取字段数: ${allFields.length} (KV预提取: ${kvFields.length}, Dify补充: ${allFields.length - kvFields.length})`);
-    console.log(`  API调用: ${difyCalls} 次, 空结果: ${emptyResults} 次`);
-
-    return result;
-
   } catch (error) {
-    console.error('❌ Dify信息提取过程错误:', error);
     throw error;
   }
 };
 
 const callDifyOnce = async (chunkContent, maxRetries = 1) => {
   let lastError = null;
-  
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
-      if (attempt > 0) {
-        console.log(`🔄 重试第 ${attempt} 次...`);
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-      }
-      
+      if (attempt > 0) await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
       const result = await callSimpleDifyWorkflow(chunkContent);
       return result.map(field => ({
         ...field,
@@ -377,93 +223,52 @@ const callDifyOnce = async (chunkContent, maxRetries = 1) => {
       }));
     } catch (error) {
       lastError = error;
-      console.warn(`⚠️ Dify调用失败 (尝试 ${attempt + 1}/${maxRetries + 1}):`, error.message);
     }
   }
-  
   throw lastError;
 };
 
 const callSimpleDifyWorkflow = async (chunkContent) => {
-  const payload = {
-    inputs: {
-      markdown_content: chunkContent
-    },
-    response_mode: 'blocking',
-    user: 'bid-learner'
-  };
-
+  const payload = { inputs: { markdown_content: chunkContent }, response_mode: 'blocking', user: 'bid-learner' };
   const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${EXTRACTION_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
+    headers: { 'Authorization': `Bearer ${EXTRACTION_API_KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(payload)
   });
-
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`Dify请求失败 (${response.status}): ${errorText}`);
   }
-
   const result = await response.json();
   return parseChunkResult(result);
 };
 
 const parseChunkResult = (difyResponse) => {
   let extractionData = null;
-  
   if (difyResponse.data?.outputs?.text) {
     try {
       const text = difyResponse.data.outputs.text;
-      const cleanedText = text
-        .replace(/```json\s*/gi, '')
-        .replace(/```\s*/g, '')
-        .replace(/<think[\s\S]*?<\/think>/gi, '')
-        .trim();
-      
+      const cleanedText = text.replace(/```json\s*/gi, '').replace(/```\s*/g, '').replace(/<think[\s\S]*?<\/think>/gi, '').trim();
       const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        extractionData = JSON.parse(jsonMatch[0]);
-      }
-    } catch (e) {
-      console.warn('从text解析JSON失败:', e.message);
-    }
+      if (jsonMatch) extractionData = JSON.parse(jsonMatch[0]);
+    } catch (e) { }
   }
-  
-  if (!extractionData && difyResponse.data?.outputs?.extracted_data) {
-    extractionData = difyResponse.data.outputs.extracted_data;
-  }
-  
+  if (!extractionData && difyResponse.data?.outputs?.extracted_data) extractionData = difyResponse.data.outputs.extracted_data;
   if (!extractionData && difyResponse.data?.outputs?.result) {
-    try {
-      extractionData = JSON.parse(difyResponse.data.outputs.result);
-    } catch (e) {
-      console.warn('从result解析JSON失败:', e.message);
-    }
+    try { extractionData = JSON.parse(difyResponse.data.outputs.result); } catch (e) { }
   }
-  
-  if (!extractionData) {
-    return [];
-  }
-  
+  if (!extractionData) return [];
   return extractFields(extractionData);
 };
 
 const extractFields = (extractionData) => {
   if (Array.isArray(extractionData.fields)) {
-    return extractionData.fields.filter(field => 
-      field && field.key && field.value && typeof field.key === 'string' && typeof field.value === 'string'
-    );
+    return extractionData.fields.filter(field => field && field.key && field.value && typeof field.key === 'string' && typeof field.value === 'string');
   }
-  
   const fields = [];
-  
   if (typeof extractionData === 'object' && !Array.isArray(extractionData)) {
     Object.entries(extractionData).forEach(([key, value]) => {
       if (key.startsWith('_')) return;
-      
       if (typeof value === 'string' && value.trim() !== '') {
         fields.push({ key, value: value.trim() });
       } else if (typeof value === 'number' || typeof value === 'boolean') {
@@ -471,252 +276,56 @@ const extractFields = (extractionData) => {
       }
     });
   }
-  
   return fields;
 };
 
 const mergeChunkFields = (chunkResults) => {
   const fieldMap = new Map();
-  
   chunkResults.forEach((fields, resultIndex) => {
     fields.forEach(field => {
       const normalizedKey = field.key.toLowerCase();
       const existing = fieldMap.get(normalizedKey);
-      
       if (!existing) {
-        fieldMap.set(normalizedKey, {
-          key: field.key,
-          value: field.value,
-          source: field.source || 'dify',
-          confidence: field.confidence || 0.5,
-          occurrences: 1,
-          allValues: [{ value: field.value, confidence: field.confidence || 0.5, source: field.source || 'dify', chunkIndex: resultIndex }],
-        });
+        fieldMap.set(normalizedKey, { key: field.key, value: field.value, source: field.source || 'dify', confidence: field.confidence || 0.5, occurrences: 1, allValues: [{ value: field.value, confidence: field.confidence || 0.5, source: field.source || 'dify', chunkIndex: resultIndex }] });
       } else {
         existing.occurrences++;
-        existing.allValues.push({
-          value: field.value,
-          confidence: field.confidence || 0.5,
-          source: field.source || 'dify',
-          chunkIndex: resultIndex,
-        });
-        
-        // 核心冲突解决逻辑：保留置信度高的。同等情况下，保留更长的文本（包含更多细节）
+        existing.allValues.push({ value: field.value, confidence: field.confidence || 0.5, source: field.source || 'dify', chunkIndex: resultIndex });
         if (field.confidence > existing.confidence) {
-          existing.key = field.key;
-          existing.value = field.value;
-          existing.confidence = field.confidence;
-          existing.source = field.source || 'dify';
+          existing.key = field.key; existing.value = field.value; existing.confidence = field.confidence; existing.source = field.source || 'dify';
         } else if (field.value.length > existing.value.length && (field.confidence || 0.5) >= existing.confidence * 0.8) {
-          existing.value = field.value;
-          existing.key = field.key;
+          existing.value = field.value; existing.key = field.key;
         }
       }
     });
   });
-  
-  return Array.from(fieldMap.values()).map(entry => ({
-    key: entry.key,
-    value: entry.value,
-    source: entry.source,
-    confidence: entry.confidence,
-    occurrences: entry.occurrences,
-  }));
+  return Array.from(fieldMap.values()).map(entry => ({ key: entry.key, value: entry.value, source: entry.source, confidence: entry.confidence, occurrences: entry.occurrences }));
+};
+
+const normalizeKey = (key) => key.toLowerCase().replace(/\s+/g, '').replace(/[（）()]/g, '').replace(/[：:]/g, '');
+const normalizeValueForComparison = (value) => {
+  if (!value) return '';
+  return value.toLowerCase().replace(/\s+/g, '').replace(/[，,]/g, '').replace(/[（）()]/g, '').replace(/万元$/i, '万').replace(/元人民币$/i, '元').replace(/天$/i, '日').replace(/个日历天$/i, '日');
 };
 
 export const analyzeCrossDocumentFrequency = (docResults) => {
-  console.log(`📊 开始跨文档分析，共 ${docResults.length} 份文档`);
-  
   const keyStats = new Map();
-  
   docResults.forEach((docResult, docIndex) => {
     const fields = docResult.fields || [];
-    
     fields.forEach(field => {
-      const { key, value } = field;
-      if (!key || !value) return;
-      
-      const normalizedKey = normalizeKey(key);
-      
-      if (!keyStats.has(normalizedKey)) {
-        keyStats.set(normalizedKey, {
-          key: key,
-          normalizedKey,
-          values: new Map(),
-          allValues: [],
-          classification: classifyField(key),
-          totalOccurrences: 0,
-          confidences: [],
-        });
-      }
-      
-      const stat = keyStats.get(normalizedKey);
-      stat.totalOccurrences++;
-      
-      const normalizedValue = normalizeFieldValue(key, value);
-      const similarityKey = normalizeValueForComparison(normalizedValue);
-      
-      if (!stat.values.has(similarityKey)) {
-        stat.values.set(similarityKey, []);
-      }
-      stat.values.get(similarityKey).push(docIndex);
-      
-      stat.allValues.push({
-        value: normalizedValue,
-        docIndex,
-        confidence: field.confidence || 0.5,
-        source: field.source || 'dify',
-      });
-      
-      if (field.confidence) {
-        stat.confidences.push(field.confidence);
-      }
+      if (!keyStats.has(field.key)) keyStats.set(field.key, { key: field.key, values: new Map(), classification: classifyField(field.key) });
+      const stat = keyStats.get(field.key);
+      const cleanValue = field.value.toLowerCase().replace(/\s+/g, '');
+      if (!stat.values.has(cleanValue)) stat.values.set(cleanValue, { count: 0, originalValue: field.value });
+      stat.values.get(cleanValue).count++;
     });
   });
-  
-  const analysisResults = Array.from(keyStats.entries()).map(([normalizedKey, stat]) => {
-    const totalDocs = docResults.length;
-    const frequency = stat.values.size;
-    
-    const uniqueValues = Array.from(new Set(stat.allValues.map(v => normalizeValueForComparison(v.value))));
-    const consistent = uniqueValues.length === 1;
-    
-    let mostCommonValue = '';
-    let mostCommonCount = 0;
-    
-    stat.values.forEach((docIndices, value) => {
-      if (docIndices.length > mostCommonCount) {
-        mostCommonCount = docIndices.length;
-        mostCommonValue = value;
-      }
+  const totalDocs = docResults.length;
+  return Array.from(keyStats.values()).map(stat => {
+    let bestValue = ''; let maxCount = 0; const allValuesList = [];
+    stat.values.forEach((data, cleanVal) => {
+      allValuesList.push({ value: data.originalValue, count: data.count, avgConfidence: 0.9 });
+      if (data.count > maxCount) { maxCount = data.count; bestValue = data.originalValue; }
     });
-    
-    const avgConfidence = stat.confidences.length > 0
-      ? stat.confidences.reduce((a, b) => a + b, 0) / stat.confidences.length
-      : 0.5;
-    
-    const allValues = Array.from(stat.values.entries()).map(([value, docIndices]) => {
-      const matchingEntries = stat.allValues.filter(v => normalizeValueForComparison(v.value) === value);
-      const avgConf = matchingEntries.length > 0
-        ? matchingEntries.reduce((sum, v) => sum + v.confidence, 0) / matchingEntries.length
-        : 0.5;
-      return {
-        value,
-        count: docIndices.length,
-        docIndices,
-        avgConfidence: avgConf,
-      };
-    });
-    
-    return {
-      key: stat.key,
-      value: mostCommonValue,
-      frequency: `${frequency}/${totalDocs}`,
-      frequencyNumber: frequency,
-      consistent,
-      allValues,
-      selected: false,
-      classification: stat.classification,
-      avgConfidence: Math.round(avgConfidence * 100) / 100,
-      totalOccurrences: stat.totalOccurrences,
-    };
-  });
-  
-  analysisResults.sort((a, b) => {
-    if (b.frequencyNumber !== a.frequencyNumber) {
-      return b.frequencyNumber - a.frequencyNumber;
-    }
-    if (a.consistent !== b.consistent) {
-      return a.consistent ? -1 : 1;
-    }
-    if (a.avgConfidence !== b.avgConfidence) {
-      return b.avgConfidence - a.avgConfidence;
-    }
-    const priorityA = a.classification?.priority || 4;
-    const priorityB = b.classification?.priority || 4;
-    if (priorityA !== priorityB) {
-      return priorityA - priorityB;
-    }
-    return a.key.localeCompare(b.key);
-  });
-  
-  console.log(`✅ 跨文档分析完成，共 ${analysisResults.length} 个字段`);
-  
-  return analysisResults;
-};
-
-const normalizeKey = (key) => {
-  return key
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/[（）()]/g, '')
-    .replace(/[：:]/g, '');
-};
-
-const normalizeValueForComparison = (value) => {
-  if (!value) return '';
-  return value
-    .toLowerCase()
-    .replace(/\s+/g, '')
-    .replace(/[，,]/g, '')
-    .replace(/[（）()]/g, '')
-    .replace(/万元$/i, '万')
-    .replace(/元人民币$/i, '元')
-    .replace(/天$/i, '日')
-    .replace(/个日历天$/i, '日');
-};
-
-export const testDifyConnection = async () => {
-  if (!EXTRACTION_API_KEY) {
-    return { connected: false, error: '未配置API Key' };
-  }
-  
-  try {
-    const response = await fetch(`${DIFY_API_BASE}/workflows`, {
-      method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${EXTRACTION_API_KEY}`
-      }
-    });
-    
-    return { 
-      connected: response.ok, 
-      status: response.status,
-      statusText: response.statusText
-    };
-  } catch (error) {
-    return { connected: false, error: error.message };
-  }
-};
-
-export const testChunking = (markdownContent, options = {}) => {
-  const chunks = intelligentChunking(markdownContent, options);
-  return getChunkStats(chunks);
-};
-
-export const mockCrossDocumentAnalysis = () => {
-  const mockResults = [
-    {
-      fields: [
-        { key: '法定代表人', value: '张三' },
-        { key: '注册资本', value: '500万元' },
-        { key: '联系电话', value: '13800138000' }
-      ]
-    },
-    {
-      fields: [
-        { key: '法定代表人', value: '张三' },
-        { key: '注册资本', value: '500万元' },
-        { key: '项目经理', value: '李四' }
-      ]
-    },
-    {
-      fields: [
-        { key: '法定代表人', value: '张三' },
-        { key: '公司地址', value: '北京市朝阳区' }
-      ]
-    }
-  ];
-  
-  return analyzeCrossDocumentFrequency(mockResults);
+    return { key: stat.key, value: bestValue, frequency: `${maxCount}/${totalDocs}`, frequencyNumber: maxCount, consistent: stat.values.size === 1, allValues: allValuesList, classification: stat.classification, avgConfidence: 0.9 };
+  }).sort((a, b) => b.frequencyNumber - a.frequencyNumber);
 };

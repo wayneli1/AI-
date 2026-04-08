@@ -176,9 +176,6 @@ export default function CreateBid() {
 
       try {
         setLoadingProducts(true);
-        console.log('🔍 [loadProductsForCompany] 开始加载产品数据');
-        console.log('🔍 查询条件 company_name:', productCompanyName.trim());
-        console.log('🔍 用户ID:', user.id);
         
         // 1. 先查询产品
         const { data: products, error: productsError } = await supabase
@@ -191,14 +188,10 @@ export default function CreateBid() {
         
         if (productsError) throw productsError;
         
-        console.log('🔍 查询到的产品数据:', products);
-        console.log('🔍 查询到的产品数量:', products?.length || 0);
-        
         // 2. 如果有产品，查询相关资产
         let assets = [];
         if (products && products.length > 0) {
           const productIds = products.map(p => p.id);
-          console.log('🔍 产品ID列表:', productIds);
           
           const { data: assetsData, error: assetsError } = await supabase
             .from('product_assets')
@@ -207,10 +200,6 @@ export default function CreateBid() {
           
           if (assetsError) throw assetsError;
           assets = assetsData || [];
-          console.log('🔍 查询到的产品资产:', assets);
-          console.log('🔍 查询到的资产数量:', assets.length || 0);
-        } else {
-          console.log('🔍 没有找到产品，跳过资产查询');
         }
         
         const data = products || [];
@@ -241,7 +230,6 @@ export default function CreateBid() {
                 serviceManualsByProductId[productId] = [];
               }
               serviceManualsByProductId[productId].push(asset);
-              console.log(`🔍 产品 ${productId} 有服务手册: ${asset.asset_name}`);
             }
           }
         });
@@ -250,8 +238,6 @@ export default function CreateBid() {
         const productMap = {};
         
         rawData.forEach(product => {
-          console.log(`🔍 处理产品: ${product.product_name} ${product.version || '无版本'}, ID: ${product.id}`);
-          
           if (!productMap[product.product_name]) {
             productMap[product.product_name] = {
               title: product.product_name,
@@ -735,6 +721,17 @@ export default function CreateBid() {
       } catch (kbImageError) {
         console.warn('加载知识库图片失败，继续执行:', kbImageError);
       }
+
+      console.log('📊 ========== 空白上下文体检 ==========');
+      scannedBlanks.forEach((b, i) => {
+        const ctx = b.context || '';
+        const chineseCount = (ctx.match(/[\u4e00-\u9fa5]/g) || []).length;
+        const isPoorContext = chineseCount < 3 && ['underscore', 'dash', 'keyword_space'].includes(b.type);
+        console.log(`👉 #${i + 1} ID: ${b.id} | 类型: ${b.type} | 符号: "${b.matchText}" | paraIndex: ${b.paraIndex}`);
+        console.log(`   靶心上下文: "${ctx}"`);
+        console.log(`   中文字符数: ${chineseCount}${isPoorContext ? ' ⚠️ 上下文不足！' : ' ✅'}`);
+      });
+      console.log('📊 ========== 体检结束 ==========');
 
       const enrichedContext = (structuredProfile ? structuredProfile + '\n' : '') 
         + (tenderContext || '') 

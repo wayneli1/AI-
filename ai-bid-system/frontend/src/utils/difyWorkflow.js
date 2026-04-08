@@ -1,3 +1,5 @@
+// src/utils/difyWorkflow.js
+
 // 全局环境变量读取
 const DIFY_API_BASE = import.meta.env.VITE_DIFY_API_BASE || 'https://api.dify.ai/v1';
 const FILL_BLANK_API_KEY = import.meta.env.VITE_DIFY_FILL_BLANK_API_KEY;
@@ -19,8 +21,6 @@ export const scanBlanksWithAI = async (paragraphs) => {
     chunks.push(lightParagraphs.slice(i, i + CHUNK_SIZE));
   }
 
-  console.log(`AI 扫描引擎启动，共 ${lightParagraphs.length} 个段落，切分为 ${chunks.length} 个并发扫描任务...`);
-
   const promises = chunks.map(async (chunk, index) => {
     try {
       const paragraphsText = JSON.stringify(chunk);
@@ -38,22 +38,13 @@ export const scanBlanksWithAI = async (paragraphs) => {
         })
       });
 
-      if (!response.ok) {
-        console.warn(`⚠️ 扫描切片 ${index} HTTP ${response.status}，断臂求生跳过`);
-        return [];
-      }
+      if (!response.ok) return [];
 
       const result = await response.json();
-      if (result.data?.error) {
-        console.warn(`⚠️ 扫描切片 ${index} 工作流异常: ${result.data.message}`);
-        return [];
-      }
+      if (result.data?.error) return [];
 
       const outputStr = result.data?.outputs?.text || result.data?.outputs?.result;
-      if (!outputStr) {
-        console.warn(`⚠️ 扫描切片 ${index} 返回空数据，跳过`);
-        return [];
-      }
+      if (!outputStr) return [];
 
       let cleanStr = outputStr;
       cleanStr = cleanStr.replace(/<think[\s\S]*?<\/think>/gi, '').trim();
@@ -67,18 +58,13 @@ export const scanBlanksWithAI = async (paragraphs) => {
         if (jsonMatch) {
           try {
             const recovered = JSON.parse(jsonMatch[0]);
-            if (Array.isArray(recovered)) {
-              console.log(`✅ 扫描切片 ${index} 正则抢救成功，恢复 ${recovered.length} 个空白`);
-              return recovered;
-            }
+            if (Array.isArray(recovered)) return recovered;
           } catch (e2) { /* fall through */ }
         }
       }
 
-      console.warn(`⚠️ 扫描切片 ${index} 解析失败，返回空数组`);
       return [];
     } catch (error) {
-      console.warn(`⚠️ 扫描切片 ${index} 异常，断臂求生:`, error.message);
       return [];
     }
   });
@@ -86,7 +72,6 @@ export const scanBlanksWithAI = async (paragraphs) => {
   const chunkResults = await Promise.all(promises);
   const allAiBlanks = chunkResults.flat();
 
-  console.log(`🎉 AI 扫描完成！所有切片共发现 ${allAiBlanks.length} 个空白`);
   return allAiBlanks;
 };
 
@@ -110,17 +95,25 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
       autoBlanks.push(b);
     }
   }
-  console.log(`智能拦截结果: ${autoBlanks.length} 个自动填空, ${manualBlanks.length} 个纯手工填空（已拦截）`);
 
+  // ================= 🚨 核心修复点 🚨 =================
   const blankList = autoBlanks.map(b => {
     let markedContext = b.context;
-    if (b.index !== undefined && b.matchText && b.matchText !== '[空白单元格]' && b.type !== 'attachment') {
-      markedContext = b.context.substring(0, b.index) + "【🎯此处为本字段要填的位置🎯】" + b.context.substring(b.index + b.matchText.length);
-    } else if (b.type === 'empty_cell' || b.matchText === '[空白单元格]' || b.type === 'attachment' || b.need_image) {
-      markedContext = "【🎯此处需要插入对应资质图片，请从知识库资质图片中找到匹配的图片并输出其纯URL🎯】 " + b.context;
+    
+    if (b.type === 'attachment') {
+      // 只有真正的附件占位符，才提示插入附件
+      markedContext = "【🎯资质附件插入位置🎯】 " + b.context;
+    } else if (b.matchText) {
+      // 放弃不靠谱的 b.index，直接使用 replace 替换占位符为靶心
+      // 这样无论前面怎么拼接标题，靶心永远会精准替换掉下划线或[空白单元格]
+      markedContext = b.context.replace(b.matchText, '【🎯】');
+    } else {
+      markedContext = b.context + '【🎯】';
     }
+    
     return { id: b.id, context: markedContext, type: b.type };
   });
+  // ====================================================
 
   const CHUNK_SIZE = 10;
   const chunks = [];
@@ -164,7 +157,7 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
           }
         }
       } catch (fatalError) {
-        console.error(`切片 ${index} 发生致命解析错误:`, fatalError);
+        // 静默处理解析错误
       }
       return parsedChunk;
     });
@@ -180,7 +173,6 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
 
     return finalFilledData;
   } catch (error) {
-    console.error("并发填报过程发生错误:", error);
     throw error;
   }
 };
