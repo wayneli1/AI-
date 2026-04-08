@@ -1128,6 +1128,8 @@ export default function CreateBid() {
       birth_date: '出生日期',
       id_expiry: '身份证有效期',
       position: '职位',
+      id_photo_front_url: '身份证正面照片',
+      id_photo_back_url: '身份证反面照片',
     };
     let text = '【投标主体权威档案】\n';
     for (const [key, label] of Object.entries(labelMap)) {

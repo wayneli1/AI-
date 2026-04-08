@@ -3,9 +3,9 @@ import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
 import {
   Card, Button, Form, Input, Select, DatePicker, Drawer, message,
-  Popconfirm, Empty, Spin, Collapse, Space, Tag
+  Popconfirm, Empty, Spin, Collapse, Space, Tag, Upload
 } from 'antd';
-import { PlusCircle, Building2, Edit3, Trash2, Phone, Mail, MapPin, User, FileText, Briefcase, Hash, Calendar, Clock, CreditCard, Shield, Settings } from 'lucide-react';
+import { PlusCircle, Building2, Edit3, Trash2, Phone, Mail, MapPin, User, FileText, Briefcase, Hash, Calendar, Clock, CreditCard, Shield, Settings, Upload as UploadIcon } from 'lucide-react';
 import dayjs from 'dayjs';
 
 const FIELD_LABELS = {
@@ -27,8 +27,8 @@ const FIELD_LABELS = {
   birth_date: '出生日期',
   id_expiry: '身份证有效期',
   position: '职位',
-  id_photo_front_url: '身份证正面照片URL',
-  id_photo_back_url: '身份证反面照片URL',
+  id_photo_front_url: '身份证正面',
+  id_photo_back_url: '身份证反面',
 };
 
 const CompanyProfile = () => {
@@ -38,6 +38,7 @@ const CompanyProfile = () => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [uploadingIdPhoto, setUploadingIdPhoto] = useState(null);
   const [form] = Form.useForm();
 
   useEffect(() => {
@@ -160,6 +161,49 @@ const CompanyProfile = () => {
       console.error('删除失败:', err);
       message.error('删除失败');
     }
+  };
+
+  const handleIdPhotoUpload = async (file, side) => {
+    const fieldName = side === 'front' ? 'id_photo_front_url' : 'id_photo_back_url';
+    try {
+      setUploadingIdPhoto(side);
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).substring(2, 9);
+      const ext = file.name.split('.').pop().toLowerCase();
+      const safeFileName = `${timestamp}_${randomStr}.${ext}`;
+      const filePath = `id-photos/${user.id}/${side}_${safeFileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from('images')
+        .upload(filePath, file, { cacheControl: '3600', upsert: false });
+
+      if (uploadError) {
+        if (uploadError.message.includes('duplicate')) {
+          message.error('文件已存在，请重新上传');
+          return false;
+        }
+        throw uploadError;
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from('images')
+        .getPublicUrl(filePath);
+
+      form.setFieldValue(fieldName, publicUrlData.publicUrl);
+      message.success(side === 'front' ? '身份证正面上传成功' : '身份证反面上传成功');
+      return false;
+    } catch (err) {
+      console.error('上传失败:', err);
+      message.error('上传失败: ' + err.message);
+      return false;
+    } finally {
+      setUploadingIdPhoto(null);
+    }
+  };
+
+  const removeIdPhoto = (side) => {
+    const fieldName = side === 'front' ? 'id_photo_front_url' : 'id_photo_back_url';
+    form.setFieldValue(fieldName, null);
   };
 
   const genderOptions = [
@@ -393,12 +437,87 @@ const CompanyProfile = () => {
                     <Form.Item label="职位" name="position">
                       <Input placeholder="如：执行董事" />
                     </Form.Item>
-                    <Form.Item label="身份证正面照片URL（人像面）" name="id_photo_front_url">
-                      <Input placeholder="身份证正面照片的存储地址（选填）" />
+                    <Form.Item label="身份证正面（人像面）" name="id_photo_front_url" className="col-span-2">
+                      <Input type="hidden" />
                     </Form.Item>
-                    <Form.Item label="身份证反面照片URL（国徽面）" name="id_photo_back_url">
-                      <Input placeholder="身份证反面照片的存储地址（选填）" />
-                    </Form.Item>
+                    <div className="col-span-2 flex gap-4 -mt-4 mb-2">
+                      <div className="flex-1">
+                        <Form.Item noStyle shouldUpdate={(prev, cur) => prev.id_photo_front_url !== cur.id_photo_front_url}>
+                          {({ getFieldValue }) => {
+                            const frontUrl = getFieldValue('id_photo_front_url');
+                            return (
+                              <Upload
+                                name="file"
+                                listType="picture-card"
+                                showUploadList={false}
+                                beforeUpload={(file) => handleIdPhotoUpload(file, 'front')}
+                                accept=".jpg,.jpeg,.png"
+                                disabled={uploadingIdPhoto === 'front'}
+                              >
+                                {frontUrl ? (
+                                  <div className="relative w-full h-full p-1">
+                                    <img src={frontUrl} alt="身份证正面" className="w-full h-full object-cover rounded" />
+                                    <div
+                                      className="absolute top-1 right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center cursor-pointer hover:bg-red-600"
+                                      onClick={(e) => { e.stopPropagation(); removeIdPhoto('front'); }}
+                                    >
+                                      <Trash2 size={10} className="text-white" />
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col items-center justify-center h-full text-gray-400 hover:text-blue-500 transition-colors">
+                                    {uploadingIdPhoto === 'front' ? <Spin /> : (
+                                      <>
+                                        <UploadIcon size={24} className="mb-1" />
+                                        <div className="text-xs">上传人像面</div>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </Upload>
+                            );
+                          }}
+                        </Form.Item>
+                      </div>
+                      <div className="flex-1">
+                        <Form.Item noStyle shouldUpdate={(prev, cur) => prev.id_photo_back_url !== cur.id_photo_back_url}>
+                          {({ getFieldValue }) => {
+                            const backUrl = getFieldValue('id_photo_back_url');
+                            return (
+                              <Upload
+                                name="file"
+                                listType="picture-card"
+                                showUploadList={false}
+                                beforeUpload={(file) => handleIdPhotoUpload(file, 'back')}
+                                accept=".jpg,.jpeg,.png"
+                                disabled={uploadingIdPhoto === 'back'}
+                              >
+                                {backUrl ? (
+                                  <div className="relative w-full h-full p-1">
+                                    <img src={backUrl} alt="身份证反面" className="w-full h-full object-cover rounded" />
+                                    <div
+                                      className="absolute top-1 right-1 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center cursor-pointer hover:bg-red-600"
+                                      onClick={(e) => { e.stopPropagation(); removeIdPhoto('back'); }}
+                                    >
+                                      <Trash2 size={10} className="text-white" />
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <div className="flex flex-col items-center justify-center h-full text-gray-400 hover:text-blue-500 transition-colors">
+                                    {uploadingIdPhoto === 'back' ? <Spin /> : (
+                                      <>
+                                        <UploadIcon size={24} className="mb-1" />
+                                        <div className="text-xs">上传国徽面</div>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </Upload>
+                            );
+                          }}
+                        </Form.Item>
+                      </div>
+                    </div>
                   </div>
                 ),
               },
