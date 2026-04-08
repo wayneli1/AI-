@@ -27,7 +27,8 @@ const FIELD_LABELS = {
   birth_date: '出生日期',
   id_expiry: '身份证有效期',
   position: '职位',
-  id_photo_url: '身份证照片URL',
+  id_photo_front_url: '身份证正面照片URL',
+  id_photo_back_url: '身份证反面照片URL',
 };
 
 const CompanyProfile = () => {
@@ -115,7 +116,8 @@ const CompanyProfile = () => {
         birth_date: values.birth_date ? values.birth_date.format('YYYY-MM-DD') : null,
         id_expiry: values.id_expiry || null,
         position: values.position || null,
-        id_photo_url: values.id_photo_url || null,
+        id_photo_front_url: values.id_photo_front_url || null,
+        id_photo_back_url: values.id_photo_back_url || null,
         custom_fields: customFieldsObj,
       };
 
@@ -391,8 +393,11 @@ const CompanyProfile = () => {
                     <Form.Item label="职位" name="position">
                       <Input placeholder="如：执行董事" />
                     </Form.Item>
-                    <Form.Item label="身份证照片URL" name="id_photo_url" className="col-span-2">
-                      <Input placeholder="身份证照片的存储地址（选填）" />
+                    <Form.Item label="身份证正面照片URL（人像面）" name="id_photo_front_url">
+                      <Input placeholder="身份证正面照片的存储地址（选填）" />
+                    </Form.Item>
+                    <Form.Item label="身份证反面照片URL（国徽面）" name="id_photo_back_url">
+                      <Input placeholder="身份证反面照片的存储地址（选填）" />
                     </Form.Item>
                   </div>
                 ),
