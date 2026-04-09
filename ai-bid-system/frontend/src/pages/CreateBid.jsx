@@ -448,9 +448,173 @@ export default function CreateBid() {
     return (blank.context || '').trim();
   }, []);
 
+  const normalizePreviewText = useCallback((text) => {
+    return (text || '').replace(/\s+/g, ' ').trim();
+  }, []);
+
+  const getPreviewAnchorTokens = useCallback((blank) => {
+    if (!blank) return [];
+
+    const tokens = [];
+    const locatorText = getPreviewLocatorText(blank);
+    const cleanContext = normalizePreviewText(blank.context || '');
+    const cleanMatchText = normalizePreviewText(blank.matchText || '');
+
+    if (blank.type === 'empty_cell') {
+      const label = normalizePreviewText((blank._cellLabel || '').replace('：[空白单元格]', ''));
+      if (label) tokens.push(label);
+
+      if (label.includes('（项：')) {
+        const parts = label.replace('）', '').split('（项：').map((part) => normalizePreviewText(part));
+        parts.forEach((part) => {
+          if (part) tokens.push(part);
+        });
+      }
+    }
+
+    if (cleanMatchText && cleanMatchText !== '[空白单元格]' && !/^_+$/.test(cleanMatchText) && !/^-+$/.test(cleanMatchText)) {
+      tokens.push(cleanMatchText);
+    }
+
+    if (locatorText) tokens.push(normalizePreviewText(locatorText));
+    if (cleanContext) tokens.push(cleanContext);
+
+    return [...new Set(tokens)].filter((token) => token && token.length >= 2);
+  }, [getPreviewLocatorText, normalizePreviewText]);
+
+  const getBlankDisplayName = useCallback((blank) => {
+    if (!blank) return '';
+    if (blank._cellLabel) return blank._cellLabel;
+    const locatorText = getPreviewLocatorText(blank);
+    if (locatorText) return locatorText;
+    return normalizePreviewText(blank.context || blank.matchText || blank.id);
+  }, [getPreviewLocatorText, normalizePreviewText]);
+
+  const clearPreviewAnchors = useCallback(() => {
+    const container = previewRef.current;
+    if (!container) return;
+
+    container.querySelectorAll('[data-preview-blank-ids]').forEach((node) => {
+      node.removeAttribute('data-preview-blank-ids');
+      node.removeAttribute('data-preview-primary-blank-id');
+      node.classList.remove('preview-blank-anchor', 'preview-blank-anchor-active');
+      node.style.cursor = '';
+      node.style.transition = '';
+      node.style.borderRadius = '';
+      node.style.backgroundColor = '';
+      node.style.boxShadow = '';
+    });
+  }, []);
+
+  const applyPreviewAnchorStyles = useCallback(() => {
+    const container = previewRef.current;
+    if (!container) return;
+
+    container.querySelectorAll('[data-preview-blank-ids]').forEach((node) => {
+      const ids = (node.getAttribute('data-preview-blank-ids') || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      const relatedBlanks = ids
+        .map((id) => scannedBlanks.find((blank) => blank.id === id))
+        .filter(Boolean);
+
+      const hasFilled = relatedBlanks.some((blank) => !!manualEdits[blank.id]);
+      const hasPending = relatedBlanks.some((blank) => !manualEdits[blank.id]);
+      const isActive = highlightBlankId && ids.includes(highlightBlankId);
+
+      node.style.cursor = 'pointer';
+      node.style.transition = 'background-color 0.2s ease, box-shadow 0.2s ease';
+      node.style.borderRadius = '6px';
+
+      if (isActive) {
+        node.style.backgroundColor = 'rgba(224, 231, 255, 0.85)';
+        node.style.boxShadow = 'inset 0 0 0 2px rgba(79, 70, 229, 0.85), 0 0 0 3px rgba(165, 180, 252, 0.45)';
+        return;
+      }
+
+      if (hasFilled && !hasPending) {
+        node.style.backgroundColor = 'rgba(220, 252, 231, 0.75)';
+        node.style.boxShadow = 'inset 0 0 0 1px rgba(34, 197, 94, 0.55)';
+        return;
+      }
+
+      node.style.backgroundColor = 'rgba(254, 240, 138, 0.55)';
+      node.style.boxShadow = 'inset 0 0 0 1px rgba(245, 158, 11, 0.55)';
+    });
+  }, [highlightBlankId, manualEdits, scannedBlanks]);
+
+  const decoratePreviewAnchors = useCallback(() => {
+    const container = previewRef.current;
+    if (!container) return;
+
+    clearPreviewAnchors();
+    if (scannedBlanks.length === 0) return;
+
+    const candidates = Array.from(container.querySelectorAll('span, p, td, th, div, li'))
+      .map((node) => ({ node, text: normalizePreviewText(node.textContent) }))
+      .filter(({ text }) => text && text.length <= 400);
+
+    scannedBlanks.forEach((blank) => {
+      const tokens = getPreviewAnchorTokens(blank);
+      if (tokens.length === 0) return;
+
+      let bestNode = null;
+      let bestScore = Number.NEGATIVE_INFINITY;
+
+      tokens.forEach((token, tokenIndex) => {
+        candidates.forEach(({ node, text }) => {
+          if (!text.includes(token)) return;
+
+          const score = token.length * 100 - text.length - tokenIndex * 10;
+          if (score > bestScore) {
+            bestNode = node;
+            bestScore = score;
+          }
+        });
+      });
+
+      if (!bestNode) return;
+
+      const existingIds = (bestNode.getAttribute('data-preview-blank-ids') || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      if (!existingIds.includes(blank.id)) {
+        existingIds.push(blank.id);
+      }
+
+      bestNode.setAttribute('data-preview-blank-ids', existingIds.join(','));
+      if (!bestNode.getAttribute('data-preview-primary-blank-id')) {
+        bestNode.setAttribute('data-preview-primary-blank-id', blank.id);
+      }
+      const titleText = existingIds
+        .map((id) => scannedBlanks.find((item) => item.id === id))
+        .filter(Boolean)
+        .map((item) => getBlankDisplayName(item))
+        .filter(Boolean)
+        .join('\n');
+      bestNode.setAttribute('title', titleText || getBlankDisplayName(blank));
+      bestNode.setAttribute('tabindex', '0');
+      bestNode.setAttribute('role', 'button');
+      bestNode.classList.add('preview-blank-anchor');
+      bestNode.style.cursor = 'pointer';
+    });
+    applyPreviewAnchorStyles();
+  }, [applyPreviewAnchorStyles, clearPreviewAnchors, getBlankDisplayName, getPreviewAnchorTokens, normalizePreviewText, scannedBlanks]);
+
   const findPreviewAnchor = useCallback((blank) => {
     const container = previewRef.current;
     if (!container || !blank) return null;
+
+     const exactAnchor = container.querySelector(`[data-preview-blank-ids~="${blank.id}"]`) ||
+      Array.from(container.querySelectorAll('[data-preview-blank-ids]')).find((node) => {
+        const ids = (node.getAttribute('data-preview-blank-ids') || '').split(',').map((item) => item.trim());
+        return ids.includes(blank.id);
+      });
+    if (exactAnchor) return exactAnchor;
 
     const locatorText = getPreviewLocatorText(blank);
     if (!locatorText) return null;
@@ -465,6 +629,16 @@ export default function CreateBid() {
     }) || null;
   }, [getPreviewLocatorText]);
 
+  const scrollToTable = useCallback((blankId) => {
+    setHighlightBlankId(blankId);
+    setTimeout(() => {
+      const el = document.querySelector(`[data-row-key="${blankId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 100);
+  }, []);
+
   // 💡 【右侧表格】点击后：滚动【左侧原文】
   const scrollToBlank = useCallback((blankId) => {
     setHighlightBlankId(blankId);
@@ -478,6 +652,56 @@ export default function CreateBid() {
       }
     }, 100);
   }, [findPreviewAnchor, scannedBlanks]);
+
+  useEffect(() => {
+    if (!previewRef.current || isRenderingPreview) return;
+    decoratePreviewAnchors();
+  }, [decoratePreviewAnchors, isRenderingPreview]);
+
+  useEffect(() => {
+    const container = previewRef.current;
+    if (!container) return undefined;
+
+    const handleClick = (event) => {
+      const target = event.target?.nodeType === Node.TEXT_NODE ? event.target.parentElement : event.target;
+      const anchor = target?.closest?.('[data-preview-blank-ids]');
+      if (!anchor || !container.contains(anchor)) return;
+
+      const primaryBlankId = anchor.getAttribute('data-preview-primary-blank-id');
+      const blankIds = (anchor.getAttribute('data-preview-blank-ids') || '')
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean);
+
+      if (primaryBlankId) {
+        scrollToTable(primaryBlankId);
+      } else if (blankIds.length > 0) {
+        scrollToTable(blankIds[0]);
+      }
+    };
+
+    const handleKeyDown = (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      const target = event.target?.closest?.('[data-preview-blank-ids]');
+      if (!target || !container.contains(target)) return;
+      event.preventDefault();
+      const primaryBlankId = target.getAttribute('data-preview-primary-blank-id');
+      if (primaryBlankId) {
+        scrollToTable(primaryBlankId);
+      }
+    };
+
+    container.addEventListener('click', handleClick);
+    container.addEventListener('keydown', handleKeyDown);
+    return () => {
+      container.removeEventListener('click', handleClick);
+      container.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [scrollToTable]);
+
+  useEffect(() => {
+    applyPreviewAnchorStyles();
+  }, [applyPreviewAnchorStyles]);
 
   const handleFileUpload = async (event) => {
     console.log('🔍 [handleFileUpload] 文件上传开始');
@@ -1361,6 +1585,14 @@ export default function CreateBid() {
                 原文对照
                 <span className="ml-2 text-xs text-gray-400 font-normal">保持原始版式，点击右侧字段定位左侧</span>
               </h4>
+              <div className="mt-2 flex items-center gap-2 text-[11px] text-gray-500">
+                <span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-200 ring-1 ring-amber-400" />
+                <span>待填写</span>
+                <span className="inline-block h-2.5 w-2.5 rounded-sm bg-green-100 ring-1 ring-green-500" />
+                <span>已填写</span>
+                <span className="inline-block h-2.5 w-2.5 rounded-sm bg-indigo-100 ring-2 ring-indigo-400" />
+                <span>当前定位</span>
+              </div>
             </div>
             <div className="flex-1 overflow-auto bg-[#f5f7fb]" ref={previewScrollRef}>
               {isRenderingPreview && (

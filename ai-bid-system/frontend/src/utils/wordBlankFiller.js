@@ -245,6 +245,34 @@ function buildCellLabel(cell) {
   return '';
 }
 
+function shouldSkipEmptyCellLabel(label) {
+  if (!label) return true;
+
+  const normalizedLabel = label.replace(/\s+/g, ' ').trim();
+  if (!normalizedLabel) return true;
+
+  const nonReusablePatterns = [
+    /^报价项目$/,
+    /^报价（元）$/,
+    /^总报价（元）$/,
+    /^采购报价单$/,
+    /^分项报价表$/,
+    /^报价明细表$/,
+    /^货物名称$/,
+    /^规格型号$/,
+    /^数量$/,
+    /^单位$/,
+    /^单价（元）$/,
+    /^合计（元）$/,
+    /报价（元）（项：/,
+    /采购报价单/,
+    /分项报价/,
+    /明细报价/
+  ];
+
+  return nonReusablePatterns.some((pattern) => pattern.test(normalizedLabel));
+}
+
 function countParagraphsBefore(xmlString, globalOffset) {
   return (xmlString.substring(0, globalOffset).match(/<w:p[\s>]/g) || []).length;
 }
@@ -474,7 +502,7 @@ export function scanBlanksFromXml(xmlString) {
 
     const label = buildCellLabel(cell);
 
-    if (!label || /^[0-9]+$/.test(label)) continue;
+    if (!label || /^[0-9]+$/.test(label) || shouldSkipEmptyCellLabel(label)) continue;
 
     const cellKey = `${cell.tableIndex}:${cell.rowIndex}:${cell.colIndex}:${label}`;
     if (seenEmptyCells.has(cellKey)) continue;
@@ -713,6 +741,7 @@ export function extractIndexedParagraphs(xmlString) {
     tableParaSet.add(cell.paraIndex);
     if (cell.cellText === '' || /^[\s_－-]+$/.test(cell.cellText)) {
       if (cell.rowIndex === 0) continue;
+      if (!label || shouldSkipEmptyCellLabel(label)) continue;
 
       paraToLabel.set(cell.paraIndex, label);
     }
