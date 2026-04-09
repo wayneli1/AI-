@@ -273,6 +273,11 @@ function shouldSkipEmptyCellLabel(label) {
   return nonReusablePatterns.some((pattern) => pattern.test(normalizedLabel));
 }
 
+function isDocReferenceContext(text) {
+  if (!text || typeof text !== 'string') return false;
+  return /服务手册|售后服务手册|技术方案|实施方案|产品说明书|白皮书|产品彩页|手册/.test(text);
+}
+
 function countParagraphsBefore(xmlString, globalOffset) {
   return (xmlString.substring(0, globalOffset).match(/<w:p[\s>]/g) || []).length;
 }
@@ -427,6 +432,19 @@ export function scanBlanksFromXml(xmlString) {
       while ((m = underscorePattern.exec(text)) !== null) {
         if (m[0].length >= 2) {
           blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+        }
+      }
+
+      // 服务手册等文档引用位置经常只给两个下划线，例如：Coremail产品VIP级售后服务手册（20250923）：__
+      if (isDocReferenceContext(text)) {
+        const shortUnderscorePattern = /_{2,}/g;
+        while ((m = shortUnderscorePattern.exec(text)) !== null) {
+          const alreadyExists = blanks.some(
+            (b) => b.paraIndex === currentParaIndex && b.matchText === m[0] && b.index === m.index
+          );
+          if (!alreadyExists) {
+            blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+          }
         }
       }
 

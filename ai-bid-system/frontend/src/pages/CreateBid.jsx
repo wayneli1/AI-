@@ -503,6 +503,8 @@ export default function CreateBid() {
       node.style.borderRadius = '';
       node.style.backgroundColor = '';
       node.style.boxShadow = '';
+      node.onclick = null;
+      node.onkeydown = null;
     });
   }, []);
 
@@ -544,6 +546,61 @@ export default function CreateBid() {
       node.style.boxShadow = 'inset 0 0 0 1px rgba(245, 158, 11, 0.55)';
     });
   }, [highlightBlankId, manualEdits, scannedBlanks]);
+
+  const resolvePreviewBlankId = useCallback((anchor) => {
+    if (!anchor) return '';
+
+    const blankIds = (anchor.getAttribute('data-preview-blank-ids') || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+
+    if (blankIds.length === 0) return '';
+    if (highlightBlankId && blankIds.includes(highlightBlankId)) return highlightBlankId;
+
+    const primaryBlankId = anchor.getAttribute('data-preview-primary-blank-id');
+    if (primaryBlankId && blankIds.includes(primaryBlankId)) return primaryBlankId;
+
+    return blankIds.find((id) => scannedBlanks.some((blank) => blank.id === id)) || blankIds[0];
+  }, [highlightBlankId, scannedBlanks]);
+
+  const findPreviewAnchor = useCallback((blank) => {
+    const container = previewRef.current;
+    if (!container || !blank) return null;
+
+     const exactAnchor = container.querySelector(`[data-preview-blank-ids~="${blank.id}"]`) ||
+      Array.from(container.querySelectorAll('[data-preview-blank-ids]')).find((node) => {
+        const ids = (node.getAttribute('data-preview-blank-ids') || '').split(',').map((item) => item.trim());
+        return ids.includes(blank.id);
+      });
+    if (exactAnchor) return exactAnchor;
+
+    const locatorText = getPreviewLocatorText(blank);
+    if (!locatorText) return null;
+
+    const candidates = Array.from(
+      container.querySelectorAll('p, td, th, span, div, li')
+    );
+
+    return candidates.find((node) => {
+      const text = node.textContent?.replace(/\s+/g, ' ').trim();
+      return text && text.includes(locatorText) && text.length <= 300;
+    }) || null;
+  }, [getPreviewLocatorText]);
+
+  const scrollToTable = useCallback((blankId) => {
+    setHighlightBlankId(blankId);
+    setTimeout(() => {
+      const el = document.querySelector(`[data-row-key="${blankId}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        el.classList.add('ring-2', 'ring-indigo-400');
+        const input = el.querySelector('input');
+        if (input) input.focus({ preventScroll: true });
+        setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-400'), 2000);
+      }
+    }, 100);
+  }, []);
 
   const decoratePreviewAnchors = useCallback(() => {
     const container = previewRef.current;
@@ -601,43 +658,26 @@ export default function CreateBid() {
       bestNode.setAttribute('role', 'button');
       bestNode.classList.add('preview-blank-anchor');
       bestNode.style.cursor = 'pointer';
+      bestNode.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const targetBlankId = resolvePreviewBlankId(bestNode);
+        if (targetBlankId) {
+          scrollToTable(targetBlankId);
+        }
+      };
+      bestNode.onkeydown = (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        event.stopPropagation();
+        const targetBlankId = resolvePreviewBlankId(bestNode);
+        if (targetBlankId) {
+          scrollToTable(targetBlankId);
+        }
+      };
     });
     applyPreviewAnchorStyles();
-  }, [applyPreviewAnchorStyles, clearPreviewAnchors, getBlankDisplayName, getPreviewAnchorTokens, normalizePreviewText, scannedBlanks]);
-
-  const findPreviewAnchor = useCallback((blank) => {
-    const container = previewRef.current;
-    if (!container || !blank) return null;
-
-     const exactAnchor = container.querySelector(`[data-preview-blank-ids~="${blank.id}"]`) ||
-      Array.from(container.querySelectorAll('[data-preview-blank-ids]')).find((node) => {
-        const ids = (node.getAttribute('data-preview-blank-ids') || '').split(',').map((item) => item.trim());
-        return ids.includes(blank.id);
-      });
-    if (exactAnchor) return exactAnchor;
-
-    const locatorText = getPreviewLocatorText(blank);
-    if (!locatorText) return null;
-
-    const candidates = Array.from(
-      container.querySelectorAll('p, td, th, span, div, li')
-    );
-
-    return candidates.find((node) => {
-      const text = node.textContent?.replace(/\s+/g, ' ').trim();
-      return text && text.includes(locatorText) && text.length <= 300;
-    }) || null;
-  }, [getPreviewLocatorText]);
-
-  const scrollToTable = useCallback((blankId) => {
-    setHighlightBlankId(blankId);
-    setTimeout(() => {
-      const el = document.querySelector(`[data-row-key="${blankId}"]`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 100);
-  }, []);
+  }, [applyPreviewAnchorStyles, clearPreviewAnchors, getBlankDisplayName, getPreviewAnchorTokens, normalizePreviewText, resolvePreviewBlankId, scannedBlanks, scrollToTable]);
 
   // 💡 【右侧表格】点击后：滚动【左侧原文】
   const scrollToBlank = useCallback((blankId) => {
@@ -657,47 +697,6 @@ export default function CreateBid() {
     if (!previewRef.current || isRenderingPreview) return;
     decoratePreviewAnchors();
   }, [decoratePreviewAnchors, isRenderingPreview]);
-
-  useEffect(() => {
-    const container = previewRef.current;
-    if (!container) return undefined;
-
-    const handleClick = (event) => {
-      const target = event.target?.nodeType === Node.TEXT_NODE ? event.target.parentElement : event.target;
-      const anchor = target?.closest?.('[data-preview-blank-ids]');
-      if (!anchor || !container.contains(anchor)) return;
-
-      const primaryBlankId = anchor.getAttribute('data-preview-primary-blank-id');
-      const blankIds = (anchor.getAttribute('data-preview-blank-ids') || '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-
-      if (primaryBlankId) {
-        scrollToTable(primaryBlankId);
-      } else if (blankIds.length > 0) {
-        scrollToTable(blankIds[0]);
-      }
-    };
-
-    const handleKeyDown = (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      const target = event.target?.closest?.('[data-preview-blank-ids]');
-      if (!target || !container.contains(target)) return;
-      event.preventDefault();
-      const primaryBlankId = target.getAttribute('data-preview-primary-blank-id');
-      if (primaryBlankId) {
-        scrollToTable(primaryBlankId);
-      }
-    };
-
-    container.addEventListener('click', handleClick);
-    container.addEventListener('keydown', handleKeyDown);
-    return () => {
-      container.removeEventListener('click', handleClick);
-      container.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [scrollToTable]);
 
   useEffect(() => {
     applyPreviewAnchorStyles();
