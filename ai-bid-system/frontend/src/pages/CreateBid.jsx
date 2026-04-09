@@ -1659,9 +1659,9 @@ export default function CreateBid() {
             </div>
 
             <div className="p-4 bg-white border-t border-gray-100 shrink-0">
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-3">
                 <span className="text-sm font-bold text-gray-700 shrink-0">投标主体：</span>
-                <div className="flex items-center shadow-sm rounded-lg overflow-hidden border border-indigo-200 bg-gray-50 flex-1 max-w-xs">
+                <div className="flex min-w-[280px] flex-1 items-center shadow-sm rounded-lg overflow-hidden border border-indigo-200 bg-gray-50 max-w-md">
                   <Input
                     placeholder="输入公司名称"
                     value={targetCompany}
@@ -1675,7 +1675,7 @@ export default function CreateBid() {
                     type="text"
                     icon={<Database size={14} />}
                     onClick={fetchCompanyList}
-                    className="bg-indigo-100 text-indigo-700 h-9 px-3 rounded-none border-l border-indigo-200 font-medium text-xs"
+                    className="bg-indigo-100 text-indigo-700 h-9 px-3 rounded-none border-l border-indigo-200 font-medium text-xs shrink-0"
                   >
                     从库中选
                   </Button>
@@ -1686,13 +1686,13 @@ export default function CreateBid() {
                   ghost={!!tenderContext}
                   icon={<FileText size={16} />} 
                   onClick={() => setIsContextModalVisible(true)}
-                  className={`h-9 px-4 rounded-lg font-medium transition-colors ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-500'}`}
+                  className={`h-9 px-4 rounded-lg font-medium transition-colors shrink-0 ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-500'}`}
                 >
                   {tenderContext ? '已补充招标上下文' : '📎 贴入招标原文 (推荐)'}
                 </Button>
 
                 {/* 产品资产选择器 */}
-                <div className="flex items-center">
+                <div className="flex items-center shrink-0 min-w-[260px]">
                   <Package size={14} className="text-gray-500 mr-1" />
                   <TreeSelect
                     treeData={productTreeData}
@@ -1703,14 +1703,14 @@ export default function CreateBid() {
                     placeholder="关联产品资质"
                     loading={loadingProducts}
                     disabled={!productCompanyName.trim() || loadingProducts}
-                    className="w-64"
+                    className="w-full min-w-[240px]"
                     dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
                     allowClear
                     treeDefaultExpandAll
                   />
                 </div>
 
-                <div className="flex-1" />
+                <div className="flex-1 min-w-0" />
 
                 {!isReviewed ? (
                   <Button
@@ -1718,7 +1718,7 @@ export default function CreateBid() {
                     size="large"
                     onClick={handleAutoFill}
                     loading={isFilling}
-                    className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-11 font-bold border-0 px-8 shadow-md"
+                    className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-11 font-bold border-0 px-8 shadow-md shrink-0"
                   >
                     AI 自动填写
                   </Button>
@@ -1727,18 +1727,9 @@ export default function CreateBid() {
                     <Button
                       onClick={handleAutoFill}
                       loading={isFilling}
-                      className="rounded-xl h-11 font-bold px-6 border-gray-300 text-gray-700"
+                      className="rounded-xl h-11 font-bold px-6 border-gray-300 text-gray-700 shrink-0"
                     >
                       重新 AI 填写
-                    </Button>
-                    <Button
-                      type="primary"
-                      size="large"
-                      icon={<Download size={16} />}
-                      onClick={handleExportFilledWord}
-                      className="bg-green-600 hover:bg-green-700 rounded-xl h-11 font-bold border-0 px-8 shadow-md"
-                    >
-                      导出已填报文件
                     </Button>
                   </>
                 )}
