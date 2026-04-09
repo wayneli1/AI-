@@ -1500,14 +1500,14 @@ export default function CreateBid() {
 
   if (step === 'upload') {
     return (
-      <div className="h-screen flex flex-col items-center justify-center bg-[#F8F9FA] p-8 relative">
+      <div className="min-h-screen flex flex-col items-center justify-center bg-[#F8F9FA] p-4 sm:p-8 relative">
         <h2 className="text-3xl font-bold text-gray-800 mb-4">投标文件智能填报</h2>
         <p className="text-gray-500 mb-12 text-center max-w-xl">
           上传甲方的 .docx 投标文件框架，系统将自动扫描其中的空白位置（签名栏、日期栏、公司信息等），
           由 AI 结合知识库自动填写，最终导出格式 100% 还原的已填报文件。
         </p>
 
-        <div className="flex gap-8 max-w-4xl w-full justify-center">
+        <div className="flex w-full max-w-4xl justify-center gap-4 sm:gap-8">
           <input
             type="file"
             ref={fileInputRef}
@@ -1517,7 +1517,7 @@ export default function CreateBid() {
           />
           <div
             onClick={() => fileInputRef.current?.click()}
-            className="flex-1 max-w-lg border-2 border-dashed border-indigo-300 hover:border-indigo-500 rounded-3xl p-16 bg-white shadow-sm hover:shadow-xl cursor-pointer flex flex-col items-center group transition-all duration-300 transform hover:-translate-y-1"
+            className="flex-1 max-w-lg border-2 border-dashed border-indigo-300 hover:border-indigo-500 rounded-3xl px-6 py-10 sm:p-16 bg-white shadow-sm hover:shadow-xl cursor-pointer flex flex-col items-center group transition-all duration-300 transform hover:-translate-y-1"
           >
             <div className="w-24 h-24 bg-indigo-50 rounded-full flex items-center justify-center mb-8 group-hover:scale-110 transition-transform">
               <UploadCloud size={48} className="text-indigo-500" />
@@ -1543,7 +1543,7 @@ export default function CreateBid() {
 
         {isScanning && (
           <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-            <div className="bg-white p-10 rounded-2xl shadow-2xl flex flex-col items-center w-[400px]">
+            <div className="bg-white p-6 sm:p-10 rounded-2xl shadow-2xl flex flex-col items-center w-[min(92vw,400px)]">
               <Cpu size={40} className="text-indigo-500 mb-6 animate-pulse" />
               <h3 className="text-lg font-bold text-gray-800 mb-2">正在扫描文件...</h3>
               <p className="text-gray-500 text-sm">正在解析 Word XML 结构，识别空白填写位置</p>
@@ -1559,23 +1559,24 @@ export default function CreateBid() {
 
     return (
       <div className="h-screen flex flex-col bg-[#F8F9FA] overflow-hidden">
-        <div className="h-14 bg-white border-b flex items-center justify-between px-6 shadow-sm shrink-0 z-10">
-          <div className="flex items-center">
+        <div className="bg-white border-b px-4 py-3 sm:px-6 shadow-sm shrink-0 z-10">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-center">
             <Button
               type="text"
               icon={<ArrowLeft size={18} />}
-               onClick={() => { setStep('upload'); setScannedBlanks([]); setManualEdits({}); setTenderContext(''); }}
+                onClick={() => { setStep('upload'); setScannedBlanks([]); setManualEdits({}); setTenderContext(''); }}
               className="text-gray-600 font-medium"
             >
               重新上传
             </Button>
             <span className="ml-4 text-gray-300">|</span>
-            <span className="ml-4 text-sm text-gray-500">
+            <span className="ml-4 min-w-0 truncate text-sm text-gray-500">
               {originalFile?.name}
             </span>
             <Tag color="blue" className="ml-3">{scannedBlanks.length} 处空白</Tag>
           </div>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 self-start lg:self-auto">
             {isReviewed && (
               <Button
                 type="primary"
@@ -1585,20 +1586,21 @@ export default function CreateBid() {
               >
                 导出已填报文件 (.docx)
               </Button>
-            )}
+              )}
+          </div>
           </div>
         </div>
 
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex flex-col xl:flex-row overflow-hidden">
           {/* ========== 左侧：原文对照侧边栏 ========== */}
-          <div className="w-[650px] bg-white border-r border-gray-200 flex flex-col shrink-0">
+          <div className="h-[42vh] xl:h-auto xl:w-[42vw] xl:max-w-[720px] bg-white border-b xl:border-b-0 xl:border-r border-gray-200 flex flex-col shrink-0">
             <div className="p-3 border-b border-gray-100 bg-gray-50 shrink-0">
               <h4 className="font-bold text-gray-700 text-sm flex items-center">
                 <Eye size={14} className="mr-2 text-indigo-500" />
                 原文对照
                 <span className="ml-2 text-xs text-gray-400 font-normal">保持原始版式，点击右侧字段定位左侧</span>
               </h4>
-              <div className="mt-2 flex items-center gap-2 text-[11px] text-gray-500">
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-500">
                 <span className="inline-block h-2.5 w-2.5 rounded-sm bg-amber-200 ring-1 ring-amber-400" />
                 <span>待填写</span>
                 <span className="inline-block h-2.5 w-2.5 rounded-sm bg-green-100 ring-1 ring-green-500" />
@@ -1607,7 +1609,7 @@ export default function CreateBid() {
                 <span>当前定位</span>
               </div>
             </div>
-            <div className="flex-1 overflow-auto bg-[#f5f7fb]" ref={previewScrollRef}>
+            <div className="flex-1 overflow-auto bg-[#f5f7fb] min-h-0" ref={previewScrollRef}>
               {isRenderingPreview && (
                 <div className="flex flex-col items-center justify-center py-12 text-gray-500">
                   <Spin className="mb-3" />
@@ -1636,9 +1638,9 @@ export default function CreateBid() {
           </div>
 
           {/* ========== 中间：表格编辑区 ========== */}
-          <div className="flex-1 flex flex-col overflow-hidden">
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
             <div className="bg-white border-b border-gray-100 p-4 shrink-0">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <h3 className="text-base font-bold text-gray-800 flex items-center">
                   <Edit3 size={16} className="mr-2 text-indigo-500" />
                   待填写字段
@@ -1652,7 +1654,7 @@ export default function CreateBid() {
               </div>
             </div>
 
-            <div className="flex-1 overflow-auto">
+            <div className="flex-1 overflow-auto min-w-0">
               <Table
                 dataSource={scannedBlanks}
                 columns={blankColumns}
@@ -1672,10 +1674,10 @@ export default function CreateBid() {
               />
             </div>
 
-            <div className="p-4 bg-white border-t border-gray-100 shrink-0">
-              <div className="flex flex-wrap items-center gap-3">
+            <div className="p-4 bg-white border-t border-gray-100 shrink-0 overflow-auto">
+              <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-center">
                 <span className="text-sm font-bold text-gray-700 shrink-0">投标主体：</span>
-                <div className="flex min-w-[280px] flex-1 items-center shadow-sm rounded-lg overflow-hidden border border-indigo-200 bg-gray-50 max-w-md">
+                <div className="flex w-full min-w-0 lg:min-w-[280px] lg:max-w-md lg:flex-1 items-center shadow-sm rounded-lg overflow-hidden border border-indigo-200 bg-gray-50">
                   <Input
                     placeholder="输入公司名称"
                     value={targetCompany}
@@ -1700,13 +1702,13 @@ export default function CreateBid() {
                   ghost={!!tenderContext}
                   icon={<FileText size={16} />} 
                   onClick={() => setIsContextModalVisible(true)}
-                  className={`h-9 px-4 rounded-lg font-medium transition-colors shrink-0 ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-500'}`}
+                  className={`h-9 w-full lg:w-auto px-4 rounded-lg font-medium transition-colors shrink-0 ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-500'}`}
                 >
                   {tenderContext ? '已补充招标上下文' : '📎 贴入招标原文 (推荐)'}
                 </Button>
 
                 {/* 产品资产选择器 */}
-                <div className="flex items-center shrink-0 min-w-[260px]">
+                <div className="flex w-full lg:w-auto items-center shrink-0 min-w-0 lg:min-w-[260px]">
                   <Package size={14} className="text-gray-500 mr-1" />
                   <TreeSelect
                     treeData={productTreeData}
@@ -1717,14 +1719,14 @@ export default function CreateBid() {
                     placeholder="关联产品资质"
                     loading={loadingProducts}
                     disabled={!productCompanyName.trim() || loadingProducts}
-                    className="w-full min-w-[240px]"
+                    className="w-full min-w-0 lg:min-w-[240px]"
                     dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
                     allowClear
                     treeDefaultExpandAll
                   />
                 </div>
 
-                <div className="flex-1 min-w-0" />
+                <div className="hidden lg:block flex-1 min-w-0" />
 
                 {!isReviewed ? (
                   <Button
@@ -1732,7 +1734,7 @@ export default function CreateBid() {
                     size="large"
                     onClick={handleAutoFill}
                     loading={isFilling}
-                    className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-11 font-bold border-0 px-8 shadow-md shrink-0"
+                    className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-11 w-full lg:w-auto font-bold border-0 px-8 shadow-md shrink-0"
                   >
                     AI 自动填写
                   </Button>
@@ -1741,7 +1743,7 @@ export default function CreateBid() {
                     <Button
                       onClick={handleAutoFill}
                       loading={isFilling}
-                      className="rounded-xl h-11 font-bold px-6 border-gray-300 text-gray-700 shrink-0"
+                      className="rounded-xl h-11 w-full lg:w-auto font-bold px-6 border-gray-300 text-gray-700 shrink-0"
                     >
                       重新 AI 填写
                     </Button>
@@ -1754,7 +1756,7 @@ export default function CreateBid() {
 
         {isFilling && (
           <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-            <div className="bg-white p-10 rounded-2xl shadow-2xl flex flex-col items-center w-[500px]">
+            <div className="bg-white p-6 sm:p-10 rounded-2xl shadow-2xl flex flex-col items-center w-[min(92vw,500px)]">
               <Cpu size={40} className="text-indigo-500 mb-6 animate-pulse" />
               <h3 className="text-lg font-bold text-gray-800 mb-2">AI 正在分析并填写...</h3>
               <p className="text-gray-500 text-sm mb-4">
