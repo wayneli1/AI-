@@ -354,6 +354,33 @@ function isInlineBlankType(type) {
   return ['underscore', 'dash', 'keyword_space', 'brackets', 'placeholder'].includes(type);
 }
 
+function shouldAppendAfterAnchor(blank) {
+  const hint = blank.fieldHint || '';
+  const context = `${blank.context || ''} ${blank.localContext || ''}`;
+
+  if (/签字|签名/.test(hint) || /签字|签名/.test(context)) return false;
+
+  const appendableHints = [
+    '投标人名称',
+    '投标单位',
+    '承诺人',
+    '单位名称',
+    '法定代表人信息',
+    '被授权人信息',
+    '职务',
+    '地址',
+    '电话',
+    '邮编',
+    '开户行',
+    '银行账号',
+    '统一社会信用代码'
+  ];
+
+  if (appendableHints.includes(hint)) return true;
+
+  return /^【🎯】/.test(blank.localContext || '') && /：|:/.test(blank.context || '');
+}
+
 function countParagraphsBefore(xmlString, globalOffset) {
   return (xmlString.substring(0, globalOffset).match(/<w:p[\s>]/g) || []).length;
 }
@@ -828,7 +855,11 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
           newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
         }
       } else if (blankPos === -1) {
-        if (!isInlineBlankType(blank.type)) {
+        if (shouldAppendAfterAnchor(blank)) {
+          if (replaceTextRangeInNodes(nodes, fullText.length, fullText.length, escapeXml(value))) {
+            newParaXml = rebuildParagraphXml(paraXml, nodes);
+          }
+        } else if (!isInlineBlankType(blank.type)) {
           if (isImage) {
             const imgInfo = imageRidMap[blank.id];
             newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
