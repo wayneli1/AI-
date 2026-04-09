@@ -1470,6 +1470,20 @@ export default function CreateBid() {
       }
     },
     {
+      title: '定位',
+      key: 'locator',
+      width: 360,
+      render: (_, record) => (
+        <div className="leading-snug">
+          <div className="text-xs font-medium text-gray-700">
+            {record.fieldHint || '未命名字段'}
+            <span className="ml-2 text-[11px] text-gray-400">P{record.paraIndex} / 第{record.blankOrdinalInParagraph || 1}空</span>
+          </div>
+          <div className="mt-1 text-[11px] text-gray-500 break-all">{record.localContext || record.context}</div>
+        </div>
+      )
+    },
+    {
       title: 'AI 填写结果 / 手动修改',
       key: 'value',
       render: (_, record) => (

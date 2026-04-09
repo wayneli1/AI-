@@ -236,6 +236,78 @@ function buildTableStructureMap(xmlString) {
   return cellInfos;
 }
 
+function buildLocalContext(text, start, end, marker = '【🎯】') {
+  if (!text) return '';
+  const safeStart = Math.max(0, Math.min(start ?? 0, text.length));
+  const safeEnd = Math.max(safeStart, Math.min(end ?? safeStart, text.length));
+  const windowStart = Math.max(0, safeStart - 20);
+  const windowEnd = Math.min(text.length, safeEnd + 20);
+  const prefix = text.slice(windowStart, safeStart);
+  const suffix = text.slice(safeEnd, windowEnd);
+  return `${prefix}${marker}${suffix}`.replace(/\s+/g, ' ').trim();
+}
+
+function inferFieldHint(context, matchText = '') {
+  const text = `${context || ''} ${matchText || ''}`;
+  const hintPatterns = [
+    ['投标人名称', /投标人名称|投标单位|投标人(?!代表|签字)/],
+    ['承诺人', /承诺人/],
+    ['国家或地区', /国家或地区/],
+    ['法定代表人信息', /法定代表人姓名|法定代表人.*身份证|法定代表人/],
+    ['被授权人信息', /被授权人|委托代理人|授权代表/],
+    ['职务', /职务/],
+    ['性别', /性别/],
+    ['身份证号码', /身份证号码|身份证号/],
+    ['单位名称', /单位名称|公司名称|企业名称|供应商名称/],
+    ['地址', /地址|住所|通讯地址/],
+    ['电话', /电话|联系电话|联系方式/],
+    ['邮编', /邮编|邮政编码/],
+    ['开户行', /开户行|开户银行/],
+    ['银行账号', /银行账号|账号/],
+    ['统一社会信用代码', /统一社会信用代码|信用代码/],
+    ['签字', /签字|签名/],
+    ['盖章', /盖章|公章|签章/]
+  ];
+
+  for (const [hint, pattern] of hintPatterns) {
+    if (pattern.test(text)) return hint;
+  }
+
+  return '';
+}
+
+function enrichBlankMetadata(blanks) {
+  const grouped = new Map();
+
+  blanks.forEach((blank) => {
+    const key = blank.paraIndex;
+    if (!grouped.has(key)) grouped.set(key, []);
+    grouped.get(key).push(blank);
+  });
+
+  grouped.forEach((items) => {
+    items.sort((a, b) => {
+      const aStart = Number.isInteger(a.textStart) ? a.textStart : (a.index ?? 0);
+      const bStart = Number.isInteger(b.textStart) ? b.textStart : (b.index ?? 0);
+      return aStart - bStart;
+    });
+
+    items.forEach((blank, idx) => {
+      const start = Number.isInteger(blank.textStart) ? blank.textStart : (blank.index ?? 0);
+      const end = Number.isInteger(blank.textEnd) ? blank.textEnd : start + ((blank.matchText || '').length || 0);
+      blank.textStart = start;
+      blank.textEnd = end;
+      blank.blankOrdinalInParagraph = idx + 1;
+      blank.localContext = buildLocalContext(blank.context || '', start, end);
+      if (!blank.fieldHint) {
+        blank.fieldHint = inferFieldHint(blank.context || '', blank.matchText || '');
+      }
+    });
+  });
+
+  return blanks;
+}
+
 function buildCellLabel(cell) {
   if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
     return `${cell.headerText}（项：${cell.rowHeader}）`;
@@ -276,6 +348,10 @@ function shouldSkipEmptyCellLabel(label) {
 function isDocReferenceContext(text) {
   if (!text || typeof text !== 'string') return false;
   return /服务手册|售后服务手册|技术方案|实施方案|产品说明书|白皮书|产品彩页|手册/.test(text);
+}
+
+function isInlineBlankType(type) {
+  return ['underscore', 'dash', 'keyword_space', 'brackets', 'placeholder'].includes(type);
 }
 
 function countParagraphsBefore(xmlString, globalOffset) {
@@ -431,7 +507,7 @@ export function scanBlanksFromXml(xmlString) {
       const underscorePattern = /_{3,}/g;
       while ((m = underscorePattern.exec(text)) !== null) {
         if (m[0].length >= 2) {
-          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
         }
       }
 
@@ -443,35 +519,58 @@ export function scanBlanksFromXml(xmlString) {
             (b) => b.paraIndex === currentParaIndex && b.matchText === m[0] && b.index === m.index
           );
           if (!alreadyExists) {
-            blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+            blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
           }
         }
       }
 
-      const dashPattern = /-{4,}/g;
+      const dashPattern = /[-－—─﹣]{3,}/g;
       while ((m = dashPattern.exec(text)) !== null) {
         if (m[0].length >= 3) {
-          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, type: 'dash', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'dash', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
         }
       }
 
-      // 匹配冒号后带有至少 3 个空格的空白（得益于我们转化了 tab 符，这里能完美抓取长空格）
-      const spacePattern = /([：:])(\s{3,})/g;
+      // 匹配冒号后带有至少 2 个空格/全角空格的空白（得益于我们转化了 tab 符，这里能完美抓取长空格）
+      const spacePattern = /([：:])([\s\u3000]{2,})/g;
       while ((m = spacePattern.exec(text)) !== null) {
         const colonStr = m[1];
         const spaceStr = m[2];
         const spaceIndex = m.index + colonStr.length; 
-        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: spaceStr, index: spaceIndex, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: spaceStr, index: spaceIndex, textStart: spaceIndex, textEnd: spaceIndex + spaceStr.length, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, spaceStr) });
+      }
+
+      // 无冒号但字段名后直接跟随空格的场景，例如：承诺人      、投标人      
+      const trailingSpacePattern = /((?:投标人|承诺人|供应商|投标主体|投标单位|申请人|法定代表人|委托代理人|授权代表|联系人|地址|电话|传真|邮编|开户行|银行账号|统一社会信用代码|单位名称))([\s\u3000]{2,})/g;
+      while ((m = trailingSpacePattern.exec(text)) !== null) {
+        const spaceStr = m[2];
+        const spaceIndex = m.index + m[1].length;
+        const alreadyExists = blanks.some(
+          (b) => b.paraIndex === currentParaIndex && b.matchText === spaceStr && b.index === spaceIndex
+        );
+        if (!alreadyExists) {
+          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: spaceStr, index: spaceIndex, textStart: spaceIndex, textEnd: spaceIndex + spaceStr.length, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, spaceStr) });
+        }
       }
 
       const roundBracketPattern = /[（(]\s*(盖章处|签章处|盖章|签字|请填写[^）)]*|待补充|待定|填写[^）)]*|请盖章)\s*[)）]/g;
       while ((m = roundBracketPattern.exec(text)) !== null) {
-        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
       }
 
       const squareBracketPattern = /[[【]\s*(填写[^\]】]*|待补充|待定|请填写[^\]】]*)\s*[\]】]/g;
       while ((m = squareBracketPattern.exec(text)) !== null) {
-        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
+      }
+
+      const bracketFieldPattern = /[（(]\s*([^（）()]{1,50}(?:名称|姓名|职务|性别|身份证号码|国家或地区|地址|电话|邮编|开户行|账号|代码|单位|投标人|供应商|法定代表人|被授权人|委托代理人|授权代表))\s*[)）]/g;
+      while ((m = bracketFieldPattern.exec(text)) !== null) {
+        const alreadyExists = blanks.some(
+          (b) => b.paraIndex === currentParaIndex && b.matchText === m[0] && b.index === m.index
+        );
+        if (!alreadyExists) {
+          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
+        }
       }
 
       const placeholderPattern = /待补充|待填/g;
@@ -527,17 +626,20 @@ export function scanBlanksFromXml(xmlString) {
     seenEmptyCells.add(cellKey);
 
     const context = `${label}：[空白单元格]`;
-    blanks.push({
-      id: `blank_${++blankCounter}`,
-      context,
-      matchText: '[空白单元格]',
-      _cellLabel: label,
-      index: label.length + 1, 
-      type: 'empty_cell',
-      confidence: 'medium',
-      paraIndex: cell.paraIndex,
-      fill_role: determineFillRole(label)
-    });
+      blanks.push({
+        id: `blank_${++blankCounter}`,
+        context,
+        matchText: '[空白单元格]',
+        _cellLabel: label,
+        index: label.length + 1, 
+        textStart: label.length + 1,
+        textEnd: label.length + 1 + '[空白单元格]'.length,
+        type: 'empty_cell',
+        confidence: 'medium',
+        paraIndex: cell.paraIndex,
+        fill_role: determineFillRole(label),
+        fieldHint: label
+      });
   }
 
   const uniqueBlanks = [];
@@ -562,7 +664,7 @@ export function scanBlanksFromXml(xmlString) {
       b.need_image = true;
     }
   }
-  return uniqueBlanks;
+  return enrichBlankMetadata(uniqueBlanks);
 }
 
 // 💡 核心修复 2：在替换引擎中同样支持 <w:tab/> 的抓取，确保文字和空格映射不错位
@@ -580,8 +682,8 @@ function buildTextNodeMap(paragraphXml) {
       offset += text.length;
     } else {
       // 这是一个普通文本节点
-      const text = m[3];
-      nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[4], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
+      const text = m[2] || '';
+      nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[3], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
       offset += text.length;
     }
   }
@@ -625,6 +727,36 @@ function getOverlappingNodes(nodes, textStart, textEnd) {
     result.push(node);
   }
   return result;
+}
+
+function replaceTextRangeInNodes(nodes, textStart, textEnd, replacementText) {
+  let overlappingNodes = getOverlappingNodes(nodes, textStart, textEnd);
+  if (overlappingNodes.length === 0 && textStart === textEnd) {
+    const insertNode = nodes.find((node) => textStart >= node.textStart && textStart <= node.textEnd);
+    if (insertNode) {
+      overlappingNodes = [insertNode];
+    }
+  }
+  if (overlappingNodes.length === 0) return false;
+
+  const safeReplacement = replacementText ?? '';
+
+  for (let i = 0; i < overlappingNodes.length; i++) {
+    const node = overlappingNodes[i];
+    const sliceStart = Math.max(textStart, node.textStart) - node.textStart;
+    const sliceEnd = Math.min(textEnd, node.textEnd) - node.textStart;
+    const prefix = node.text.slice(0, sliceStart);
+    const suffix = node.text.slice(sliceEnd);
+
+    node._replaced = true;
+    if (i === 0) {
+      node._newText = prefix + safeReplacement + suffix;
+    } else {
+      node._newText = prefix + suffix;
+    }
+  }
+
+  return true;
 }
 
 export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap, hyperlinkRidMap = {}) {
@@ -676,9 +808,12 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
       let matchText = blank.matchText;
       
       const searchBlank = { ...blank, matchText };
-      const blankPos = findBlankInFullText(fullText, searchBlank);
+      let blankPos = findBlankInFullText(fullText, searchBlank);
+      if (blankPos === -1 && Number.isInteger(blank.index) && blank.index >= 0 && blank.index <= fullText.length) {
+        blankPos = blank.index;
+      }
       
-      if (blankPos === -1 || blank.type === 'attachment') {
+      if (blank.type === 'attachment') {
         if (isImage) {
           const imgInfo = imageRidMap[blank.id];
           newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
@@ -692,33 +827,49 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
         } else {
           newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
         }
-      } else {
-        const blankEnd = blankPos + matchText.length;
-        const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
-        if (coveredNodes.length > 0) {
+      } else if (blankPos === -1) {
+        if (!isInlineBlankType(blank.type)) {
           if (isImage) {
             const imgInfo = imageRidMap[blank.id];
-            for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
+            newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
+          } else if (isDocUrl) {
+            const displayText = getDisplayTextFromUrl(value, blank.context);
+            if (hyperlinkRId) {
+              newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
+            } else {
+              newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
+            }
+          } else {
+            newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
+          }
+        } else {
+          console.warn(`⚠️ 未定位到空白位置，跳过追加以避免写到后缀后面: ${blank.id}`, {
+            paraIndex: blank.paraIndex,
+            matchText: blank.matchText,
+            context: blank.context
+          });
+        }
+      } else {
+        const blankEnd = blankPos + matchText.length;
+        const preserveAnchorText = blank.type === 'brackets' && /盖章|公章|签章/.test(blank.matchText || blank.context || '');
+        const replaceStart = preserveAnchorText ? blankEnd : blankPos;
+        const replaceEnd = preserveAnchorText ? blankEnd : blankEnd;
+        const inlineReplacement = (!isImage && !isDocUrl) ? escapeXml(value) : '';
+
+        if (replaceTextRangeInNodes(nodes, replaceStart, replaceEnd, inlineReplacement)) {
+          if (isImage) {
+            const imgInfo = imageRidMap[blank.id];
             let tempParaXml = rebuildParagraphXml(paraXml, nodes);
             newParaXml = tempParaXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
           } else if (isDocUrl) {
             const displayText = getDisplayTextFromUrl(value, blank.context);
             if (hyperlinkRId) {
-              for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
               let tempParaXml = rebuildParagraphXml(paraXml, nodes);
               newParaXml = tempParaXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
             } else {
-              for (let i = 0; i < coveredNodes.length; i++) {
-                coveredNodes[i]._replaced = true;
-                coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
-              }
               newParaXml = rebuildParagraphXml(paraXml, nodes);
             }
           } else {
-            for (let i = 0; i < coveredNodes.length; i++) {
-              coveredNodes[i]._replaced = true;
-              coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
-            }
             newParaXml = rebuildParagraphXml(paraXml, nodes);
           }
         }
@@ -791,17 +942,22 @@ export function mergeBlanks(regexBlanks, aiBlanks) {
         : 0);
     const key = `${aiBlank.paraIndex}|${aiBlank.matchText}|${computedIndex}`;
     if (!existingKeys.has(key)) {
+      const textStart = computedIndex >= 0 ? computedIndex : 0;
+      const textEnd = textStart + ((aiBlank.matchText || '').length || 0);
       merged.push({ 
         ...aiBlank, 
         id: `blank_ai_${merged.length + 1}`, 
         confidence: aiBlank.confidence || 'medium',
         fill_role: aiBlank.fill_role || determineFillRole(aiBlank.context || '', aiBlank.type || ''),
-        index: computedIndex >= 0 ? computedIndex : 0
+        index: textStart,
+        textStart,
+        textEnd,
+        fieldHint: aiBlank.field_hint || inferFieldHint(aiBlank.context || '', aiBlank.matchText || '')
       });
       existingKeys.add(key);
     }
   });
-  return merged;
+  return enrichBlankMetadata(merged);
 }
 
 export function extractParagraphsForPreview(xmlString, blanks) {

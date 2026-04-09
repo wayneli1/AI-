@@ -5,6 +5,33 @@ const DIFY_API_BASE = import.meta.env.VITE_DIFY_API_BASE || 'https://api.dify.ai
 const FILL_BLANK_API_KEY = import.meta.env.VITE_DIFY_FILL_BLANK_API_KEY;
 const SCAN_BLANK_API_KEY = import.meta.env.VITE_DIFY_SCAN_BLANK_API_KEY;
 
+const buildMarkedContext = (blank) => {
+  if (blank.type === 'attachment') {
+    return `【🎯资质附件插入位置🎯】 ${blank.context}`;
+  }
+
+  if (blank.localContext) {
+    return blank.localContext;
+  }
+
+  const context = blank.context || '';
+  const start = Number.isInteger(blank.textStart) ? blank.textStart : (blank.index ?? 0);
+  const matchText = blank.matchText || '';
+  const end = Number.isInteger(blank.textEnd) ? blank.textEnd : start + matchText.length;
+
+  if (start >= 0 && end >= start && end <= context.length) {
+    const windowStart = Math.max(0, start - 20);
+    const windowEnd = Math.min(context.length, end + 20);
+    return `${context.slice(windowStart, start)}【🎯】${context.slice(end, windowEnd)}`.replace(/\s+/g, ' ').trim();
+  }
+
+  if (matchText) {
+    return context.replace(matchText, '【🎯】');
+  }
+
+  return `${context}【🎯】`;
+};
+
 export const scanBlanksWithAI = async (paragraphs) => {
   if (!SCAN_BLANK_API_KEY || !DIFY_API_BASE) {
     throw new Error("未配置空白扫描 API Key (VITE_DIFY_SCAN_BLANK_API_KEY)");
@@ -21,7 +48,7 @@ export const scanBlanksWithAI = async (paragraphs) => {
     chunks.push(lightParagraphs.slice(i, i + CHUNK_SIZE));
   }
 
-  const promises = chunks.map(async (chunk, index) => {
+  const promises = chunks.map(async (chunk) => {
     try {
       const paragraphsText = JSON.stringify(chunk);
 
@@ -98,20 +125,15 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
 
   // ================= 🚨 核心修复点 🚨 =================
   const blankList = autoBlanks.map(b => {
-    let markedContext = b.context;
-    
-    if (b.type === 'attachment') {
-      // 只有真正的附件占位符，才提示插入附件
-      markedContext = "【🎯资质附件插入位置🎯】 " + b.context;
-    } else if (b.matchText) {
-      // 放弃不靠谱的 b.index，直接使用 replace 替换占位符为靶心
-      // 这样无论前面怎么拼接标题，靶心永远会精准替换掉下划线或[空白单元格]
-      markedContext = b.context.replace(b.matchText, '【🎯】');
-    } else {
-      markedContext = b.context + '【🎯】';
-    }
-    
-    return { id: b.id, context: markedContext, type: b.type };
+    return {
+      id: b.id,
+      context: buildMarkedContext(b),
+      full_context: b.context,
+      type: b.type,
+      field_hint: b.fieldHint || '',
+      ordinal: b.blankOrdinalInParagraph || 1,
+      para_index: b.paraIndex
+    };
   });
   // ====================================================
 
@@ -121,60 +143,56 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
     chunks.push(blankList.slice(i, i + CHUNK_SIZE));
   }
 
-  try {
-    const promises = chunks.map(async (chunk, index) => {
-      const payload = {
-        inputs: { blank_list: JSON.stringify(chunk), company_name: companyName, tender_context: tenderContext },
-        response_mode: "blocking",
-        user: "frontend-fill-blank-user"
-      };
+  const promises = chunks.map(async (chunk, index) => {
+    const payload = {
+      inputs: { blank_list: JSON.stringify(chunk), company_name: companyName, tender_context: tenderContext },
+      response_mode: "blocking",
+      user: "frontend-fill-blank-user"
+    };
 
-      const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${FILL_BLANK_API_KEY}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) throw new Error(`Dify 切片 ${index} 请求失败: ${response.status}`);
-
-      const resData = await response.json();
-      
-      let parsedChunk = {};
-      try {
-        let textStr = resData.data?.outputs?.result || resData.data?.outputs?.text || "{}";
-        textStr = textStr.replace(/```json/g, '').replace(/```/g, '').trim();
-        const startIdx = textStr.indexOf('{');
-        const endIdx = textStr.lastIndexOf('}');
-        if (startIdx !== -1 && endIdx !== -1) textStr = textStr.substring(startIdx, endIdx + 1);
-
-        try {
-          parsedChunk = JSON.parse(textStr);
-        } catch (parseError) {
-          const regex = /"(blank_(?:ai_)?\d+)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g;
-          let m;
-          while ((m = regex.exec(textStr)) !== null) {
-            try { parsedChunk[m[1]] = JSON.parse(`"${m[2]}"`); } catch (e) { /* ignore */ }
-          }
-        }
-      } catch (fatalError) {
-        // 静默处理解析错误
-      }
-      return parsedChunk;
+    const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${FILL_BLANK_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
     });
 
-    const chunkResults = await Promise.all(promises);
-    const finalFilledData = {};
-    for (const res of chunkResults) Object.assign(finalFilledData, res);
-    
-    // 手工项保持留空
-    for (const manualBlank of manualBlanks) {
-      finalFilledData[manualBlank.id] = '';
-    }
+    if (!response.ok) throw new Error(`Dify 切片 ${index} 请求失败: ${response.status}`);
 
-    return finalFilledData;
-  } catch (error) {
-    throw error;
+    const resData = await response.json();
+    
+    let parsedChunk = {};
+    try {
+      let textStr = resData.data?.outputs?.result || resData.data?.outputs?.text || "{}";
+      textStr = textStr.replace(/```json/g, '').replace(/```/g, '').trim();
+      const startIdx = textStr.indexOf('{');
+      const endIdx = textStr.lastIndexOf('}');
+      if (startIdx !== -1 && endIdx !== -1) textStr = textStr.substring(startIdx, endIdx + 1);
+
+      try {
+        parsedChunk = JSON.parse(textStr);
+      } catch (parseError) {
+        const regex = /"(blank_(?:ai_)?\d+)"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"/g;
+        let m;
+        while ((m = regex.exec(textStr)) !== null) {
+          try { parsedChunk[m[1]] = JSON.parse(`"${m[2]}"`); } catch (e) { /* ignore */ }
+        }
+      }
+    } catch (fatalError) {
+      // 静默处理解析错误
+    }
+    return parsedChunk;
+  });
+
+  const chunkResults = await Promise.all(promises);
+  const finalFilledData = {};
+  for (const res of chunkResults) Object.assign(finalFilledData, res);
+  
+  // 手工项保持留空
+  for (const manualBlank of manualBlanks) {
+    finalFilledData[manualBlank.id] = '';
   }
+
+  return finalFilledData;
 };
 
 // ============================================================
@@ -220,7 +238,7 @@ export const intelligentChunking = (markdownContent, options = {}) => {
 /**
  * 按标题进行语义分块
  */
-const chunkByHeadings = (content, chunkSize, overlap, maxChunks) => {
+const chunkByHeadings = (content, chunkSize, overlap) => {
   const chunks = [];
   
   // 识别标题（# 标题）
