@@ -1,10 +1,11 @@
-import React, { useState, useRef, useMemo, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect } from 'antd';
 import {
   UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import { useSearchParams } from 'react-router-dom';
+import { renderAsync } from 'docx-preview';
 
 import { fillDocumentBlanks, scanBlanksWithAI } from '../utils/difyWorkflow';
 import { extractTextFromDocument } from '../utils/documentParser';
@@ -14,7 +15,6 @@ import {
   scanBlanksFromXml,
   extractDocumentXml,
   generateFilledDocx,
-  extractParagraphsForPreview,
   extractIndexedParagraphs,
   mergeBlanks
 } from '../utils/wordBlankFiller';
@@ -58,7 +58,6 @@ export default function CreateBid() {
   const [isFilling, setIsFilling] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const [imageUrlMap, setImageUrlMap] = useState({}); // 保存占位符到URL的映射
-  const [manualUrlMap, setManualUrlMap] = useState({}); // 保存服务手册暗号到URL的映射
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -96,12 +95,68 @@ export default function CreateBid() {
 
   const [highlightBlankId, setHighlightBlankId] = useState(null);
   const previewRef = useRef(null);
+  const previewScrollRef = useRef(null);
+  const [isRenderingPreview, setIsRenderingPreview] = useState(false);
+  const [previewError, setPreviewError] = useState('');
 
   useEffect(() => {
     if (urlProjectId && user) {
       loadExistingProject(urlProjectId);
     }
   }, [urlProjectId, user]);
+
+  useEffect(() => {
+    const container = previewRef.current;
+    if (!container) return undefined;
+
+    if (!originalFile || (step !== 'scan' && step !== 'review')) {
+      container.innerHTML = '';
+      setPreviewError('');
+      setIsRenderingPreview(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const renderPreview = async () => {
+      setIsRenderingPreview(true);
+      setPreviewError('');
+
+      try {
+        const arrayBuffer = await originalFile.arrayBuffer();
+        if (cancelled) return;
+
+        container.innerHTML = '';
+        await renderAsync(arrayBuffer, container, null, {
+          className: 'docx-preview-render',
+          ignoreWidth: false,
+          ignoreHeight: true,
+          inWrapper: true,
+          breakPages: true,
+          useBase64URL: true,
+          renderHeaders: true,
+          renderFooters: true,
+          renderFootnotes: true,
+          renderEndnotes: true
+        });
+      } catch (error) {
+        if (!cancelled) {
+          console.error('原文预览渲染失败:', error);
+          setPreviewError('原文预览渲染失败，请重新上传后重试');
+        }
+      } finally {
+        if (!cancelled) {
+          setIsRenderingPreview(false);
+        }
+      }
+    };
+
+    renderPreview();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [originalFile, step]);
 
   const loadExistingProject = async (id) => {
     try {
@@ -247,7 +302,6 @@ export default function CreateBid() {
             };
           }
           
-          const productAssets = assetsByProductId[product.id] || [];
           const productServiceManuals = serviceManualsByProductId[product.id] || [];
           const hasServiceManual = productServiceManuals.length > 0;
           
@@ -268,7 +322,7 @@ export default function CreateBid() {
           
           // 添加服务手册子节点
           if (productServiceManuals.length > 0) {
-            productServiceManuals.forEach((manual, index) => {
+            productServiceManuals.forEach((manual) => {
               const manualId = `manual-${product.id}-${manual.id}`;
               productNode.children.push({
                 title: `${manual.asset_name} 📄`,
@@ -375,51 +429,55 @@ export default function CreateBid() {
     setSelectedServiceManualIds(serviceManualIds);
   }, []);
 
-  const previewParagraphs = useMemo(() => {
-    if (!originalXml || scannedBlanks.length === 0) {
-      console.log('🔍 [previewParagraphs] 条件不满足，返回空数组');
-      return [];
+  const getPreviewLocatorText = useCallback((blank) => {
+    if (!blank) return '';
+
+    if (blank.type === 'empty_cell') {
+      return (blank._cellLabel || blank.context || '').replace('：[空白单元格]', '').trim();
     }
-    
-    const result = extractParagraphsForPreview(originalXml, scannedBlanks);
-    
-    // 检查是否有重复文本的段落
-    result.forEach((para, idx) => {
-      if (para.text && para.text.includes('承诺人（公章）：承诺人（公章）')) {
-        console.warn(`⚠️ 检测到重复文本段落 at index ${idx}:`);
-        console.log(`  段落内容: "${para.text}"`);
-        console.log(`  关联空白ID: ${para.blankIds.join(', ') || '无'}`);
-      }
-    });
-    
-    console.log(`📊 [previewParagraphs] 生成 ${result.length} 个预览段落`);
-    return result;
-  }, [originalXml, scannedBlanks]);
+
+    if (blank.context && blank.matchText) {
+      const contextWithoutBlank = blank.context.replace(blank.matchText, ' ').replace(/\s+/g, ' ').trim();
+      if (contextWithoutBlank) return contextWithoutBlank;
+    }
+
+    if (blank.matchText && !/^\s+$/.test(blank.matchText) && blank.matchText !== '[空白单元格]') {
+      return blank.matchText.trim();
+    }
+
+    return (blank.context || '').trim();
+  }, []);
+
+  const findPreviewAnchor = useCallback((blank) => {
+    const container = previewRef.current;
+    if (!container || !blank) return null;
+
+    const locatorText = getPreviewLocatorText(blank);
+    if (!locatorText) return null;
+
+    const candidates = Array.from(
+      container.querySelectorAll('p, td, th, span, div, li')
+    );
+
+    return candidates.find((node) => {
+      const text = node.textContent?.replace(/\s+/g, ' ').trim();
+      return text && text.includes(locatorText) && text.length <= 300;
+    }) || null;
+  }, [getPreviewLocatorText]);
 
   // 💡 【右侧表格】点击后：滚动【左侧原文】
   const scrollToBlank = useCallback((blankId) => {
     setHighlightBlankId(blankId);
     setTimeout(() => {
-      const el = document.getElementById(`preview-${blankId}`);
+      const blank = scannedBlanks.find((item) => item.id === blankId);
+      const el = findPreviewAnchor(blank);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('ring-2', 'ring-indigo-400');
-        setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-400'), 2000);
+        el.classList.add('ring-2', 'ring-indigo-400', 'bg-indigo-50');
+        setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-400', 'bg-indigo-50'), 2000);
       }
     }, 100);
-  }, []);
-
-  // 💡 新增：【左侧原文】点击后：滚动【右侧表格】
-  const scrollToTable = useCallback((blankId) => {
-    setHighlightBlankId(blankId); // 同步高亮状态
-    setTimeout(() => {
-      // Ant Design 的表格行自带 data-row-key 属性，靠这个来精准定位表格行
-      const el = document.querySelector(`[data-row-key="${blankId}"]`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    }, 100);
-  }, []);
+  }, [findPreviewAnchor, scannedBlanks]);
 
   const handleFileUpload = async (event) => {
     console.log('🔍 [handleFileUpload] 文件上传开始');
@@ -716,9 +774,7 @@ export default function CreateBid() {
       
        // 保存到状态，供导出时使用
        setImageUrlMap(localImageUrlMap);
-       setManualUrlMap(localManualUrlMap);
-       
-       console.log('🔍 localManualUrlMap构建结果:', localManualUrlMap);
+        console.log('🔍 localManualUrlMap构建结果:', localManualUrlMap);
        console.log('🔍 localManualUrlMap条目数量:', Object.keys(localManualUrlMap).length);
 
       // === 新增：查询知识库中与目标公司相关的资质图片 ===
@@ -1298,102 +1354,39 @@ export default function CreateBid() {
 
         <div className="flex-1 flex overflow-hidden">
           {/* ========== 左侧：原文对照侧边栏 ========== */}
-          <div className="w-[360px] bg-white border-r border-gray-200 flex flex-col shrink-0">
+          <div className="w-[650px] bg-white border-r border-gray-200 flex flex-col shrink-0">
             <div className="p-3 border-b border-gray-100 bg-gray-50 shrink-0">
               <h4 className="font-bold text-gray-700 text-sm flex items-center">
                 <Eye size={14} className="mr-2 text-indigo-500" />
                 原文对照
-                <span className="ml-2 text-xs text-gray-400 font-normal">点击高亮文字定位表格</span>
+                <span className="ml-2 text-xs text-gray-400 font-normal">保持原始版式，点击右侧字段定位左侧</span>
               </h4>
             </div>
-            <div className="flex-1 overflow-y-auto p-3 space-y-0.5" ref={previewRef}>
-              {previewParagraphs.map((para, pIdx) => {
-                // 精准调试：检测重复文本
-                if (para.text && (
-                    para.text.includes('承诺人（公章）：承诺人（公章）') || 
-                    para.text.includes('单位名称：单位名称：') ||
-                    para.text.includes('承诺日期：承诺日期：')
-                )) {
-                    console.warn(`🔍🔍🔍 [前端预览渲染] 检测到重复段落 index=${pIdx}`);
-                    console.log(`  完整段落文本（前200字符）: "${para.text.substring(0, 200)}"`);
-                    console.log(`  段落来源: previewParagraphs[${pIdx}]`);
-                    console.log(`  关联空白数量: ${para.blankIds.length}`);
-                    console.log(`  预览段落总数: ${previewParagraphs.length}`);
-                }
-                
-                if (para.blankIds.length === 0) {
-                  return (
-                    <div key={pIdx} className="text-xs text-gray-500 leading-relaxed py-1 px-2 rounded">
-                      {para.text}
-                    </div>
-                  );
-                }
-
-                const parts = [];
-                let remaining = para.text;
-                const sortedBlanks = para.blankIds
-                  .map(id => scannedBlanks.find(b => b.id === id))
-                  .filter(Boolean)
-                  .sort((a, b) => para.text.indexOf(a.matchText) - para.text.indexOf(b.matchText));
-
-                let lastIdx = 0;
-                for (const blank of sortedBlanks) {
-                  const matchIdx = remaining.indexOf(blank.matchText, lastIdx);
-                  if (matchIdx === -1) {
-                    parts.push({ type: 'text', content: remaining.substring(lastIdx) });
-                    break;
-                  }
-                  if (matchIdx > lastIdx) {
-                    parts.push({ type: 'text', content: remaining.substring(lastIdx, matchIdx) });
-                  }
-                  parts.push({ type: 'blank', id: blank.id, content: blank.matchText });
-                  lastIdx = matchIdx + blank.matchText.length;
-                }
-                if (lastIdx < remaining.length) {
-                  parts.push({ type: 'text', content: remaining.substring(lastIdx) });
-                }
-
-                return (
-                  <div
-                    key={pIdx}
-                    className="text-xs leading-relaxed py-1.5 px-2 rounded bg-amber-50/60 border border-amber-100"
-                  >
-                    {parts.map((part, partIdx) => {
-                      if (part.type === 'text') {
-                        return <span key={partIdx}>{part.content}</span>;
-                      }
-                      const isHighlighted = highlightBlankId === part.id;
-                      const filledValue = manualEdits[part.id];
-                      return (
-                        // 💡 核心修改：在这里给左侧的高亮原文绑定了 onClick，点击它直接滚到右侧的表格！
-                        <span
-                          key={partIdx}
-                          id={`preview-${part.id}`}
-                          onClick={() => scrollToTable(part.id)}
-                          className={`
-                            inline-block px-1 py-0.5 rounded mx-0.5 font-bold transition-all duration-300 cursor-pointer hover:opacity-80 hover:shadow-md
-                            ${isHighlighted
-                              ? 'bg-indigo-500 text-white ring-2 ring-indigo-300'
-                              : filledValue
-                                ? 'bg-green-100 text-green-800 border border-green-300'
-                                : 'bg-yellow-200 text-yellow-900 border border-yellow-400'
-                            }
-                          `}
-                          title={`${filledValue || '待填写'} (点击跳转到表格行)`}
-                        >
-                          {filledValue || part.content}
-                        </span>
-                      );
-                    })}
-                  </div>
-                );
-              })}
-              {previewParagraphs.length === 0 && (
+            <div className="flex-1 overflow-auto bg-[#f5f7fb]" ref={previewScrollRef}>
+              {isRenderingPreview && (
+                <div className="flex flex-col items-center justify-center py-12 text-gray-500">
+                  <Spin className="mb-3" />
+                  <p className="text-xs">正在渲染原始 Word 预览...</p>
+                </div>
+              )}
+              {previewError && !isRenderingPreview && (
+                <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
+                  <FileText size={32} className="text-gray-300 mb-2" />
+                  <p className="text-xs text-red-500">{previewError}</p>
+                </div>
+              )}
+              {!previewError && !originalFile && !isRenderingPreview && (
                 <div className="flex flex-col items-center justify-center py-12">
                   <FileText size={32} className="text-gray-300 mb-2" />
                   <p className="text-xs text-gray-400">原文预览为空</p>
                 </div>
               )}
+              <div className="p-3">
+                <div
+                  ref={previewRef}
+                  className="docx-preview-host min-h-full overflow-auto rounded-xl bg-white shadow-sm"
+                />
+              </div>
             </div>
           </div>
 

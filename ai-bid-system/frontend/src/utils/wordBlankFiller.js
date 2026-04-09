@@ -37,16 +37,26 @@ function getVisibleTextFromXml(xml) {
   // 调试：记录原始XML长度
   const originalLength = xml.length;
   
-  // 智能清理逻辑：先处理可能重复的<mc:Fallback>部分
-  // 但保留其他结构以避免过度清理
+  // 💡 改进：使用多次迭代确保所有Fallback被完全移除
+  // 方法：迭代直到没有变化为止，处理嵌套的Fallback标签
   
-  // 1. 先移除所有<mc:Fallback>部分（但保留Choice）
-  cleanXml = cleanXml.replace(/<mc:Fallback[\s\S]*?>[\s\S]*?<\/mc:Fallback>/g, '');
+  let iterations = 0;
+  const maxIterations = 5;
+  let hasFallback = true;
+  
+  while (iterations < maxIterations && hasFallback) {
+    // 使用更精确的正则：匹配 mc:Fallback 标签及其所有内容（包括嵌套情况）
+    cleanXml = cleanXml.replace(/<mc:Fallback(?:\s+[^>]*)?>[\s\S]*?<\/mc:Fallback>/gi, '');
+    cleanXml = cleanXml.replace(/<mc:Fallback[\s\S]*?\/>/gi, ''); // 处理自闭合的Fallback
+    hasFallback = cleanXml.includes('<mc:Fallback', 0) || cleanXml.includes('mc:Fallback', 0);
+    iterations++;
+  }
   
   // 2. 移除<mc:AlternateContent>标签本身（因为我们已经移除了Fallback，只需清理外壳）
   // 注意：这比之前更保守，不会删除整个块
-  cleanXml = cleanXml.replace(/<mc:AlternateContent>|<\/mc:AlternateContent>/g, '');
-  cleanXml = cleanXml.replace(/<mc:Choice[\s\S]*?>|<\/mc:Choice>/g, '');
+  cleanXml = cleanXml.replace(/<mc:AlternateContent[^>]*>|<\/mc:AlternateContent>/gi, '');
+  cleanXml = cleanXml.replace(/<mc:Choice(?:\s+[^>]*)?>[\s\S]*?<\/mc:Choice>/gi, '');
+  cleanXml = cleanXml.replace(/<mc:Choice[^>]*\/>/gi, ''); // 处理自闭合的Choice
   
   // 3. 清理其他不需要的内容
   cleanXml = cleanXml.replace(/<w:del[\s\S]*?>[\s\S]*?<\/w:del>/g, '');
@@ -104,17 +114,31 @@ function getVisibleTextFromXml(xml) {
     console.log(`📊 getVisibleTextFromXml: 总共检测到 ${duplicateCount} 次文本重复`);
   }
   
-  return textParts.join('');
+  // 💡 后处理：使用 Set 去重连续的重复文本
+  const dedupedParts = [];
+  for (let i = 0; i < textParts.length; i++) {
+    const current = textParts[i];
+    const next = textParts[i + 1];
+    // 如果当前文本和下一个文本完全相同（且不是空格），跳过重复
+    if (current === next && current.trim().length > 0) {
+      continue;
+    }
+    dedupedParts.push(current);
+  }
+  
+  return dedupedParts.join('');
 }
 
 function buildTableStructureMap(xmlString) {
   const cellInfos = [];
   const tblRegex = /<w:tbl[\s>][\s\S]*?<\/w:tbl>/g;
   let tblMatch;
+  let tableIndex = 0;
 
   while ((tblMatch = tblRegex.exec(xmlString)) !== null) {
     const tblXml = tblMatch[0];
     const tblGlobalOffset = tblMatch.index;
+    const verticalMergeTracker = new Map();
 
     const rowRegex = /<w:tr[\s>][\s\S]*?<\/w:tr>/g;
     let rowMatch;
@@ -141,10 +165,24 @@ function buildTableStructureMap(xmlString) {
         const tcXml = tcMatch[0];
         const tcGlobalOffset = rowGlobalOffset + tcMatch.index;
         const text = getVisibleTextFromXml(tcXml).trim();
+        const vMergeMatch = tcXml.match(/<w:vMerge(?:\s+w:val="(restart|continue)")?\s*\/?>/);
+        const vMergeState = vMergeMatch ? (vMergeMatch[1] || 'continue') : null;
 
         let span = 1;
         const spanMatch = tcXml.match(/<w:gridSpan w:val="(\d+)"/);
         if (spanMatch) span = parseInt(spanMatch[1], 10);
+
+        const cellColumnKey = `${tableIndex}:${colIndex}`;
+        if (vMergeState === 'continue' && verticalMergeTracker.has(cellColumnKey)) {
+          colIndex += span;
+          continue;
+        }
+
+        if (vMergeState === 'restart') {
+          verticalMergeTracker.set(cellColumnKey, true);
+        } else if (!vMergeState) {
+          verticalMergeTracker.delete(cellColumnKey);
+        }
 
         if (rowIndex === 0) {
           for(let s=0; s<span; s++) columnHeaders[colIndex + s] = text;
@@ -152,15 +190,37 @@ function buildTableStructureMap(xmlString) {
 
         const pRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
         let pMatch;
+        const cellParagraphs = []; // 收集该单元格的所有段落去重
+        
         while ((pMatch = pRegex.exec(tcXml)) !== null) {
           const pLocalOffset = pMatch.index;
           const pGlobalOffset = tcGlobalOffset + pLocalOffset;
           const paraIdx = countParagraphsBefore(xmlString, pGlobalOffset);
-
-          cellInfos.push({
+          const cellText = getVisibleTextFromXml(pMatch[0]).trim();
+          
+          cellParagraphs.push({
             paraIndex: paraIdx,
+            cellText
+          });
+        }
+        
+        // 💡 修复：对于同一个单元格的多个段落，只使用第一个（非空的）段落
+        // 避免同一单元格被识别为多个空白
+        if (cellParagraphs.length > 0) {
+          // 尝试找到第一个非空段落
+          let targetPara = cellParagraphs[0];
+          for (const para of cellParagraphs) {
+            if (para.cellText.trim().length > 0) {
+              targetPara = para;
+              break;
+            }
+          }
+          
+          cellInfos.push({
+            paraIndex: targetPara.paraIndex,
             cellXml: tcXml,
-            cellText: getVisibleTextFromXml(pMatch[0]).trim(),
+            cellText: targetPara.cellText,
+            tableIndex,
             rowIndex,
             colIndex,
             headerText: columnHeaders[colIndex] || '',
@@ -171,8 +231,18 @@ function buildTableStructureMap(xmlString) {
       }
       rowIndex++;
     }
+    tableIndex++;
   }
   return cellInfos;
+}
+
+function buildCellLabel(cell) {
+  if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
+    return `${cell.headerText}（项：${cell.rowHeader}）`;
+  }
+  if (cell.headerText) return cell.headerText;
+  if (cell.rowHeader) return cell.rowHeader;
+  return '';
 }
 
 function countParagraphsBefore(xmlString, globalOffset) {
@@ -390,9 +460,10 @@ export function scanBlanksFromXml(xmlString) {
 
   const cellInfos = buildTableStructureMap(xmlString);
   console.log(`📊 表格解析结果: ${cellInfos.length} 个单元格`);
+  const seenEmptyCells = new Set();
   
   for (const cell of cellInfos) {
-    if (cell.cellText !== '' && !/^[\s　_－-]+$/.test(cell.cellText)) continue;
+    if (cell.cellText !== '' && !/^[\s_－-]+$/.test(cell.cellText)) continue;
     if (cell.rowIndex === 0) continue;
     
     // 记录关键单元格信息
@@ -401,16 +472,13 @@ export function scanBlanksFromXml(xmlString) {
       console.log(`🔍 发现相关单元格: headerText="${cell.headerText}", rowHeader="${cell.rowHeader}", paraIndex: ${cell.paraIndex}`);
     }
 
-    let label = '';
-    if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
-      label = `${cell.headerText}（项：${cell.rowHeader}）`;
-    } else if (cell.headerText) {
-      label = cell.headerText;
-    } else if (cell.rowHeader) {
-      label = cell.rowHeader;
-    }
+    const label = buildCellLabel(cell);
 
     if (!label || /^[0-9]+$/.test(label)) continue;
+
+    const cellKey = `${cell.tableIndex}:${cell.rowIndex}:${cell.colIndex}:${label}`;
+    if (seenEmptyCells.has(cellKey)) continue;
+    seenEmptyCells.add(cellKey);
 
     const context = `${label}：[空白单元格]`;
     blanks.push({
@@ -634,20 +702,18 @@ export function extractIndexedParagraphs(xmlString) {
   const cellInfos = buildTableStructureMap(xmlString);
   const tableParaSet = new Set();
   const paraToLabel = new Map();
+  const seenPreviewCells = new Set();
 
   for (const cell of cellInfos) {
+    const label = buildCellLabel(cell);
+    const cellKey = `${cell.tableIndex}:${cell.rowIndex}:${cell.colIndex}:${label}`;
+    if (seenPreviewCells.has(cellKey)) continue;
+    seenPreviewCells.add(cellKey);
+
     tableParaSet.add(cell.paraIndex);
-    if (cell.cellText === '' || /^[\s　_－-]+$/.test(cell.cellText)) {
+    if (cell.cellText === '' || /^[\s_－-]+$/.test(cell.cellText)) {
       if (cell.rowIndex === 0) continue;
-      
-      let label = '';
-      if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
-        label = `${cell.headerText}（项：${cell.rowHeader}）`;
-      } else if (cell.headerText) {
-        label = cell.headerText;
-      } else if (cell.rowHeader) {
-        label = cell.rowHeader;
-      }
+
       paraToLabel.set(cell.paraIndex, label);
     }
   }
@@ -698,10 +764,12 @@ export function extractParagraphsForPreview(xmlString, blanks) {
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
   let paraIndex = 0;
+  let lastDisplayText = '';
+  let lastBlankSignature = '';
 
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
     const xml = paraMatch[0];
-    const text = getVisibleTextFromXml(xml).trim();
+    let text = getVisibleTextFromXml(xml).trim();
     const matchedBlanks = blanks.filter(b => b.paraIndex === paraIndex);
 
     // 增强的重复检测：使用正则表达式匹配任何文本在冒号后的重复
@@ -750,6 +818,11 @@ export function extractParagraphsForPreview(xmlString, blanks) {
             context: b.context ? b.context.substring(0, 80) + (b.context.length > 80 ? '...' : '') : null
           })));
         }
+        
+        // 💡 修复：使用正则表达式替换移除重复的文本
+        // 例如："承诺人（公章）：承诺人（公章）：" -> "承诺人（公章）："
+        text = text.replace(/([^：\n]+：)\1/g, '$1');
+        console.log(`  ✅ 修复后文本: "${text.substring(0, 200)}${text.length > 200 ? '...' : ''}"`);
       }
     }
 
@@ -765,7 +838,16 @@ export function extractParagraphsForPreview(xmlString, blanks) {
         displayText = matchedBlanks[0].context; 
         console.log(`ℹ️ 段落 ${paraIndex} 为空，使用空白上下文: "${displayText}"`);
       }
-      paragraphs.push({ text: displayText || '[空段落]', blankIds: matchedBlanks.map(b => b.id) });
+      const blankIds = matchedBlanks.map(b => b.id);
+      const blankSignature = matchedBlanks
+        .map((b) => `${b.type}:${b._cellLabel || b.matchText}:${b.paraIndex}`)
+        .join('|');
+
+      if (!(displayText === lastDisplayText && blankSignature === lastBlankSignature)) {
+        paragraphs.push({ text: displayText || '[空段落]', blankIds });
+        lastDisplayText = displayText;
+        lastBlankSignature = blankSignature;
+      }
     }
     paraIndex++;
   }
@@ -834,13 +916,9 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
   if (imageEntries.length > 0) {
     const results = await Promise.allSettled(
       imageEntries.map(async (entry) => {
-        try {
-          const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
-          const { w, h } = await loadImageNaturalSize(buffer);
-          return { ...entry, buffer, mime, naturalW: w, naturalH: h };
-        } catch (error) {
-          throw error;
-        }
+        const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
+        const { w, h } = await loadImageNaturalSize(buffer);
+        return { ...entry, buffer, mime, naturalW: w, naturalH: h };
       })
     );
     for (const r of results) {
