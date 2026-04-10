@@ -496,10 +496,64 @@ function addRelationship(relsObj, target, type) {
 }
 
 const PX_TO_EMU = 914400 / 96;
+const CM_TO_EMU = 360000;
+
 function getImageDimensionsEmu(pxWidth, naturalW, naturalH) {
   const cx = Math.round(pxWidth * PX_TO_EMU);
   const ratio = naturalH / naturalW;
   return { cx, cy: Math.round(cx * ratio) };
+}
+
+function getCmDimensionsEmu(widthCm, heightCm) {
+  return {
+    cx: Math.round(widthCm * CM_TO_EMU),
+    cy: Math.round(heightCm * CM_TO_EMU)
+  };
+}
+
+function detectImageInsertType(blank = {}, imageUrl = '', naturalW = 0, naturalH = 0) {
+  const text = `${blank.context || ''} ${blank.fieldHint || ''} ${imageUrl || ''}`.toLowerCase();
+  const isPortrait = naturalH > naturalW * 1.15;
+
+  if (/身份证|身份证正面|身份证反面|人像面|国徽面|法人身份证/.test(text)) {
+    return 'id_card';
+  }
+
+  if (/营业执照/.test(text)) {
+    return 'business_license';
+  }
+
+  if (/资质证书|证书|许可证|认证证书|检验报告|检测报告|iso|体系认证/.test(text)) {
+    return 'certificate';
+  }
+
+  if (
+    isPortrait &&
+    /(?:系统|网关|平台|软件|硬件|产品|v\d+(?:\.\d+)?|xt电子邮件系统|邮件安全卫士|coremail|cacter)/i.test(text)
+  ) {
+    return 'certificate';
+  }
+
+  return 'generic';
+}
+
+function getImageSizeStrategy(type, naturalW, naturalH) {
+  const safeW = naturalW || 400;
+  const safeH = naturalH || 300;
+
+  if (type === 'id_card') {
+    return getCmDimensionsEmu(7.05, 5.07);
+  }
+
+  if (type === 'business_license') {
+    return getCmDimensionsEmu(14.65, 9.5);
+  }
+
+  if (type === 'certificate') {
+    return getCmDimensionsEmu(14.64, 20.63);
+  }
+
+  return getImageDimensionsEmu(220, safeW, safeH);
 }
 
 function loadImageNaturalSize(buffer) {
@@ -1183,7 +1237,7 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
     }
     
     if (val && isImageUrl(val)) {
-      imageEntries.push({ blankId: blank.id, url: val.trim() });
+      imageEntries.push({ blankId: blank.id, url: val.trim(), blank });
     }
     
     if (val && isDocumentUrl(val)) {
@@ -1236,8 +1290,8 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
       const target = `media/injected_${i + 1}.${ext}`;
       zip.file(mediaFileName, img.buffer);
       const rId = addRelationship(relsObj, target, IMAGE_REL_TYPE);
-      const TARGET_PX = 160;
-      const { cx, cy } = getImageDimensionsEmu(TARGET_PX, img.naturalW, img.naturalH);
+      const imageType = detectImageInsertType(img.blank, img.url, img.naturalW, img.naturalH);
+      const { cx, cy } = getImageSizeStrategy(imageType, img.naturalW, img.naturalH);
       imageRidMap[img.blankId] = { rId, cxEmu: cx, cyEmu: cy };
     }
     zip.file(RELS_PATH, relsObj.xml);
