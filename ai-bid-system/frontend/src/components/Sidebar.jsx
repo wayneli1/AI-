@@ -23,7 +23,7 @@ const Sidebar = ({ collapsed = false }) => {
     { name: '产品资产库', icon: <Package size={18} />, path: '/product-library' },
     { name: '图片库', icon: <Image size={18} />, path: '/image-library' },
     { name: '知识库', icon: <BookOpen size={18} />, path: '/knowledge-base' },
-    { name: '学习投标文件', icon: <Book size={18} />, path: '/learn-bid' },
+    { name: '历史标书整理', icon: <Book size={18} />, path: '/learn-bid' },
   ];
 
   const isActive = (path) => {

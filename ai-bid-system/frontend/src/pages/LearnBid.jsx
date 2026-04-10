@@ -1,1062 +1,809 @@
-import { useState, useRef, useEffect, useMemo } from 'react';
-import { 
-  Upload, FileText, Building2, CheckCircle, X, Loader2,
-  BookOpen, Clock, Check, AlertCircle, Filter, Search, BarChart3, Layers, Zap
-} from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { BookOpen, CheckCircle2, FileUp, PencilLine, ShieldCheck, Sparkles } from 'lucide-react';
+import {
+  Alert,
+  Button,
+  Card,
+  Checkbox,
+  Empty,
+  Input,
+  List,
+  message,
+  Modal,
+  Progress,
+  Select,
+  Space,
+  Spin,
+  Switch,
+  Tag,
+  Typography
+} from 'antd';
 import { supabase } from '../lib/supabase';
-import { convertToMarkdown, validateBidFile } from '../utils/documentParser';
-import { runDifyMarkdownExtraction, analyzeCrossDocumentFrequency, CORE_FIELD_CATEGORIES } from '../utils/difyExtractor';
-import { message, Progress, Card, Button, Select, Input, Tag, Table, Checkbox, Tooltip, Tabs, Badge } from 'antd';
-import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import { extractTextFromDocument } from '../utils/documentParser';
+import {
+  buildLearningDraftFromSamples,
+  DEFAULT_TEMPLATE_SLOTS,
+  detectAssetSampleFromDocument,
+  extractFieldSamplesFromText,
+  getUserFacingSlotTypeLabel,
+  getSlotLearningMode,
+  matchSlotForSegment,
+  normalizeTemplateSlots,
+  splitDocumentIntoSegments
+} from '../utils/templateLearning';
+import { getTemplateLearningContextConfig, summarizeSlotSamplesWithAI } from '../utils/templateLearningAI';
 
-const { Option } = Select;
+const { TextArea } = Input;
+const DEFAULT_TEMPLATE_NAME = '默认模板';
 
-const LearnBid = () => {
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  
-  const [uploadedFiles, setUploadedFiles] = useState([]);
-  const [isDragging, setIsDragging] = useState(false);
-  const [processingStatus, setProcessingStatus] = useState('idle');
-  const [progress, setProgress] = useState(0);
-  const [chunkProgress, setChunkProgress] = useState({
-    current: 0,
-    total: 0,
-    percent: 0,
-    message: ''
+const createSampleId = (slotKey, sample, index) => {
+  if (sample?.id) return sample.id;
+  return `${slotKey}-${sample?.source_filename || 'sample'}-${sample?.sample_title || 'untitled'}-${index}`;
+};
+
+const createEditorDraft = (item = {}) => ({
+  standard_content: item.assetDraft?.standard_content || item.asset?.standard_content || '',
+  asset_binding_value: item.assetDraft?.asset_binding_value || item.asset?.asset_binding_value || '',
+  enabled: item.asset?.enabled ?? true,
+  selectedSampleIds: item.selectedSampleIds || item.samples?.filter((sample) => sample.is_selected).map((sample, index) => createSampleId(item.slot?.slot_key, sample, index)) || []
+});
+
+const buildSavedLearningRecords = (slots = [], assets = [], samples = []) => {
+  const assetsBySlotId = new Map(assets.map((item) => [item.slot_id, item]));
+  const samplesBySlotId = new Map();
+
+  samples.forEach((sample) => {
+    const bucket = samplesBySlotId.get(sample.slot_id) || [];
+    bucket.push(sample);
+    samplesBySlotId.set(sample.slot_id, bucket);
   });
-  
-  const [extractionResults, setExtractionResults] = useState([]);
-  const [crossAnalysis, setCrossAnalysis] = useState([]);
-  const [learningSessions, setLearningSessions] = useState([]);
-  
-  const [companies, setCompanies] = useState([]);
-  const [selectedCompanyId, setSelectedCompanyId] = useState(null);
-  const [isSaving, setIsSaving] = useState(false);
-  
-  const [selectedFields, setSelectedFields] = useState({});
-  const [editingFields, setEditingFields] = useState({});
-  
-  const [activeCategory, setActiveCategory] = useState('all');
-  const [searchText, setSearchText] = useState('');
-  const [detailVisible, setDetailVisible] = useState(false);
 
+  return normalizeTemplateSlots(slots).map((slot) => {
+    const slotSamples = (samplesBySlotId.get(slot.id) || []).map((sample, index) => ({
+      ...sample,
+      sample_id: createSampleId(slot.slot_key, sample, index)
+    }));
+    const asset = assetsBySlotId.get(slot.id) || null;
+    return {
+      slot,
+      asset,
+      samples: slotSamples,
+      selectedSampleIds: slotSamples.filter((sample) => sample.is_selected).map((sample) => sample.sample_id)
+    };
+  });
+};
+
+export default function LearnBid() {
+  const { user } = useAuth();
   const fileInputRef = useRef(null);
-  const dropZoneRef = useRef(null);
+
+  const [templateName] = useState(DEFAULT_TEMPLATE_NAME);
+  const [loading, setLoading] = useState(true);
+  const [savedLoading, setSavedLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [savingManagedSlot, setSavingManagedSlot] = useState('');
+  const [progress, setProgress] = useState({ percent: 0, text: '等待上传历史标书' });
+
+  const [uploadedFiles, setUploadedFiles] = useState([]);
+  const [systemSlots, setSystemSlots] = useState([]);
+  const [savedLearningRecords, setSavedLearningRecords] = useState([]);
+  const [learningResult, setLearningResult] = useState(null);
+  const [editorState, setEditorState] = useState({ open: false, mode: 'preview', item: null, draft: createEditorDraft() });
+
+  const learnedSlots = learningResult?.learnedSlots || [];
+
+  const loadExistingSlots = useCallback(async () => {
+    if (!user) return;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('template_slots')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('template_name', templateName)
+        .order('sort_order', { ascending: true });
+
+      if (error) throw error;
+      setSystemSlots(normalizeTemplateSlots((data || []).length ? (data || []) : DEFAULT_TEMPLATE_SLOTS));
+    } catch (error) {
+      console.error('加载模板槽位失败:', error);
+      setSystemSlots(normalizeTemplateSlots(DEFAULT_TEMPLATE_SLOTS));
+    } finally {
+      setLoading(false);
+    }
+  }, [templateName, user]);
+
+  const loadSavedLearningRecords = useCallback(async () => {
+    if (!user) return;
+    setSavedLoading(true);
+    try {
+      const [slotRes, assetRes, sampleRes] = await Promise.all([
+        supabase
+          .from('template_slots')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('template_name', templateName)
+          .order('sort_order', { ascending: true }),
+        supabase
+          .from('template_slot_assets')
+          .select('*')
+          .eq('user_id', user.id),
+        supabase
+          .from('template_slot_samples')
+          .select('*')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false })
+      ]);
+
+      if (slotRes.error) throw slotRes.error;
+      if (assetRes.error) throw assetRes.error;
+      if (sampleRes.error) throw sampleRes.error;
+
+      setSavedLearningRecords(buildSavedLearningRecords(slotRes.data || [], assetRes.data || [], sampleRes.data || []));
+    } catch (error) {
+      console.error('加载学习管理数据失败:', error);
+      setSavedLearningRecords([]);
+    } finally {
+      setSavedLoading(false);
+    }
+  }, [templateName, user]);
 
   useEffect(() => {
-    const loadCompanies = async () => {
-      if (user) {
-        try {
-          const { data, error } = await supabase
-            .from('company_profiles')
-            .select('id, company_name, uscc, legal_rep_name')
-            .eq('user_id', user.id)
-            .order('company_name', { ascending: true });
+    loadExistingSlots();
+    loadSavedLearningRecords();
+  }, [loadExistingSlots, loadSavedLearningRecords]);
 
-          if (error) throw error;
-          setCompanies(data || []);
-        } catch (error) {
-          console.error('加载公司列表失败:', error);
-          message.error('加载公司列表失败');
-        }
-      }
-    };
+  const summaryCards = useMemo(() => {
+    if (!learningResult) return [];
+    return [
+      { label: '识别内容项', value: learningResult.summary.totalLearned },
+      { label: '推荐正文', value: learningResult.summary.standardContentSlots },
+      { label: '固定字段', value: learningResult.summary.fieldSlots },
+      { label: '固定附件', value: learningResult.summary.fixedAssetSlots }
+    ];
+  }, [learningResult]);
 
-    loadCompanies();
-  }, [user]);
+  const savedSummary = useMemo(() => ({
+    enabledSlots: savedLearningRecords.filter((item) => item.asset?.enabled).length,
+    managedSlots: savedLearningRecords.filter((item) => item.asset?.standard_content || item.asset?.asset_binding_value).length,
+    selectedSamples: savedLearningRecords.reduce((sum, item) => sum + item.samples.filter((sample) => sample.is_selected).length, 0)
+  }), [savedLearningRecords]);
 
-  const filteredAnalysis = useMemo(() => {
-    let filtered = crossAnalysis;
-    
-    if (activeCategory !== 'all') {
-      filtered = filtered.filter(item => {
-        const cat = item.classification?.category || 'other';
-        return cat === activeCategory;
-      });
-    }
-    
-    if (searchText) {
-      const lowerSearch = searchText.toLowerCase();
-      filtered = filtered.filter(item => 
-        item.key.toLowerCase().includes(lowerSearch) || 
-        item.value.toLowerCase().includes(lowerSearch)
-      );
-    }
-    
-    return filtered;
-  }, [crossAnalysis, activeCategory, searchText]);
-
-  const categoryStats = useMemo(() => {
-    const stats = {};
-    Object.keys(CORE_FIELD_CATEGORIES).forEach(key => {
-      stats[key] = { total: 0, selected: 0, highConfidence: 0 };
-    });
-    stats.other = { total: 0, selected: 0, highConfidence: 0 };
-    
-    crossAnalysis.forEach(item => {
-      const cat = item.classification?.category || 'other';
-      if (!stats[cat]) stats[cat] = { total: 0, selected: 0, highConfidence: 0 };
-      stats[cat].total++;
-      if (selectedFields[item.key]) stats[cat].selected++;
-      if (item.avgConfidence >= 0.7) stats[cat].highConfidence++;
-    });
-    
-    return stats;
-  }, [crossAnalysis, selectedFields]);
-
-  const processSingleFile = async (file, fileIndex, totalFiles) => {
-    try {
-      const { data: session, error: sessionError } = await supabase
-        .from('bid_learning_sessions')
-        .insert({
-          user_id: user.id,
-          original_filename: file.name,
-          original_file_size: file.size,
-          status: 'converting'
-        })
-        .select()
-        .single();
-
-      if (sessionError) throw sessionError;
-
-      const markdown = await convertToMarkdown(file);
-
-      await supabase
-        .from('bid_learning_sessions')
-        .update({
-          status: 'chunking',
-          extraction_metadata: {
-            markdown_size: markdown.length,
-            converted_at: new Date().toISOString()
-          }
-        })
-        .eq('id', session.id);
-
-      const extractionResult = await runDifyMarkdownExtraction(
-        markdown, 
-        file.name,
-        {
-          onProgress: (p) => {
-            setChunkProgress(p);
-            const fileBaseProgress = (fileIndex / totalFiles) * 20;
-            const chunkProgressPercent = p.percent || 0;
-            setProgress(fileBaseProgress + (chunkProgressPercent * 0.8));
-          }
-        }
-      );
-
-      await supabase
-        .from('bid_learning_sessions')
-        .update({
-          extraction_result: extractionResult,
-          extraction_metadata: {
-            extracted_at: new Date().toISOString(),
-            field_count: extractionResult.fields?.length || 0,
-            chunk_stats: extractionResult.metadata?.processing_stats
-          },
-          status: 'completed'
-        })
-        .eq('id', session.id);
-
-      return {
-        session,
-        extractionResult
-      };
-
-    } catch (error) {
-      console.error(`处理文件 ${file.name} 失败:`, error);
-      throw error;
-    }
-  };
+  const learningConfig = useMemo(() => getTemplateLearningContextConfig(), []);
 
   const handleFilesSelect = async (files) => {
-    if (!user) {
-      message.error('请先登录');
-      return;
-    }
+    setUploadedFiles(files);
+    setLearningResult(null);
+    setProgress({ percent: 0, text: files.length ? `已选择 ${files.length} 份历史文件` : '等待上传历史标书' });
+  };
 
-    const validFiles = [];
-    for (const file of files) {
-      const validation = validateBidFile(file);
-      if (!validation.isValid) {
-        message.error(`${file.name}: ${validation.message}`);
-        continue;
-      }
-      validFiles.push(file);
-    }
+  const openEditor = (mode, item) => {
+    setEditorState({ open: true, mode, item, draft: createEditorDraft(item) });
+  };
 
-    if (validFiles.length === 0) {
-      message.error('没有有效的文件');
-      return;
-    }
+  const closeEditor = () => {
+    setEditorState({ open: false, mode: 'preview', item: null, draft: createEditorDraft() });
+  };
 
-    setUploadedFiles(validFiles);
-    setProcessingStatus('converting');
-    setProgress(0);
-    setChunkProgress({ current: 0, total: 0, percent: 0, message: '' });
+  const updateEditorDraft = (patch) => {
+    setEditorState((prev) => ({ ...prev, draft: { ...prev.draft, ...patch } }));
+  };
 
+  const applyEditorChangesToPreview = () => {
+    const targetSlotKey = editorState.item?.slot?.slot_key;
+    if (!targetSlotKey) return;
+
+    setLearningResult((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        learnedSlots: prev.learnedSlots.map((item) => {
+          if (item.slot.slot_key !== targetSlotKey) return item;
+          return {
+            ...item,
+            selectedSampleIds: editorState.draft.selectedSampleIds,
+            assetDraft: {
+              ...item.assetDraft,
+              standard_content: editorState.draft.standard_content.trim(),
+              asset_binding_value: editorState.draft.asset_binding_value.trim() || null
+            }
+          };
+        })
+      };
+    });
+  };
+
+  const saveManagedRecord = async () => {
+    const item = editorState.item;
+    if (!user || !item?.slot?.id) return;
+
+    setSavingManagedSlot(item.slot.id);
     try {
-      const results = [];
-      const sessions = [];
-
-      for (let i = 0; i < validFiles.length; i++) {
-        const file = validFiles[i];
-        
-        message.info(`正在处理文件 ${i + 1}/${validFiles.length}: ${file.name}`);
-        
-        const result = await processSingleFile(file, i, validFiles.length);
-        results.push(result.extractionResult);
-        sessions.push(result.session);
-        
-        setProgress(((i + 1) / validFiles.length) * 100);
-      }
-
-      setExtractionResults(results);
-      setLearningSessions(sessions);
-
-      setProcessingStatus('analyzing');
-      message.info('正在进行跨文档分析...');
-      
-      const analysis = analyzeCrossDocumentFrequency(results);
-      setCrossAnalysis(analysis);
-      
-      const defaultSelected = {};
-      analysis.forEach(item => {
-        if (item.frequencyNumber >= 2 && item.consistent) {
-          defaultSelected[item.key] = true;
-        } else if (item.avgConfidence >= 0.75 && item.frequencyNumber >= 1) {
-          defaultSelected[item.key] = true;
-        }
-      });
-      setSelectedFields(defaultSelected);
-
-      setProcessingStatus('awaiting_verification');
-      message.success(`分析完成！共处理 ${validFiles.length} 份文档，提取 ${analysis.length} 个字段`);
-
-    } catch (error) {
-      console.error('批量处理文件失败:', error);
-      message.error(`处理失败: ${error.message}`);
-      
-      setProcessingStatus('idle');
-      setProgress(0);
-      setChunkProgress({ current: 0, total: 0, percent: 0, message: '' });
-    }
-  };
-
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    setIsDragging(true);
-  };
-
-  const handleDragLeave = () => {
-    setIsDragging(false);
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    setIsDragging(false);
-    const files = Array.from(e.dataTransfer.files);
-    if (files.length > 0) handleFilesSelect(files);
-  };
-
-  const handleFieldSelect = (key, checked) => {
-    setSelectedFields(prev => ({
-      ...prev,
-      [key]: checked
-    }));
-  };
-
-  const handleFieldEdit = (key, value) => {
-    setEditingFields(prev => ({
-      ...prev,
-      [key]: value
-    }));
-  };
-
-  const handleSaveToCompany = async () => {
-    console.log('🔍 [调试] handleSaveToCompany 开始执行');
-    console.log('🔍 [调试] selectedCompanyId:', selectedCompanyId);
-    console.log('🔍 [调试] learningSessions:', learningSessions);
-    console.log('🔍 [调试] user:', user);
-
-    if (!selectedCompanyId || crossAnalysis.length === 0) {
-      message.error('请选择关联的公司');
-      return;
-    }
-
-    const selectedKeys = Object.keys(selectedFields).filter(key => selectedFields[key]);
-    if (selectedKeys.length === 0) {
-      message.error('请至少选择一个字段保存');
-      return;
-    }
-
-    setIsSaving(true);
-
-    try {
-      // 步骤1：检查Supabase认证状态
-      console.log('🔍 [调试] 步骤1：检查Supabase认证状态');
-      const { data: authData } = await supabase.auth.getSession();
-      console.log('🔍 [调试] Auth Session:', authData?.session);
-      console.log('🔍 [调试] Auth User:', authData?.session?.user);
-
-      if (!authData?.session) {
-        throw new Error('用户未登录或会话已过期');
-      }
-
-      const currentUserId = authData.session.user.id;
-      console.log('🔍 [调试] 当前用户ID:', currentUserId);
-
-      // 步骤2：验证learningSessions的所有权
-      console.log('🔍 [调试] 步骤2：验证learningSessions的所有权');
-      for (const session of learningSessions) {
-        console.log('🔍 [调试] 检查session:', session.id);
-        const { data: sessionData, error: sessionCheckError } = await supabase
-          .from('bid_learning_sessions')
-          .select('id, user_id, status, company_profile_id')
-          .eq('id', session.id)
-          .single();
-
-        if (sessionCheckError) {
-          console.error('❌ [调试] 查询session失败:', sessionCheckError);
-          throw new Error(`无法查询学习记录 ${session.id}: ${sessionCheckError.message}`);
-        }
-
-        console.log('🔍 [调试] Session数据:', sessionData);
-        console.log('🔍 [调试] Session user_id:', sessionData.user_id);
-        console.log('🔍 [调试] 当前用户ID:', currentUserId);
-
-        if (sessionData.user_id !== currentUserId) {
-          throw new Error(`学习记录 ${session.id} 不属于当前用户 (记录所有者: ${sessionData.user_id}, 当前用户: ${currentUserId})`);
-        }
-      }
-
-      // 步骤3：更新公司信息
-      console.log('🔍 [调试] 步骤3：更新公司信息');
-      const { data: company, error: fetchError } = await supabase
-        .from('company_profiles')
-        .select('custom_fields')
-        .eq('id', selectedCompanyId)
-        .single();
-
-      if (fetchError) {
-        console.error('❌ [调试] 查询公司失败:', fetchError);
-        throw fetchError;
-      }
-
-      console.log('🔍 [调试] 公司数据:', company);
-
-      const fieldsToSave = {};
-      selectedKeys.forEach(key => {
-        const analysisItem = crossAnalysis.find(item => item.key === key);
-        if (analysisItem) {
-          fieldsToSave[key] = editingFields[key] || analysisItem.value;
-        }
-      });
-
-      console.log('🔍 [调试] 要保存的字段:', fieldsToSave);
-
-      const currentFields = company.custom_fields || {};
-      const updatedFields = {
-        ...currentFields,
-        ...fieldsToSave,
-        _learning_sources: [
-          ...(currentFields._learning_sources || []),
-          {
-            session_ids: learningSessions.map(s => s.id),
-            filenames: uploadedFiles.map(f => f.name),
-            extraction_date: new Date().toISOString(),
-            field_count: selectedKeys.length
-          }
-        ]
+      const assetPayload = {
+        user_id: user.id,
+        slot_id: item.slot.id,
+        standard_content: editorState.draft.standard_content.trim() || null,
+        content_source: item.asset?.content_source || 'manual',
+        asset_binding_type: item.slot.slot_type === 'fixed_asset' ? 'product_asset' : null,
+        asset_binding_value: editorState.draft.asset_binding_value.trim() || null,
+        enabled: editorState.draft.enabled
       };
 
-      console.log('🔍 [调试] 更新后的字段:', updatedFields);
+      const { error: assetError } = await supabase
+        .from('template_slot_assets')
+        .upsert(assetPayload, { onConflict: 'user_id,slot_id' });
+      if (assetError) throw assetError;
 
-      const { data: updatedCompany, error: updateError } = await supabase
-        .from('company_profiles')
-        .update({ 
-          custom_fields: updatedFields,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', selectedCompanyId)
-        .select();
+      const { error: clearError } = await supabase
+        .from('template_slot_samples')
+        .update({ is_selected: false })
+        .eq('user_id', user.id)
+        .eq('slot_id', item.slot.id);
+      if (clearError) throw clearError;
 
-      if (updateError) {
-        console.error('❌ [调试] 更新公司失败:', updateError);
-        throw updateError;
+      if (editorState.draft.selectedSampleIds.length > 0) {
+        const { error: markError } = await supabase
+          .from('template_slot_samples')
+          .update({ is_selected: true })
+          .in('id', editorState.draft.selectedSampleIds);
+        if (markError) throw markError;
       }
 
-      console.log('🔍 [调试] 公司更新成功:', updatedCompany);
-
-      // 步骤4：更新learningSessions
-      console.log('🔍 [调试] 步骤4：更新learningSessions');
-      console.log('🔍 [调试] 要更新的session IDs:', learningSessions.map(s => s.id));
-
-      const updatePromises = learningSessions.map(async (session) => {
-        console.log('🔍 [调试] 更新session:', session.id);
-        
-        const updateData = {
-          company_profile_id: selectedCompanyId,
-          verified: true,
-          verified_at: new Date().toISOString(),
-          status: 'completed'
-        };
-
-        console.log('🔍 [调试] 更新数据:', updateData);
-
-        const { data: updatedSession, error: updateSessionError } = await supabase
-          .from('bid_learning_sessions')
-          .update(updateData)
-          .eq('id', session.id)
-          .eq('user_id', currentUserId)
-          .select();
-
-        if (updateSessionError) {
-          console.error('❌ [调试] 更新session失败:', updateSessionError);
-          console.error('❌ [调试] 错误详情:', {
-            code: updateSessionError.code,
-            message: updateSessionError.message,
-            details: updateSessionError.details,
-            hint: updateSessionError.hint
-          });
-          throw new Error(`更新学习记录 ${session.id} 失败: ${updateSessionError.message}`);
-        }
-
-        console.log('🔍 [调试] Session更新成功:', updatedSession);
-        return updatedSession;
-      });
-
-      const updatedSessions = await Promise.all(updatePromises);
-      console.log('🔍 [调试] 所有session更新成功:', updatedSessions);
-
-      message.success(`学习完成！${selectedKeys.length} 个字段已保存到公司信息库`);
-      
-      setTimeout(() => {
-        navigate('/company-profiles');
-      }, 1500);
-
+      message.success('已保存人工校验结果');
+      closeEditor();
+      await loadSavedLearningRecords();
     } catch (error) {
-      console.error('❌ [调试] 保存失败:', error);
-      console.error('❌ [调试] 错误堆栈:', error.stack);
+      console.error('保存人工校验结果失败:', error);
       message.error(`保存失败: ${error.message}`);
     } finally {
-      setIsSaving(false);
+      setSavingManagedSlot('');
     }
   };
 
-  const getConfidenceColor = (confidence) => {
-    if (confidence >= 0.8) return 'green';
-    if (confidence >= 0.6) return 'orange';
-    return 'red';
+  const handleEditorSave = async () => {
+    if (editorState.mode === 'preview') {
+      applyEditorChangesToPreview();
+      closeEditor();
+      message.success('已更新本次整理结果，确认后会正式投入使用');
+      return;
+    }
+    await saveManagedRecord();
   };
 
-  const getConfidenceText = (confidence) => {
-    if (confidence >= 0.8) return '高可信';
-    if (confidence >= 0.6) return '中可信';
-    return '低可信';
-  };
+  const runLearning = async () => {
+    if (!uploadedFiles.length) {
+      message.warning('请先上传历史投标文件');
+      return;
+    }
 
-  const renderCrossAnalysis = () => {
-    if (crossAnalysis.length === 0) return null;
+    setRunning(true);
+    setLearningResult(null);
 
-    const tabItems = [
-      {
-        key: 'all',
-        label: (
-          <span>
-            全部 <Badge count={crossAnalysis.length} style={{ backgroundColor: '#722ed1', marginLeft: 4 }} />
-          </span>
-        ),
-      },
-      ...Object.entries(CORE_FIELD_CATEGORIES).map(([key, cat]) => {
-        const stats = categoryStats[key];
-        return {
-          key,
-          label: (
-            <span>
-              {cat.label}
-              {stats && stats.total > 0 && (
-                <Badge count={stats.total} style={{ backgroundColor: '#722ed1', marginLeft: 4 }} />
-              )}
-            </span>
-          ),
-        };
-      }),
-      {
-        key: 'other',
-        label: (
-          <span>
-            其他
-            {categoryStats.other && categoryStats.other.total > 0 && (
-              <Badge count={categoryStats.other.total} style={{ backgroundColor: '#d9d9d9', color: '#666', marginLeft: 4 }} />
-            )}
-          </span>
-        ),
-      },
-    ];
+    try {
+      const sampleBuckets = new Map(systemSlots.map((slot) => [slot.slot_key, []]));
+      let processed = 0;
 
-    const columns = [
-      {
-        title: '选择',
-        dataIndex: 'key',
-        key: 'select',
-        width: 50,
-        render: (key) => (
-          <Checkbox 
-            checked={!!selectedFields[key]} 
-            onChange={(e) => handleFieldSelect(key, e.target.checked)}
-          />
-        )
-      },
-      {
-        title: '字段名',
-        dataIndex: 'key',
-        key: 'key',
-        width: 140,
-        render: (key, record) => (
-          <div>
-            <div className="font-medium text-gray-800">{key}</div>
-            <Tag 
-              color={record.classification?.category === 'other' ? 'default' : 'purple'} 
-              style={{ fontSize: '10px', marginTop: 2 }}
-            >
-              {record.classification?.label || '其他'}
-            </Tag>
-          </div>
-        )
-      },
-      {
-        title: '提取值',
-        dataIndex: 'value',
-        key: 'value',
-        render: (value, record) => {
-          const isEditing = editingFields[record.key] !== undefined;
-          const displayValue = isEditing ? editingFields[record.key] : (value || '未提取');
-          
-          return (
-            <div 
-              className="p-2 border border-transparent hover:border-gray-300 rounded cursor-text min-h-[40px]"
-              onClick={() => handleFieldEdit(record.key, value)}
-            >
-              {isEditing ? (
-                <Input
-                  value={editingFields[record.key]}
-                  onChange={(e) => handleFieldEdit(record.key, e.target.value)}
-                  onBlur={() => handleFieldEdit(record.key, undefined)}
-                  autoFocus
-                  size="small"
-                />
-              ) : (
-                <span className="text-gray-800">{displayValue}</span>
-              )}
-            </div>
-          );
-        }
-      },
-      {
-        title: '频率',
-        dataIndex: 'frequency',
-        key: 'frequency',
-        width: 80,
-        render: (frequency, record) => {
-          const [current, total] = frequency.split('/').map(Number);
-          const percent = (current / total) * 100;
-          
-          let color = 'green';
-          if (percent < 40) color = 'red';
-          else if (percent < 70) color = 'orange';
-          
-          return (
-            <div className="flex items-center">
-              <Tag color={color}>{frequency}</Tag>
-              {record.consistent && (
-                <Tooltip title="所有文档中值一致">
-                  <Check size={14} className="text-green-500 ml-1" />
-                </Tooltip>
-              )}
-            </div>
-          );
-        }
-      },
-      {
-        title: '可信度',
-        key: 'confidence',
-        width: 90,
-        render: (_, record) => (
-          <Tooltip title={`平均可信度: ${Math.round(record.avgConfidence * 100)}%`}>
-            <Tag color={getConfidenceColor(record.avgConfidence)}>
-              {getConfidenceText(record.avgConfidence)}
-            </Tag>
-          </Tooltip>
-        )
-      },
-      {
-        title: '状态',
-        key: 'status',
-        width: 100,
-        render: (_, record) => {
-          const [current, total] = record.frequency.split('/').map(Number);
-          
-          if (current === total && record.consistent) {
-            return <Tag color="success">高频且一致</Tag>;
-          } else if (current >= Math.ceil(total / 2) && record.consistent) {
-            return <Tag color="processing">中频一致</Tag>;
-          } else if (current >= 2) {
-            return <Tag color="warning">低频出现</Tag>;
-          } else {
-            return <Tag color="default">单次出现</Tag>;
-          }
-        }
-      },
-      {
-        title: '详情',
-        key: 'details',
-        width: 60,
-        render: (_, record) => {
-          if (record.allValues.length <= 1) return null;
-          
-          return (
-            <Tooltip 
-              title={
-                <div>
-                  <p className="font-bold mb-1">不同值：</p>
-                  {record.allValues.map((item, idx) => (
-                    <div key={idx} className="text-xs mb-1">
-                      <div>{item.value}</div>
-                      <div className="text-gray-400">出现{item.count}次 · 可信度{Math.round(item.avgConfidence * 100)}%</div>
-                    </div>
-                  ))}
-                </div>
-              }
-            >
-              <AlertCircle size={16} className="text-gray-400 cursor-help" />
-            </Tooltip>
-          );
-        }
-      }
-    ];
+      for (const file of uploadedFiles) {
+        setProgress({ percent: Math.round((processed / uploadedFiles.length) * 100), text: `正在解析 ${file.name}` });
+        const text = await extractTextFromDocument(file);
+        const segments = splitDocumentIntoSegments(text);
 
-    return (
-      <div className="space-y-6">
-        <Card 
-          title={
-            <div className="flex items-center">
-              <Building2 size={18} className="mr-2" />
-              <span>跨文档分析结果</span>
-              <Tag color="blue" className="ml-2">
-                共 {uploadedFiles.length} 份文档，{crossAnalysis.length} 个字段
-              </Tag>
-            </div>
-          }
-          className="border border-gray-200"
-        >
-          <div className="mb-4 flex flex-wrap items-center gap-3">
-            <div className="flex-1 min-w-[200px]">
-              <Input
-                placeholder="搜索字段名或值..."
-                prefix={<Search size={14} className="text-gray-400" />}
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                allowClear
-                size="small"
-              />
-            </div>
-            <div className="flex items-center gap-2 text-sm text-gray-500">
-              <Filter size={14} />
-              <span>已选中 {Object.values(selectedFields).filter(v => v).length}/{crossAnalysis.length} 个字段</span>
-            </div>
-            <div className="flex gap-2">
-              <Button 
-                size="small" 
-                onClick={() => {
-                  const newSelected = {};
-                  crossAnalysis.forEach(item => {
-                    if (item.frequencyNumber >= 2 && item.consistent) {
-                      newSelected[item.key] = true;
-                    } else if (item.avgConfidence >= 0.75) {
-                      newSelected[item.key] = true;
-                    }
-                  });
-                  setSelectedFields(newSelected);
-                }}
-              >
-                全选优质字段
-              </Button>
-              <Button 
-                size="small" 
-                onClick={() => setSelectedFields({})}
-              >
-                清空选择
-              </Button>
-              <Button 
-                size="small" 
-                icon={<Layers size={14} />}
-                onClick={() => setDetailVisible(!detailVisible)}
-              >
-                {detailVisible ? '隐藏详情' : '查看提取详情'}
-              </Button>
-            </div>
-          </div>
-          
-          <Tabs
-            activeKey={activeCategory}
-            onChange={setActiveCategory}
-            items={tabItems}
-            size="small"
-            className="mb-4"
-          />
-          
-          <Table
-            columns={columns}
-            dataSource={filteredAnalysis}
-            rowKey="key"
-            pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (total) => `共 ${total} 个字段` }}
-            size="middle"
-            rowClassName={(record) => 
-              selectedFields[record.key] ? 'bg-blue-50' : ''
+        systemSlots.forEach((slot) => {
+          const learningMode = getSlotLearningMode(slot);
+          if (learningMode === 'field_extract') {
+            const samples = extractFieldSamplesFromText(slot, text, file.name);
+            if (samples.length > 0) {
+              sampleBuckets.get(slot.slot_key)?.push(...samples);
             }
-          />
-        </Card>
+            return;
+          }
 
-        {detailVisible && (
-          <Card 
-            title={
-              <div className="flex items-center">
-                <BarChart3 size={18} className="mr-2" />
-                <span>各文档提取详情</span>
-              </div>
+          if (learningMode === 'asset_detect') {
+            const samples = detectAssetSampleFromDocument(slot, text, file.name);
+            if (samples.length > 0) {
+              sampleBuckets.get(slot.slot_key)?.push(...samples);
             }
-            className="border border-gray-200"
-          >
-            <div className="space-y-4">
-              {extractionResults.map((result, idx) => (
-                <div key={idx} className="p-4 border border-gray-100 rounded-lg">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <FileText size={16} className="text-gray-500" />
-                      <span className="font-medium text-gray-800">
-                        {uploadedFiles[idx]?.name}
-                      </span>
-                    </div>
-                    <div className="flex gap-2">
-                      <Tag color="blue">
-                        {result.fields?.length || 0} 个字段
-                      </Tag>
-                      <Tag color="green">
-                        {(result.metadata?.kv_extract_count || 0)} 个键值对
-                      </Tag>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                    {result.fields?.map((field, fieldIdx) => (
-                      <div key={fieldIdx} className="text-sm p-2 bg-gray-50 rounded">
-                        <div className="text-gray-500 text-xs">{field.key}</div>
-                        <div className="text-gray-800 truncate" title={field.value}>{field.value}</div>
-                        <div className="flex items-center gap-1 mt-1">
-                          <Tag color={getConfidenceColor(field.confidence || 0.5)} style={{ fontSize: '10px', padding: '0 4px' }}>
-                            {Math.round((field.confidence || 0.5) * 100)}%
-                          </Tag>
-                          <span className="text-gray-400 text-xs">{field.source}</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </Card>
-        )}
-      </div>
-    );
+          }
+        });
+
+        segments.forEach((segment) => {
+          const match = matchSlotForSegment(segment, systemSlots);
+          if (!match?.slot) return;
+          if (getSlotLearningMode(match.slot) !== 'content_summarize') return;
+          sampleBuckets.get(match.slot.slot_key)?.push({
+            sample_title: segment.title,
+            raw_content: segment.content,
+            source_filename: file.name,
+            score: match.score
+          });
+        });
+
+        processed += 1;
+        setProgress({ percent: Math.round((processed / uploadedFiles.length) * 100), text: `已完成 ${processed}/${uploadedFiles.length} 份文件` });
+      }
+
+      const matchedSlots = systemSlots
+        .map((slot) => ({ slot, samples: (sampleBuckets.get(slot.slot_key) || []).sort((a, b) => (b.score || 0) - (a.score || 0)) }))
+        .filter((item) => item.samples.length > 0);
+
+      const learned = [];
+      for (let index = 0; index < matchedSlots.length; index += 1) {
+        const { slot, samples } = matchedSlots[index];
+        setProgress({
+          percent: 90 + Math.round(((index + 1) / matchedSlots.length) * 10),
+          text: `正在归纳 ${slot.slot_name}（${index + 1}/${matchedSlots.length}）`
+        });
+
+        let assetDraft = buildLearningDraftFromSamples(slot, samples);
+        const learningMode = getSlotLearningMode(slot);
+        if (learningMode === 'content_summarize') {
+          try {
+            const aiSummary = await summarizeSlotSamplesWithAI(slot, samples);
+            if (aiSummary?.trim()) {
+              assetDraft = {
+                ...assetDraft,
+                standard_content: aiSummary.trim(),
+                content_source: 'sample_derived'
+              };
+            }
+          } catch (error) {
+            console.warn(`AI 归纳 ${slot.slot_name} 失败，回退到本地规则:`, error);
+          }
+        } else if (learningMode === 'asset_detect') {
+          assetDraft = {
+            standard_content: '',
+            content_source: 'sample_derived'
+          };
+        }
+
+        const assetBindingValue = learningMode === 'asset_detect'
+          ? inferAssetBindingValue(samples)
+          : null;
+
+        learned.push({
+          slot,
+          samples: samples.map((sample, sampleIndex) => ({
+            ...sample,
+            sample_id: createSampleId(slot.slot_key, sample, sampleIndex)
+          })),
+          selectedSampleIds: samples.slice(0, Math.min(samples.length, 2)).map((sample, sampleIndex) => createSampleId(slot.slot_key, sample, sampleIndex)),
+          assetDraft: {
+            ...assetDraft,
+            asset_binding_type: slot.slot_type === 'fixed_asset' ? 'product_asset' : null,
+            asset_binding_value: assetBindingValue
+          },
+          confidence: getConfidence(slot, samples)
+        });
+      }
+
+      const summary = {
+        totalLearned: learned.length,
+        standardContentSlots: learned.filter((item) => item.slot.slot_type === 'standard_content').length,
+        fieldSlots: learned.filter((item) => item.slot.slot_type === 'field').length,
+        fixedAssetSlots: learned.filter((item) => item.slot.slot_type === 'fixed_asset').length
+      };
+
+      setLearningResult({ learnedSlots: learned, summary });
+      setProgress({ percent: 100, text: '整理完成，请先校对后确认使用' });
+      message.success(`已完成整理，识别到 ${learned.length} 个可复用内容项`);
+    } catch (error) {
+      console.error('自动学习失败:', error);
+      message.error(`学习失败: ${error.message}`);
+      setProgress({ percent: 0, text: '学习失败，请重试' });
+    } finally {
+      setRunning(false);
+    }
   };
 
-  const renderProcessingStatus = () => {
-    if (processingStatus === 'idle') return null;
+  const confirmLearning = async () => {
+    if (!user || !learningResult?.learnedSlots?.length) {
+      message.warning('当前没有可确认的学习结果');
+      return;
+    }
 
-    const statusConfig = {
-      converting: {
-        title: '转换中',
-        description: `正在将 ${uploadedFiles.length} 份文件转换为Markdown格式...`,
-        icon: <Loader2 className="animate-spin" />
-      },
-      chunking: {
-        title: '分块分析中',
-        description: '正在智能分块并分析文档内容...',
-        icon: <Loader2 className="animate-spin" />
-      },
-      analyzing: {
-        title: '跨文档分析中',
-        description: '正在对比多份文档，分析高频字段...',
-        icon: <Loader2 className="animate-spin" />
-      },
-      awaiting_verification: {
-        title: '分析完成',
-        description: '请勾选要保存的字段并关联公司',
-        icon: <CheckCircle className="text-green-500" />
+    setConfirming(true);
+    try {
+      const existingSlotsRes = await supabase
+        .from('template_slots')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('template_name', templateName);
+      if (existingSlotsRes.error) throw existingSlotsRes.error;
+
+      let slotRows = normalizeTemplateSlots(existingSlotsRes.data || []);
+      const slotMapByKey = new Map(slotRows.map((slot) => [slot.slot_key, slot]));
+
+      const missingSlots = normalizeTemplateSlots(DEFAULT_TEMPLATE_SLOTS)
+        .filter((slot) => !slotMapByKey.has(slot.slot_key))
+        .map((slot) => ({ ...slot, user_id: user.id }));
+
+      if (missingSlots.length > 0) {
+        const insertRes = await supabase.from('template_slots').insert(missingSlots).select('*');
+        if (insertRes.error) throw insertRes.error;
+        slotRows = [...slotRows, ...(insertRes.data || [])];
+        slotRows.forEach((slot) => slotMapByKey.set(slot.slot_key, slot));
       }
-    };
 
-    const config = statusConfig[processingStatus];
-    if (!config) return null;
+      const samplePayload = [];
+      const assetPayload = [];
 
-    return (
-      <div className="mb-8">
-        <div className="flex items-center mb-4">
-          {config.icon}
-          <h3 className="text-lg font-semibold ml-2">{config.title}</h3>
-        </div>
-        <p className="text-gray-600 mb-4">{config.description}</p>
-        
-        {processingStatus === 'chunking' && chunkProgress.total > 0 && (
-          <div className="mb-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-            <div className="flex justify-between items-center mb-2">
-              <span className="text-sm font-medium text-blue-800">
-                分块进度: {chunkProgress.current}/{chunkProgress.total}
-              </span>
-              <span className="text-sm text-blue-600">{chunkProgress.percent}%</span>
-            </div>
-            <Progress percent={chunkProgress.percent} status="active" />
-            {chunkProgress.message && (
-              <p className="text-sm text-blue-700 mt-2">{chunkProgress.message}</p>
-            )}
-          </div>
-        )}
-        
-        <Progress percent={progress} status="active" />
-        
-        {uploadedFiles.length > 0 && (
-          <div className="mt-4 space-y-2">
-            {uploadedFiles.map((file, idx) => (
-              <div key={idx} className="flex items-center text-sm">
-                <FileText size={14} className="text-gray-400 mr-2" />
-                <span className="text-gray-700 truncate">{file.name}</span>
-                <span className="ml-2 text-gray-500 text-xs">
-                  ({(file.size / 1024 / 1024).toFixed(2)} MB)
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
+      learningResult.learnedSlots.forEach((item) => {
+        const persistedSlot = slotMapByKey.get(item.slot.slot_key);
+        if (!persistedSlot) return;
+
+        item.samples.forEach((sample) => {
+          samplePayload.push({
+            user_id: user.id,
+            slot_id: persistedSlot.id,
+            source_filename: sample.source_filename,
+            sample_title: sample.sample_title,
+            raw_content: sample.raw_content,
+            normalized_content: sample.raw_content,
+            is_selected: item.selectedSampleIds?.includes(sample.sample_id) || false
+          });
+        });
+
+        assetPayload.push({
+          user_id: user.id,
+          slot_id: persistedSlot.id,
+          standard_content: item.assetDraft.standard_content || null,
+          content_source: item.assetDraft.content_source || 'sample_derived',
+          asset_binding_type: item.assetDraft.asset_binding_type || null,
+          asset_binding_value: item.assetDraft.asset_binding_value || null,
+          enabled: true
+        });
+      });
+
+      if (samplePayload.length > 0) {
+        const { error: sampleDeleteError } = await supabase
+          .from('template_slot_samples')
+          .delete()
+          .in('slot_id', learningResult.learnedSlots.map((item) => slotMapByKey.get(item.slot.slot_key)?.id).filter(Boolean));
+        if (sampleDeleteError) throw sampleDeleteError;
+
+        const { error: sampleInsertError } = await supabase.from('template_slot_samples').insert(samplePayload);
+        if (sampleInsertError) throw sampleInsertError;
+      }
+
+      for (const asset of assetPayload) {
+        const { error } = await supabase
+          .from('template_slot_assets')
+          .upsert(asset, { onConflict: 'user_id,slot_id' });
+        if (error) throw error;
+      }
+
+      await Promise.all([loadExistingSlots(), loadSavedLearningRecords()]);
+      message.success('整理结果已确认并投入使用');
+    } catch (error) {
+      console.error('确认学习结果失败:', error);
+      message.error(`确认失败: ${error.message}`);
+    } finally {
+      setConfirming(false);
+    }
   };
 
   return (
     <div className="min-h-screen bg-gray-50">
       <div className="bg-white border-b border-gray-200 px-8 py-6">
-        <div className="flex items-center">
-          <BookOpen size={24} className="text-purple-600 mr-3" />
+        <div className="flex items-start gap-3">
+          <BookOpen size={24} className="text-purple-600 mt-1" />
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">学习投标文件</h1>
-            <p className="text-gray-600 mt-1">批量上传投标文件，AI自动发现高频字段并保存到公司信息库</p>
+            <h1 className="text-2xl font-bold text-gray-900">历史标书整理</h1>
+            <p className="text-gray-600 mt-1">上传几份历史投标文件，系统会自动整理出以后可直接复用的固定字段、正文内容和附件。</p>
           </div>
         </div>
       </div>
 
-      <div className="p-8">
-        <div className="max-w-6xl mx-auto">
-          {crossAnalysis.length === 0 && (
-            <div className="mb-10">
-              <div 
-                ref={dropZoneRef}
-                className={`border-2 border-dashed rounded-2xl p-12 transition-all duration-300 flex flex-col items-center justify-center cursor-pointer ${
-                  isDragging ? 'border-purple-400 bg-purple-50' : 'border-gray-300 hover:border-purple-300 hover:bg-gray-50'
-                } ${processingStatus !== 'idle' ? 'opacity-50 cursor-not-allowed' : ''}`}
-                onDragOver={handleDragOver}
-                onDragLeave={handleDragLeave}
-                onDrop={handleDrop}
-                onClick={() => processingStatus === 'idle' && fileInputRef.current?.click()}
-              >
-                {processingStatus === 'idle' ? (
-                  <>
-                    <div className="w-20 h-20 bg-purple-100 rounded-2xl flex items-center justify-center text-purple-600 mb-6">
-                      <Upload size={40} />
-                    </div>
-                    <h3 className="text-xl font-bold text-gray-900 mb-3">批量上传投标文件</h3>
-                    <p className="text-gray-600 text-center mb-6 max-w-md">
-                      支持 PDF 和 DOCX 格式，最大50MB。AI将对比多份文档，自动发现高频出现的公司信息字段。
-                    </p>
-                    <div className="flex items-center space-x-4 text-sm text-gray-500">
-                      <div className="flex items-center">
-                        <FileText size={16} className="mr-1" />
-                        <span>PDF / DOCX</span>
-                      </div>
-                      <div className="flex items-center">
-                        <Clock size={16} className="mr-1" />
-                        <span>支持多文件批量上传</span>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="w-20 h-20 bg-purple-100 rounded-2xl flex items-center justify-center text-purple-600 mb-6">
-                      <Loader2 size={40} className="animate-spin" />
-                    </div>
-                    <h3 className="text-xl font-bold text-gray-900 mb-3">处理中...</h3>
-                    <p className="text-gray-600 text-center mb-6 max-w-md">
-                      正在分析文件内容，请稍候
-                    </p>
-                  </>
-                )}
-                
+      <div className="p-8 space-y-8">
+        <Card loading={loading} className="border border-gray-200">
+          <div className="flex flex-col gap-5">
+            <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr_auto] gap-4 items-end">
+              <div>
+                <div className="text-sm font-medium text-gray-700 mb-2">标准方案</div>
+                <Select value={templateName} options={[{ label: DEFAULT_TEMPLATE_NAME, value: DEFAULT_TEMPLATE_NAME }]} className="w-full" />
+              </div>
+              <div>
+                <div className="text-sm font-medium text-gray-700 mb-2">历史投标文件</div>
+                <Button icon={<FileUp size={16} />} onClick={() => fileInputRef.current?.click()} className="w-full justify-start">
+                  {uploadedFiles.length ? `已选择 ${uploadedFiles.length} 份文件，点击重新上传` : '上传 3-5 份历史投标文件'}
+                </Button>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  className="hidden"
-                  accept=".pdf,.docx"
                   multiple
-                  onChange={(e) => {
-                    const files = Array.from(e.target.files || []);
-                    if (files.length > 0) handleFilesSelect(files);
-                    if (e.target) e.target.value = '';
-                  }}
-                  disabled={processingStatus !== 'idle'}
+                  accept=".pdf,.docx"
+                  className="hidden"
+                  onChange={(e) => handleFilesSelect(Array.from(e.target.files || []))}
                 />
               </div>
-              
-              {uploadedFiles.length > 0 && (
-                <div className="mt-6 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-gray-700">
-                      已选择 {uploadedFiles.length} 个文件
-                    </span>
-                    <button 
-                      onClick={() => {
-                        setUploadedFiles([]);
-                        setProcessingStatus('idle');
-                        setProgress(0);
-                      }}
-                      className="text-sm text-blue-600 hover:text-blue-800"
-                      disabled={processingStatus !== 'idle'}
-                    >
-                      清空列表
-                    </button>
-                  </div>
-                  <div className="max-h-60 overflow-y-auto space-y-2">
-                    {uploadedFiles.map((file, idx) => (
-                      <div key={idx} className="p-3 bg-blue-50 border border-blue-200 rounded-lg flex items-center justify-between">
-                        <div className="flex items-center">
-                          <FileText size={16} className="text-blue-600 mr-2" />
-                          <div>
-                            <p className="font-medium text-blue-800 text-sm">{file.name}</p>
-                            <p className="text-blue-600 text-xs mt-1">
-                              {(file.size / 1024 / 1024).toFixed(2)} MB
-                            </p>
-                          </div>
-                        </div>
-                        <button 
-                          onClick={() => {
-                            const newFiles = [...uploadedFiles];
-                            newFiles.splice(idx, 1);
-                            setUploadedFiles(newFiles);
-                          }}
-                          className="text-blue-600 hover:text-blue-800"
-                          disabled={processingStatus !== 'idle'}
-                        >
-                          <X size={16} />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
+              <Button type="primary" loading={running} onClick={runLearning} className="min-w-[160px]">
+                开始整理
+              </Button>
+            </div>
+
+            <Alert
+              type="info"
+              showIcon
+              message={`上传历史文件后，系统会自动整理出可复用的固定字段、推荐正文和固定附件；每个内容项最多参考 ${learningConfig.maxSamplesPerSlot} 份样本。`}
+              description={learningConfig.aiEnabled ? '系统已启用 AI 归纳。请在确认前勾选最准确的参考样本并修正文案，后续系统会优先参考这些已确认样本。' : '当前未启用 AI 归纳，会先使用规则版摘要。建议先人工校对，再确认投入使用。'}
+            />
+
+            <div>
+              <div className="flex items-center justify-between mb-2 text-sm text-gray-600">
+                <span>{progress.text}</span>
+                <span>{progress.percent}%</span>
+              </div>
+              <Progress percent={progress.percent} status={running ? 'active' : 'normal'} />
+            </div>
+
+            {uploadedFiles.length > 0 && (
+              <div className="text-sm text-gray-500 flex flex-wrap gap-2">
+                {uploadedFiles.map((file) => <Tag key={`${file.name}-${file.size}`}>{file.name}</Tag>)}
+              </div>
+            )}
+          </div>
+        </Card>
+
+        {!learningResult ? (
+          <Card className="border border-gray-200">
+            {running ? (
+              <div className="py-12 flex flex-col items-center text-gray-500">
+                <Spin className="mb-4" />
+                <p>系统正在自动学习历史文件，请稍候。</p>
+              </div>
+            ) : (
+              <Empty description="上传历史投标文件并点击“开始整理”后，这里会展示系统建议和人工校对入口。" />
+            )}
+          </Card>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+              {summaryCards.map((item) => (
+                <Card key={item.label} className="border border-gray-200">
+                  <div className="text-sm text-gray-500">{item.label}</div>
+                  <div className="text-3xl font-bold text-gray-900 mt-2">{item.value}</div>
+                </Card>
+              ))}
+            </div>
+
+            <Card className="border border-gray-200">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-4">
+                <div>
+                  <Typography.Title level={4} style={{ marginBottom: 0 }}>本次整理结果</Typography.Title>
+                  <Typography.Text type="secondary">系统已先给出建议，请逐项校对内容、附件和参考样本，确认后再正式投入使用。</Typography.Text>
                 </div>
+                <Button type="primary" icon={<CheckCircle2 size={16} />} loading={confirming} onClick={confirmLearning}>
+                  确认并投入使用
+                </Button>
+              </div>
+
+              <List
+                dataSource={learnedSlots}
+                renderItem={(item) => (
+                  <List.Item>
+                    <Card size="small" className="w-full border border-gray-100">
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className="font-medium text-gray-800">{item.slot.slot_name}</div>
+                            <div className="text-xs text-gray-500 mt-1">{item.slot.chapter_path}</div>
+                          </div>
+                          <Space wrap>
+                            <Tag color="purple">{getUserFacingSlotTypeLabel(item.slot.slot_type)}</Tag>
+                            <Tag color={item.confidence === 'high' ? 'green' : item.confidence === 'medium' ? 'gold' : 'default'}>
+                              置信度 {item.confidence}
+                            </Tag>
+                            <Tag>{item.samples.length} 份参考</Tag>
+                            <Tag color="blue">已选 {item.selectedSampleIds?.length || 0}</Tag>
+                            <Button size="small" icon={<PencilLine size={14} />} onClick={() => openEditor('preview', item)}>
+                              校对
+                            </Button>
+                          </Space>
+                        </div>
+
+                        {item.assetDraft.standard_content && (
+                          <div>
+                            <div className="text-xs font-medium text-gray-700 mb-1 flex items-center gap-1">
+                              <Sparkles size={14} className="text-purple-500" /> 推荐正文
+                            </div>
+                            <div className="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 rounded-lg p-3 border border-gray-100">
+                              {item.assetDraft.standard_content.slice(0, 320)}
+                              {item.assetDraft.standard_content.length > 320 ? '...' : ''}
+                            </div>
+                          </div>
+                        )}
+
+                        {item.assetDraft.asset_binding_value && (
+                          <div className="text-sm text-gray-700 bg-indigo-50 rounded-lg p-3 border border-indigo-100 flex items-center gap-2">
+                            <ShieldCheck size={16} className="text-indigo-500" />
+                            推荐固定附件：{item.assetDraft.asset_binding_value}
+                          </div>
+                        )}
+
+                        <div className="text-xs text-gray-500">
+                          参考来源：{item.samples.slice(0, 3).map((sample) => sample.source_filename).join('，')}
+                          {item.samples.length > 3 ? ' 等' : ''}
+                        </div>
+                      </div>
+                    </Card>
+                  </List.Item>
+                )}
+              />
+            </Card>
+          </>
+        )}
+
+        <Card className="border border-gray-200" loading={savedLoading}>
+          <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <Typography.Title level={4} style={{ marginBottom: 0 }}>已生效内容管理</Typography.Title>
+                <Typography.Text type="secondary">这里是已经投入使用的固定字段、正文和附件。你可以随时修正内容，并重新指定最准确的参考样本。</Typography.Text>
+              </div>
+              <Space wrap>
+                <Tag color="green">启用项 {savedSummary.enabledSlots}</Tag>
+                <Tag color="blue">已生效内容 {savedSummary.managedSlots}</Tag>
+                <Tag>已选参考 {savedSummary.selectedSamples}</Tag>
+              </Space>
+            </div>
+
+            {!savedLearningRecords.some((item) => item.asset?.standard_content || item.asset?.asset_binding_value || item.samples.length > 0) ? (
+              <Empty description="还没有已生效内容。先完成一次整理并确认使用。" />
+            ) : (
+              <List
+                dataSource={savedLearningRecords.filter((item) => item.asset?.standard_content || item.asset?.asset_binding_value || item.samples.length > 0)}
+                renderItem={(item) => (
+                  <List.Item>
+                    <Card size="small" className="w-full border border-gray-100">
+                      <div className="flex flex-col gap-3">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <div className="font-medium text-gray-800">{item.slot.slot_name}</div>
+                            <div className="text-xs text-gray-500 mt-1">{item.slot.chapter_path}</div>
+                          </div>
+                          <Space wrap>
+                            <Tag color="purple">{getUserFacingSlotTypeLabel(item.slot.slot_type)}</Tag>
+                            <Tag color={item.asset?.enabled ? 'green' : 'default'}>{item.asset?.enabled ? '已启用' : '已停用'}</Tag>
+                            <Tag>{item.samples.length} 份参考</Tag>
+                            <Tag color="blue">已选 {item.samples.filter((sample) => sample.is_selected).length}</Tag>
+                            <Button
+                              size="small"
+                              icon={<PencilLine size={14} />}
+                              loading={savingManagedSlot === item.slot.id}
+                              onClick={() => openEditor('saved', item)}
+                            >
+                              调整
+                            </Button>
+                          </Space>
+                        </div>
+
+                        {item.asset?.standard_content && (
+                          <div className="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 rounded-lg p-3 border border-gray-100">
+                            {item.asset.standard_content.slice(0, 320)}
+                            {item.asset.standard_content.length > 320 ? '...' : ''}
+                          </div>
+                        )}
+
+                        {item.asset?.asset_binding_value && (
+                          <div className="text-sm text-gray-700 bg-indigo-50 rounded-lg p-3 border border-indigo-100 flex items-center gap-2">
+                            <ShieldCheck size={16} className="text-indigo-500" />
+                            当前固定附件：{item.asset.asset_binding_value}
+                          </div>
+                        )}
+
+                        <div className="text-xs text-gray-500">
+                          最近参考来源：{item.samples.slice(0, 3).map((sample) => sample.source_filename).join('，') || '暂无参考'}
+                          {item.samples.length > 3 ? ' 等' : ''}
+                        </div>
+                      </div>
+                    </Card>
+                  </List.Item>
+                )}
+              />
+            )}
+          </div>
+        </Card>
+      </div>
+
+      <Modal
+        open={editorState.open}
+        title={editorState.mode === 'preview' ? '校对本次整理结果' : '调整已生效内容'}
+        onCancel={closeEditor}
+        onOk={handleEditorSave}
+        okText={editorState.mode === 'preview' ? '保存本次校对' : '保存调整'}
+        confirmLoading={editorState.mode === 'saved' && savingManagedSlot === editorState.item?.slot?.id}
+        width={820}
+      >
+        {editorState.item && (
+          <div className="space-y-5">
+            <div>
+              <div className="font-medium text-gray-900">{editorState.item.slot.slot_name}</div>
+              <div className="text-xs text-gray-500 mt-1">{editorState.item.slot.chapter_path}</div>
+            </div>
+
+            <div>
+              <div className="text-sm font-medium text-gray-700 mb-2">正文内容</div>
+              <TextArea
+                value={editorState.draft.standard_content}
+                onChange={(e) => updateEditorDraft({ standard_content: e.target.value })}
+                rows={8}
+                placeholder="把这项内容改成你希望系统长期复用的标准写法"
+              />
+            </div>
+
+            {editorState.item.slot.slot_type === 'fixed_asset' && (
+              <div>
+                <div className="text-sm font-medium text-gray-700 mb-2">固定附件名称</div>
+                <Input
+                  value={editorState.draft.asset_binding_value}
+                  onChange={(e) => updateEditorDraft({ asset_binding_value: e.target.value })}
+                  placeholder="例如：售后服务手册标准版"
+                />
+              </div>
+            )}
+
+            {editorState.mode === 'saved' && (
+              <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3 bg-gray-50">
+                <div>
+                  <div className="text-sm font-medium text-gray-800">启用当前学习结果</div>
+                  <div className="text-xs text-gray-500">关闭后，这项已生效内容不会参与新建标书的自动生成。</div>
+                </div>
+                <Switch checked={editorState.draft.enabled} onChange={(checked) => updateEditorDraft({ enabled: checked })} />
+              </div>
+            )}
+
+            <div>
+              <div className="text-sm font-medium text-gray-700 mb-2">最准确的参考样本</div>
+              <div className="text-xs text-gray-500 mb-2">勾选越准确，系统后续自动匹配时越会优先参考这些内容。</div>
+              {editorState.item.samples?.length ? (
+                <Checkbox.Group
+                  value={editorState.draft.selectedSampleIds}
+                  onChange={(values) => updateEditorDraft({ selectedSampleIds: values })}
+                  className="w-full"
+                >
+                  <div className="space-y-3 max-h-[280px] overflow-auto pr-2">
+                    {editorState.item.samples.map((sample, index) => {
+                      const sampleId = sample.sample_id || createSampleId(editorState.item.slot.slot_key, sample, index);
+                      return (
+                        <label key={sampleId} className="block rounded-lg border border-gray-200 p-3 bg-white cursor-pointer">
+                          <div className="flex items-start gap-3">
+                            <Checkbox value={sampleId} />
+                            <div className="min-w-0 flex-1">
+                              <div className="text-sm text-gray-800">{sample.sample_title || '未命名片段'}</div>
+                              <div className="text-xs text-gray-500 mt-1">来源文件：{sample.source_filename || '未知文件'}</div>
+                              <div className="text-xs text-gray-600 whitespace-pre-wrap mt-2 bg-gray-50 rounded p-2 border border-gray-100">
+                                {(sample.raw_content || '').slice(0, 220)}
+                                {(sample.raw_content || '').length > 220 ? '...' : ''}
+                              </div>
+                            </div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </Checkbox.Group>
+              ) : (
+                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="当前内容项暂无参考样本" />
               )}
             </div>
-          )}
-
-          {renderProcessingStatus()}
-
-          {crossAnalysis.length > 0 && (
-            <div className="space-y-8">
-              <div className="flex justify-between items-center">
-                <h2 className="text-xl font-bold text-gray-900">跨文档分析结果</h2>
-                <div className="flex items-center space-x-4">
-                  <span className="text-sm text-gray-500">关联到公司:</span>
-                  <Select
-                    placeholder="选择公司"
-                    style={{ width: 200 }}
-                    value={selectedCompanyId}
-                    onChange={setSelectedCompanyId}
-                    disabled={isSaving}
-                  >
-                    {companies.map(company => (
-                      <Option key={company.id} value={company.id}>
-                        {company.company_name}
-                      </Option>
-                    ))}
-                  </Select>
-                </div>
-              </div>
-
-              {renderCrossAnalysis()}
-
-              <div className="flex justify-end space-x-4 pt-6 border-t border-gray-200">
-                <Button
-                  onClick={() => {
-                    setCrossAnalysis([]);
-                    setExtractionResults([]);
-                    setProcessingStatus('idle');
-                    setProgress(0);
-                    setChunkProgress({ current: 0, total: 0, percent: 0, message: '' });
-                    setUploadedFiles([]);
-                    setLearningSessions([]);
-                    setSelectedCompanyId(null);
-                    setSelectedFields({});
-                    setEditingFields({});
-                    setActiveCategory('all');
-                    setSearchText('');
-                    setDetailVisible(false);
-                  }}
-                  disabled={isSaving}
-                >
-                  重新上传
-                </Button>
-                <Button
-                  type="primary"
-                  onClick={handleSaveToCompany}
-                  loading={isSaving}
-                  disabled={!selectedCompanyId || isSaving || Object.values(selectedFields).filter(v => v).length === 0}
-                  icon={<CheckCircle size={16} />}
-                >
-                  {isSaving ? '保存中...' : `确认保存 (${Object.values(selectedFields).filter(v => v).length}个字段)`}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {crossAnalysis.length === 0 && processingStatus === 'idle' && (
-            <div className="mt-12 pt-8 border-t border-gray-200">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">如何使用</h3>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="bg-white p-6 rounded-xl border border-gray-200">
-                  <div className="w-12 h-12 bg-purple-100 rounded-lg flex items-center justify-center text-purple-600 mb-4">
-                    <Upload size={24} />
-                  </div>
-                  <h4 className="font-semibold text-gray-900 mb-2">1. 批量上传</h4>
-                  <p className="text-gray-600 text-sm">上传多份投标文件（PDF或DOCX格式）</p>
-                </div>
-                <div className="bg-white p-6 rounded-xl border border-gray-200">
-                  <div className="w-12 h-12 bg-blue-100 rounded-lg flex items-center justify-center text-blue-600 mb-4">
-                    <Zap size={24} />
-                  </div>
-                  <h4 className="font-semibold text-gray-900 mb-2">2. AI智能提取</h4>
-                  <p className="text-gray-600 text-sm">AI识别键值对、表格和标题，智能分块分析</p>
-                </div>
-                <div className="bg-white p-6 rounded-xl border border-gray-200">
-                  <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center text-green-600 mb-4">
-                    <Building2 size={24} />
-                  </div>
-                  <h4 className="font-semibold text-gray-900 mb-2">3. 分类筛选保存</h4>
-                  <p className="text-gray-600 text-sm">按类别筛选、搜索字段，勾选后保存到公司信息库</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
-};
+}
 
-export default LearnBid;
+function inferAssetBindingValue(samples = []) {
+  const manualSample = samples.find((sample) => /手册|彩页|白皮书|说明书/.test(sample.sample_title || sample.raw_content || ''));
+  return manualSample?.sample_title || null;
+}
+
+function getConfidence(slot, samples) {
+  if (slot.slot_type === 'field') return samples.length >= 2 ? 'high' : 'medium';
+  if (slot.slot_type === 'fixed_asset') return samples.length >= 1 ? 'medium' : 'low';
+  if (samples.length >= 3) return 'high';
+  if (samples.length >= 1) return 'medium';
+  return 'low';
+}

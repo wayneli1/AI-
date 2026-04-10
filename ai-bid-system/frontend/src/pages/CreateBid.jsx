@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect } from 'antd';
 import {
   UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package
@@ -18,6 +18,7 @@ import {
   extractIndexedParagraphs,
   mergeBlanks
 } from '../utils/wordBlankFiller';
+import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
 
 export default function CreateBid() {
   const { user } = useAuth();
@@ -53,6 +54,10 @@ export default function CreateBid() {
   const [productTreeData, setProductTreeData] = useState([]);
   const [loadingProducts, setLoadingProducts] = useState(false);
   const [productCompanyName, setProductCompanyName] = useState('');
+
+  const [templateSlots, setTemplateSlots] = useState([]);
+  const [templateSlotAssets, setTemplateSlotAssets] = useState([]);
+  const [templateSlotSamples, setTemplateSlotSamples] = useState([]);
 
   const [isScanning, setIsScanning] = useState(false);
   const [isFilling, setIsFilling] = useState(false);
@@ -393,6 +398,71 @@ export default function CreateBid() {
     const debounceTimer = setTimeout(loadProductsForCompany, 500);
     return () => clearTimeout(debounceTimer);
   }, [productCompanyName, user]);
+
+  useEffect(() => {
+    const loadTemplateLearning = async () => {
+      if (!user) return;
+      try {
+        const [slotRes, assetRes, sampleRes] = await Promise.all([
+          supabase
+            .from('template_slots')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('sort_order', { ascending: true })
+            .order('created_at', { ascending: false }),
+          supabase
+            .from('template_slot_assets')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('enabled', true),
+          supabase
+            .from('template_slot_samples')
+            .select('*')
+            .eq('user_id', user.id)
+            .eq('is_selected', true)
+        ]);
+
+        if (!slotRes.error) setTemplateSlots(slotRes.data || []);
+        if (!assetRes.error) setTemplateSlotAssets(assetRes.data || []);
+        if (!sampleRes.error) setTemplateSlotSamples(sampleRes.data || []);
+      } catch (error) {
+        console.error('加载模板学习结果失败:', error);
+      }
+    };
+
+    loadTemplateLearning();
+  }, [user]);
+
+  const templateAssetsBySlotId = useMemo(() => {
+    const mapping = {};
+    templateSlotAssets.forEach((item) => {
+      mapping[item.slot_id] = item;
+    });
+    return mapping;
+  }, [templateSlotAssets]);
+
+  const selectedTemplateSamplesBySlotId = useMemo(() => {
+    const mapping = {};
+    templateSlotSamples.forEach((item) => {
+      if (!mapping[item.slot_id]) {
+        mapping[item.slot_id] = [];
+      }
+      mapping[item.slot_id].push(item);
+    });
+    return mapping;
+  }, [templateSlotSamples]);
+
+  const matchedTemplateSlots = useMemo(() => {
+    if (!scannedBlanks.length || !templateSlots.length) return {};
+    const mapping = {};
+    scannedBlanks.forEach((blank) => {
+      const match = matchSlotForBlank(blank, templateSlots, templateAssetsBySlotId, selectedTemplateSamplesBySlotId);
+      if (match) {
+        mapping[blank.id] = match;
+      }
+    });
+    return mapping;
+  }, [scannedBlanks, selectedTemplateSamplesBySlotId, templateAssetsBySlotId, templateSlots]);
 
   // 处理树选择变化
   const handleTreeSelectChange = useCallback((selectedValues) => {
@@ -812,6 +882,16 @@ export default function CreateBid() {
       console.log('🔍 selectedServiceManualIds长度:', selectedServiceManualIds.length);
       
       const structuredProfile = buildStructuredProfile(selectedCompany);
+      const uniqueMatchedSlots = [];
+      const matchedSlotIds = new Set();
+      Object.values(matchedTemplateSlots).forEach((match) => {
+        if (!match?.slot || matchedSlotIds.has(match.slot.id)) return;
+        matchedSlotIds.add(match.slot.id);
+        uniqueMatchedSlots.push(match);
+      });
+      const templateLearningPrompt = buildTemplateLearningPrompt(
+        uniqueMatchedSlots.filter((match) => match.asset?.standard_content || match.asset?.asset_binding_value)
+      );
       
       // 组装产品资产提示词
       let assetPrompt = '';
@@ -1032,6 +1112,7 @@ export default function CreateBid() {
 
       const enrichedContext = (structuredProfile ? structuredProfile + '\n' : '') 
         + (tenderContext || '') 
+        + (templateLearningPrompt ? `\n${templateLearningPrompt}` : '')
         + assetPrompt;
       
       console.log('🔍 [handleAutoFill] 调用AI填空API');
@@ -1124,6 +1205,14 @@ export default function CreateBid() {
         processedResult[blankId] = value;
         console.log(`🔍 空白 ${blankId} 最终值="${value.substring(0, 100)}..."`);
       }
+
+      Object.entries(matchedTemplateSlots).forEach(([blankId, match]) => {
+        if (processedResult[blankId]) return;
+        const standardContent = match?.asset?.standard_content?.trim();
+        if (standardContent && ['standard_library', 'asset_selection'].includes(match.slot.fill_strategy)) {
+          processedResult[blankId] = standardContent;
+        }
+      });
       
       console.log('🔍 processedResult 最终结果:', processedResult);
       console.log('🔍 processedResult 键:', Object.keys(processedResult));
@@ -1479,6 +1568,13 @@ export default function CreateBid() {
             {record.fieldHint || '未命名字段'}
             <span className="ml-2 text-[11px] text-gray-400">P{record.paraIndex} / 第{record.blankOrdinalInParagraph || 1}空</span>
           </div>
+          {matchedTemplateSlots[record.id]?.slot && (
+            <div className="mt-1">
+              <Tag color="purple" className="text-[10px]">
+                模板槽位：{matchedTemplateSlots[record.id].slot.slot_name}
+              </Tag>
+            </div>
+          )}
           <div className="mt-1 text-[11px] text-gray-500 break-all">{record.localContext || record.context}</div>
         </div>
       )
@@ -1727,6 +1823,12 @@ export default function CreateBid() {
                       treeDefaultExpandAll
                     />
                   </div>
+
+                  {Object.keys(matchedTemplateSlots).length > 0 && (
+                    <Tag color="purple" className="h-8 leading-7 px-3 rounded-lg">
+                      已匹配模板学习槽位 {Object.keys(matchedTemplateSlots).length} 项
+                    </Tag>
+                  )}
 
                   <div className="ml-auto shrink-0">
                     {!isReviewed ? (
