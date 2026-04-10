@@ -247,8 +247,55 @@ function buildLocalContext(text, start, end, marker = '【🎯】') {
   return `${prefix}${marker}${suffix}`.replace(/\s+/g, ' ').trim();
 }
 
+function normalizeBlankContextKey(value = '') {
+  return String(value)
+    .replace(/【🎯】/g, '')
+    .replace(/[\s：:（）()【】[]，,。.;；、_-]+/g, '')
+    .toLowerCase();
+}
+
+function findNearestFieldLabel(text = '', marker = '') {
+  const combined = `${text || ''}`;
+  if (!combined.trim()) return '';
+
+  const markerIndex = marker ? combined.indexOf(marker) : -1;
+  const cursor = markerIndex >= 0 ? markerIndex : combined.length;
+  const before = combined.slice(0, cursor);
+  const after = combined.slice(cursor + (marker ? marker.length : 0));
+
+  const colonMatches = [...before.matchAll(/([\u4e00-\u9fa5A-Za-z0-9（）()/·-]{1,30})[：:]\s*$/g)];
+  if (colonMatches.length > 0) {
+    return colonMatches[colonMatches.length - 1][1].trim();
+  }
+
+  const bracketTailMatches = [...before.matchAll(/[（(]\s*([^（）()]{1,30}(?:名称|姓名|职务|性别|身份证号码|年龄|单位|法定代表人|被授权人|委托代理人|授权代表|项目))\s*[)）]\s*$/g)];
+  if (bracketTailMatches.length > 0) {
+    return bracketTailMatches[bracketTailMatches.length - 1][1].trim();
+  }
+
+  const leadingSuffixMatch = after.match(/^\s*([^\s，。；;（）()]{1,20}(?:项目|报价|单位名称|姓名|职务|性别|年龄|身份证号码))/);
+  if (leadingSuffixMatch) {
+    return leadingSuffixMatch[1].trim();
+  }
+
+  return '';
+}
+
+function normalizeFieldHintAlias(hint = '') {
+  const text = String(hint || '').trim();
+  if (!text) return '';
+  if (/报价人单位名称|投标人名称|投标单位|供应商名称|单位名称|公司名称|企业名称/.test(text)) return '投标人名称';
+  if (/法定代表人姓名|法人代表|法定代表人/.test(text)) return '法定代表人信息';
+  if (/被授权人姓名|委托代理人|授权代表|被授权人/.test(text)) return '被授权人信息';
+  if (/联系电话|联系方式|电话/.test(text)) return '电话';
+  if (/联系地址|通讯地址|地址/.test(text)) return '地址';
+  if (/身份证号码|身份证号/.test(text)) return '身份证号码';
+  return text;
+}
+
 function inferFieldHint(context, matchText = '') {
-  const text = `${context || ''} ${matchText || ''}`;
+  const nearestLabel = findNearestFieldLabel(context, matchText);
+  const text = `${nearestLabel || ''} ${context || ''} ${matchText || ''}`;
   const hintPatterns = [
     ['投标人名称', /投标人名称|投标单位|投标人(?!代表|签字)/],
     ['承诺人', /承诺人/],
@@ -270,9 +317,10 @@ function inferFieldHint(context, matchText = '') {
   ];
 
   for (const [hint, pattern] of hintPatterns) {
-    if (pattern.test(text)) return hint;
+    if (pattern.test(text)) return normalizeFieldHintAlias(hint);
   }
 
+  if (nearestLabel) return normalizeFieldHintAlias(nearestLabel);
   return '';
 }
 
@@ -352,6 +400,13 @@ function normalizeInlineFieldLabel(text = '') {
     .trim();
 }
 
+function isChainedFieldParagraph(text = '') {
+  const normalized = String(text || '');
+  const labels = ['姓名', '性别', '年龄', '职务', '身份证号码', '联系电话'];
+  const hitCount = labels.reduce((sum, label) => sum + (normalized.includes(`${label}：`) || normalized.includes(`${label}:`) ? 1 : 0), 0);
+  return hitCount >= 2;
+}
+
 function isLikelyInlineFieldLabel(text = '') {
   const label = normalizeInlineFieldLabel(text);
   if (!label || label.length < 2 || label.length > 120) return false;
@@ -377,6 +432,7 @@ function shouldAppendAfterAnchor(blank) {
   const context = `${blank.context || ''} ${blank.localContext || ''}`;
 
   if (/签字|签名/.test(hint) || /签字|签名/.test(context)) return false;
+  if (['underscore', 'brackets'].includes(blank.type)) return false;
 
   const appendableHints = [
     '投标人名称',
@@ -589,6 +645,7 @@ export function scanBlanksFromXml(xmlString) {
       // 识别纯文字贴图提示
       const imagePlaceholderPattern1 = /贴.*(?:复印件|扫描件|照片|图片)处/;
       const imagePlaceholderPattern2 = /(?:复印件|扫描件|证明文件)粘贴处/;
+      const imagePlaceholderPattern3 = /(?:法定代表人)?身份证(?:正面|反面|人像面|国徽面)?(?:复印件|扫描件|照片|图片)?(?:粘贴处|贴处)/;
       if ((imagePlaceholderPattern1.test(text) || imagePlaceholderPattern2.test(text)) &&
           !blanks.some(b => b.paraIndex === currentParaIndex && b.type === 'image_placeholder')) {
         blanks.push({
@@ -602,11 +659,46 @@ export function scanBlanksFromXml(xmlString) {
           fill_role: 'auto'
         });
       }
+      if (imagePlaceholderPattern3.test(text) && !blanks.some(b => b.paraIndex === currentParaIndex && b.type === 'image_placeholder')) {
+        blanks.push({
+          id: `blank_${++blankCounter}`,
+          context: '[图片插入位置：]【🎯】',
+          matchText: text,
+          index: 0,
+          type: 'image_placeholder',
+          confidence: 'high',
+          paraIndex: currentParaIndex,
+          fill_role: 'auto',
+          fieldHint: inferFieldHint(text, '')
+        });
+      }
 
       const underscorePattern = /_{3,}/g;
       while ((m = underscorePattern.exec(text)) !== null) {
         if (m[0].length >= 2) {
           blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
+        }
+      }
+
+      const leadingUnderscorePattern = /(_{2,})([^_\n]{1,30}(?:项目|报价|名称|姓名|职务|性别|年龄|身份证号码))/g;
+      while ((m = leadingUnderscorePattern.exec(text)) !== null) {
+        const alreadyExists = blanks.some(
+          (b) => b.paraIndex === currentParaIndex && b.matchText === m[1] && b.index === m.index
+        );
+        if (!alreadyExists) {
+          blanks.push({
+            id: `blank_${++blankCounter}`,
+            context: text,
+            matchText: m[1],
+            index: m.index,
+            textStart: m.index,
+            textEnd: m.index + m[1].length,
+            type: 'underscore',
+            confidence: 'high',
+            paraIndex: currentParaIndex,
+            fill_role: determineFillRole(text),
+            fieldHint: inferFieldHint(`${m[2]} ${text}`, m[1]) || m[2].trim()
+          });
         }
       }
 
@@ -690,11 +782,39 @@ export function scanBlanksFromXml(xmlString) {
 
       const bracketFieldPattern = /[（(]\s*([^（）()]{1,50}(?:名称|姓名|职务|性别|身份证号码|国家或地区|地址|电话|邮编|开户行|账号|代码|单位|投标人|供应商|法定代表人|被授权人|委托代理人|授权代表))\s*[)）]/g;
       while ((m = bracketFieldPattern.exec(text)) !== null) {
+        const prevText = text.slice(Math.max(0, m.index - 8), m.index);
+        if (/[_＿－—─﹣-]{2,}\s*$/.test(prevText)) {
+          continue;
+        }
         const alreadyExists = blanks.some(
           (b) => b.paraIndex === currentParaIndex && b.matchText === m[0] && b.index === m.index
         );
         if (!alreadyExists) {
           blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
+        }
+      }
+
+      const leadingBracketFieldPattern = /^\s*[（(]\s*([^（）()]{1,50}(?:名称|姓名|职务|性别|身份证号码|单位|投标人|供应商|法定代表人|被授权人|委托代理人|授权代表))\s*[)）]/;
+      const leadingBracketFieldMatch = text.match(leadingBracketFieldPattern);
+      if (leadingBracketFieldMatch) {
+        const leadingUnderscoreExists = /^\s*[_＿－—─﹣-]{2,}/.test(text);
+        const alreadyExists = blanks.some(
+          (b) => b.paraIndex === currentParaIndex && b.matchText === leadingBracketFieldMatch[0] && b.index === text.indexOf(leadingBracketFieldMatch[0])
+        );
+        if (!alreadyExists && !leadingUnderscoreExists) {
+          blanks.push({
+            id: `blank_${++blankCounter}`,
+            context: text,
+            matchText: leadingBracketFieldMatch[0],
+            index: text.indexOf(leadingBracketFieldMatch[0]),
+            textStart: text.indexOf(leadingBracketFieldMatch[0]),
+            textEnd: text.indexOf(leadingBracketFieldMatch[0]) + leadingBracketFieldMatch[0].length,
+            type: 'brackets',
+            confidence: 'high',
+            paraIndex: currentParaIndex,
+            fill_role: determineFillRole(text),
+            fieldHint: leadingBracketFieldMatch[1].trim()
+          });
         }
       }
 
@@ -848,6 +968,28 @@ function findBlankInFullText(fullText, blank) {
   return fullText.indexOf(blank.matchText);
 }
 
+function expandInlinePlaceholderRange(fullText, blankPos, blank) {
+  const matchText = blank.matchText || '';
+  let start = blankPos;
+  let end = blankPos + matchText.length;
+
+  if (blank.type === 'underscore') {
+    while (start > 0 && /[_＿]/.test(fullText[start - 1])) start -= 1;
+    while (end < fullText.length && /[_＿]/.test(fullText[end])) end += 1;
+  }
+
+  if (blank.type === 'dash') {
+    while (start > 0 && /[-－—─﹣]/.test(fullText[start - 1])) start -= 1;
+    while (end < fullText.length && /[-－—─﹣]/.test(fullText[end])) end += 1;
+  }
+
+  if (blank.type === 'keyword_space' && matchText) {
+    while (end < fullText.length && /[\s\u3000]/.test(fullText[end])) end += 1;
+  }
+
+  return { start, end };
+}
+
 function getOverlappingNodes(nodes, textStart, textEnd) {
   const result = [];
   for (const node of nodes) {
@@ -982,10 +1124,11 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
           });
         }
       } else {
-        const blankEnd = blankPos + matchText.length;
+        const expandedRange = expandInlinePlaceholderRange(fullText, blankPos, blank);
+        const blankEnd = expandedRange.end;
         const preserveAnchorText = blank.type === 'brackets' && /盖章|公章|签章/.test(blank.matchText || blank.context || '');
-        const replaceStart = preserveAnchorText ? blankEnd : blankPos;
-        const replaceEnd = preserveAnchorText ? blankEnd : blankEnd;
+        const replaceStart = preserveAnchorText ? blankEnd : expandedRange.start;
+        const replaceEnd = preserveAnchorText ? blankEnd : expandedRange.end;
         const inlineReplacement = (!isImage && !isDocUrl) ? escapeXml(value) : '';
 
         if (replaceTextRangeInNodes(nodes, replaceStart, replaceEnd, inlineReplacement)) {
@@ -1066,25 +1209,60 @@ export function extractIndexedParagraphs(xmlString) {
 
 export function mergeBlanks(regexBlanks, aiBlanks) {
   const merged = [...regexBlanks];
-  const existingKeys = new Set(regexBlanks.map(b => `${b.paraIndex}|${b.matchText}|${b.index ?? 0}`));
+  const regexRichParagraphs = new Set();
+  const regexCountByParagraph = new Map();
+  regexBlanks.forEach((blank) => {
+    const count = (regexCountByParagraph.get(blank.paraIndex) || 0) + 1;
+    regexCountByParagraph.set(blank.paraIndex, count);
+    if (count >= 2) {
+      regexRichParagraphs.add(blank.paraIndex);
+    }
+  });
+  const buildSignature = (blank) => {
+    const start = blank.textStart ?? blank.index ?? 0;
+    const end = blank.textEnd ?? (start + ((blank.matchText || '').length || 0));
+    const localKey = normalizeBlankContextKey(buildLocalContext(blank.context || '', start, end));
+    const hintKey = normalizeBlankContextKey(blank.fieldHint || '');
+    return `${blank.paraIndex}|${hintKey}|${localKey}`;
+  };
+
+  const isLikelyDuplicateBlank = (candidate) => merged.some((existing) => {
+    if (existing.paraIndex !== candidate.paraIndex) return false;
+    const existingStart = existing.textStart ?? existing.index ?? 0;
+    const candidateStart = candidate.textStart ?? candidate.index ?? 0;
+    const sameHint = normalizeBlankContextKey(existing.fieldHint || '')
+      && normalizeBlankContextKey(existing.fieldHint || '') === normalizeBlankContextKey(candidate.fieldHint || '');
+    const sameLocalContext = normalizeBlankContextKey(existing.localContext || '')
+      && normalizeBlankContextKey(existing.localContext || '') === normalizeBlankContextKey(candidate.localContext || '');
+    return sameLocalContext || (sameHint && Math.abs(existingStart - candidateStart) <= 3);
+  });
+
+  const existingKeys = new Set(regexBlanks.map(buildSignature));
   aiBlanks.forEach(aiBlank => {
+    if (regexRichParagraphs.has(aiBlank.paraIndex) || (isChainedFieldParagraph(aiBlank.context || '') && regexCountByParagraph.has(aiBlank.paraIndex))) {
+      return;
+    }
     const computedIndex = aiBlank.index ?? 
       (aiBlank.context && aiBlank.matchText 
         ? aiBlank.context.indexOf(aiBlank.matchText) 
         : 0);
-    const key = `${aiBlank.paraIndex}|${aiBlank.matchText}|${computedIndex}`;
-    if (!existingKeys.has(key)) {
-      const textStart = computedIndex >= 0 ? computedIndex : 0;
-      const textEnd = textStart + ((aiBlank.matchText || '').length || 0);
+    const textStart = computedIndex >= 0 ? computedIndex : 0;
+    const textEnd = textStart + ((aiBlank.matchText || '').length || 0);
+    const candidate = {
+      ...aiBlank,
+      id: `blank_ai_${merged.length + 1}`,
+      confidence: aiBlank.confidence || 'medium',
+      fill_role: aiBlank.fill_role || determineFillRole(aiBlank.context || '', aiBlank.type || ''),
+      index: textStart,
+      textStart,
+      textEnd,
+      fieldHint: aiBlank.field_hint || inferFieldHint(aiBlank.context || '', aiBlank.matchText || ''),
+      localContext: buildLocalContext(aiBlank.context || '', textStart, textEnd)
+    };
+    const key = buildSignature(candidate);
+    if (!existingKeys.has(key) && !isLikelyDuplicateBlank(candidate)) {
       merged.push({ 
-        ...aiBlank, 
-        id: `blank_ai_${merged.length + 1}`, 
-        confidence: aiBlank.confidence || 'medium',
-        fill_role: aiBlank.fill_role || determineFillRole(aiBlank.context || '', aiBlank.type || ''),
-        index: textStart,
-        textStart,
-        textEnd,
-        fieldHint: aiBlank.field_hint || inferFieldHint(aiBlank.context || '', aiBlank.matchText || '')
+        ...candidate
       });
       existingKeys.add(key);
     }
