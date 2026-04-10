@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, CheckCircle2, FileUp, PencilLine, ShieldCheck, Sparkles } from 'lucide-react';
+import { BookOpen, CheckCircle2, FileUp, PencilLine, Sparkles } from 'lucide-react';
 import {
   Alert,
   Button,
@@ -24,7 +24,6 @@ import { extractTextFromDocument } from '../utils/documentParser';
 import {
   buildLearningDraftFromSamples,
   DEFAULT_TEMPLATE_SLOTS,
-  detectAssetSampleFromDocument,
   extractFieldSamplesFromText,
   getUserFacingSlotTypeLabel,
   getSlotLearningMode,
@@ -86,6 +85,8 @@ export default function LearnBid() {
   const [savingManagedSlot, setSavingManagedSlot] = useState('');
   const [progress, setProgress] = useState({ percent: 0, text: '等待上传历史标书' });
 
+  const [companyOptions, setCompanyOptions] = useState([]);
+  const [selectedCompanyId, setSelectedCompanyId] = useState(null);
   const [uploadedFiles, setUploadedFiles] = useState([]);
   const [systemSlots, setSystemSlots] = useState([]);
   const [savedLearningRecords, setSavedLearningRecords] = useState([]);
@@ -96,12 +97,18 @@ export default function LearnBid() {
 
   const loadExistingSlots = useCallback(async () => {
     if (!user) return;
+    if (!selectedCompanyId) {
+      setSystemSlots(normalizeTemplateSlots(DEFAULT_TEMPLATE_SLOTS));
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const { data, error } = await supabase
         .from('template_slots')
         .select('*')
         .eq('user_id', user.id)
+        .eq('company_profile_id', selectedCompanyId)
         .eq('template_name', templateName)
         .order('sort_order', { ascending: true });
 
@@ -113,10 +120,15 @@ export default function LearnBid() {
     } finally {
       setLoading(false);
     }
-  }, [templateName, user]);
+  }, [selectedCompanyId, templateName, user]);
 
   const loadSavedLearningRecords = useCallback(async () => {
     if (!user) return;
+    if (!selectedCompanyId) {
+      setSavedLearningRecords([]);
+      setSavedLoading(false);
+      return;
+    }
     setSavedLoading(true);
     try {
       const [slotRes, assetRes, sampleRes] = await Promise.all([
@@ -124,16 +136,19 @@ export default function LearnBid() {
           .from('template_slots')
           .select('*')
           .eq('user_id', user.id)
+          .eq('company_profile_id', selectedCompanyId)
           .eq('template_name', templateName)
           .order('sort_order', { ascending: true }),
         supabase
           .from('template_slot_assets')
           .select('*')
-          .eq('user_id', user.id),
+          .eq('user_id', user.id)
+          .eq('company_profile_id', selectedCompanyId),
         supabase
           .from('template_slot_samples')
           .select('*')
           .eq('user_id', user.id)
+          .eq('company_profile_id', selectedCompanyId)
           .order('created_at', { ascending: false })
       ]);
 
@@ -148,26 +163,54 @@ export default function LearnBid() {
     } finally {
       setSavedLoading(false);
     }
-  }, [templateName, user]);
+  }, [selectedCompanyId, templateName, user]);
+
+  const loadCompanyOptions = useCallback(async () => {
+    if (!user) return;
+    try {
+      const { data, error } = await supabase
+        .from('company_profiles')
+        .select('id, company_name')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+      if (error) throw error;
+      const options = (data || []).map((item) => ({ label: item.company_name, value: item.id }));
+      setCompanyOptions(options);
+      setSelectedCompanyId((prev) => (prev && options.some((item) => item.value === prev) ? prev : options[0]?.value || null));
+    } catch (error) {
+      console.error('加载投标主体失败:', error);
+      setCompanyOptions([]);
+      setSelectedCompanyId(null);
+    }
+  }, [user]);
+
+  useEffect(() => {
+    loadCompanyOptions();
+  }, [loadCompanyOptions]);
 
   useEffect(() => {
     loadExistingSlots();
     loadSavedLearningRecords();
   }, [loadExistingSlots, loadSavedLearningRecords]);
 
+  useEffect(() => {
+    setUploadedFiles([]);
+    setLearningResult(null);
+    setProgress({ percent: 0, text: selectedCompanyId ? '等待上传历史标书' : '请先选择投标主体' });
+  }, [selectedCompanyId]);
+
   const summaryCards = useMemo(() => {
     if (!learningResult) return [];
     return [
       { label: '识别内容项', value: learningResult.summary.totalLearned },
       { label: '推荐正文', value: learningResult.summary.standardContentSlots },
-      { label: '固定字段', value: learningResult.summary.fieldSlots },
-      { label: '固定附件', value: learningResult.summary.fixedAssetSlots }
+      { label: '固定字段', value: learningResult.summary.fieldSlots }
     ];
   }, [learningResult]);
 
   const savedSummary = useMemo(() => ({
     enabledSlots: savedLearningRecords.filter((item) => item.asset?.enabled).length,
-    managedSlots: savedLearningRecords.filter((item) => item.asset?.standard_content || item.asset?.asset_binding_value).length,
+    managedSlots: savedLearningRecords.filter((item) => item.asset?.standard_content).length,
     selectedSamples: savedLearningRecords.reduce((sum, item) => sum + item.samples.filter((sample) => sample.is_selected).length, 0)
   }), [savedLearningRecords]);
 
@@ -217,29 +260,31 @@ export default function LearnBid() {
 
   const saveManagedRecord = async () => {
     const item = editorState.item;
-    if (!user || !item?.slot?.id) return;
+    if (!user || !selectedCompanyId || !item?.slot?.id) return;
 
     setSavingManagedSlot(item.slot.id);
     try {
       const assetPayload = {
         user_id: user.id,
+        company_profile_id: selectedCompanyId,
         slot_id: item.slot.id,
         standard_content: editorState.draft.standard_content.trim() || null,
         content_source: item.asset?.content_source || 'manual',
-        asset_binding_type: item.slot.slot_type === 'fixed_asset' ? 'product_asset' : null,
-        asset_binding_value: editorState.draft.asset_binding_value.trim() || null,
+        asset_binding_type: null,
+        asset_binding_value: null,
         enabled: editorState.draft.enabled
       };
 
       const { error: assetError } = await supabase
         .from('template_slot_assets')
-        .upsert(assetPayload, { onConflict: 'user_id,slot_id' });
+        .upsert(assetPayload, { onConflict: 'user_id,company_profile_id,slot_id' });
       if (assetError) throw assetError;
 
       const { error: clearError } = await supabase
         .from('template_slot_samples')
         .update({ is_selected: false })
         .eq('user_id', user.id)
+        .eq('company_profile_id', selectedCompanyId)
         .eq('slot_id', item.slot.id);
       if (clearError) throw clearError;
 
@@ -273,6 +318,11 @@ export default function LearnBid() {
   };
 
   const runLearning = async () => {
+    if (!selectedCompanyId) {
+      message.warning('请先选择投标主体');
+      return;
+    }
+
     if (!uploadedFiles.length) {
       message.warning('请先上传历史投标文件');
       return;
@@ -292,19 +342,11 @@ export default function LearnBid() {
 
         systemSlots.forEach((slot) => {
           const learningMode = getSlotLearningMode(slot);
-          if (learningMode === 'field_extract') {
-            const samples = extractFieldSamplesFromText(slot, text, file.name);
-            if (samples.length > 0) {
-              sampleBuckets.get(slot.slot_key)?.push(...samples);
-            }
-            return;
-          }
+          if (learningMode !== 'field_extract') return;
 
-          if (learningMode === 'asset_detect') {
-            const samples = detectAssetSampleFromDocument(slot, text, file.name);
-            if (samples.length > 0) {
-              sampleBuckets.get(slot.slot_key)?.push(...samples);
-            }
+          const samples = extractFieldSamplesFromText(slot, text, file.name);
+          if (samples.length > 0) {
+            sampleBuckets.get(slot.slot_key)?.push(...samples);
           }
         });
 
@@ -351,16 +393,7 @@ export default function LearnBid() {
           } catch (error) {
             console.warn(`AI 归纳 ${slot.slot_name} 失败，回退到本地规则:`, error);
           }
-        } else if (learningMode === 'asset_detect') {
-          assetDraft = {
-            standard_content: '',
-            content_source: 'sample_derived'
-          };
         }
-
-        const assetBindingValue = learningMode === 'asset_detect'
-          ? inferAssetBindingValue(samples)
-          : null;
 
         learned.push({
           slot,
@@ -371,8 +404,8 @@ export default function LearnBid() {
           selectedSampleIds: samples.slice(0, Math.min(samples.length, 2)).map((sample, sampleIndex) => createSampleId(slot.slot_key, sample, sampleIndex)),
           assetDraft: {
             ...assetDraft,
-            asset_binding_type: slot.slot_type === 'fixed_asset' ? 'product_asset' : null,
-            asset_binding_value: assetBindingValue
+            asset_binding_type: null,
+            asset_binding_value: null
           },
           confidence: getConfidence(slot, samples)
         });
@@ -381,8 +414,7 @@ export default function LearnBid() {
       const summary = {
         totalLearned: learned.length,
         standardContentSlots: learned.filter((item) => item.slot.slot_type === 'standard_content').length,
-        fieldSlots: learned.filter((item) => item.slot.slot_type === 'field').length,
-        fixedAssetSlots: learned.filter((item) => item.slot.slot_type === 'fixed_asset').length
+        fieldSlots: learned.filter((item) => item.slot.slot_type === 'field').length
       };
 
       setLearningResult({ learnedSlots: learned, summary });
@@ -398,7 +430,7 @@ export default function LearnBid() {
   };
 
   const confirmLearning = async () => {
-    if (!user || !learningResult?.learnedSlots?.length) {
+    if (!user || !selectedCompanyId || !learningResult?.learnedSlots?.length) {
       message.warning('当前没有可确认的学习结果');
       return;
     }
@@ -409,15 +441,20 @@ export default function LearnBid() {
         .from('template_slots')
         .select('*')
         .eq('user_id', user.id)
+        .eq('company_profile_id', selectedCompanyId)
         .eq('template_name', templateName);
       if (existingSlotsRes.error) throw existingSlotsRes.error;
 
-      let slotRows = normalizeTemplateSlots(existingSlotsRes.data || []);
+      let slotRows = existingSlotsRes.data || [];
       const slotMapByKey = new Map(slotRows.map((slot) => [slot.slot_key, slot]));
 
-      const missingSlots = normalizeTemplateSlots(DEFAULT_TEMPLATE_SLOTS)
+      const missingSlots = DEFAULT_TEMPLATE_SLOTS
         .filter((slot) => !slotMapByKey.has(slot.slot_key))
-        .map((slot) => ({ ...slot, user_id: user.id }));
+        .map((slot) => ({
+          ...slot,
+          user_id: user.id,
+          company_profile_id: selectedCompanyId
+        }));
 
       if (missingSlots.length > 0) {
         const insertRes = await supabase.from('template_slots').insert(missingSlots).select('*');
@@ -436,6 +473,7 @@ export default function LearnBid() {
         item.samples.forEach((sample) => {
           samplePayload.push({
             user_id: user.id,
+            company_profile_id: selectedCompanyId,
             slot_id: persistedSlot.id,
             source_filename: sample.source_filename,
             sample_title: sample.sample_title,
@@ -447,11 +485,12 @@ export default function LearnBid() {
 
         assetPayload.push({
           user_id: user.id,
+          company_profile_id: selectedCompanyId,
           slot_id: persistedSlot.id,
           standard_content: item.assetDraft.standard_content || null,
           content_source: item.assetDraft.content_source || 'sample_derived',
-          asset_binding_type: item.assetDraft.asset_binding_type || null,
-          asset_binding_value: item.assetDraft.asset_binding_value || null,
+          asset_binding_type: null,
+          asset_binding_value: null,
           enabled: true
         });
       });
@@ -460,6 +499,8 @@ export default function LearnBid() {
         const { error: sampleDeleteError } = await supabase
           .from('template_slot_samples')
           .delete()
+          .eq('user_id', user.id)
+          .eq('company_profile_id', selectedCompanyId)
           .in('slot_id', learningResult.learnedSlots.map((item) => slotMapByKey.get(item.slot.slot_key)?.id).filter(Boolean));
         if (sampleDeleteError) throw sampleDeleteError;
 
@@ -470,7 +511,7 @@ export default function LearnBid() {
       for (const asset of assetPayload) {
         const { error } = await supabase
           .from('template_slot_assets')
-          .upsert(asset, { onConflict: 'user_id,slot_id' });
+          .upsert(asset, { onConflict: 'user_id,company_profile_id,slot_id' });
         if (error) throw error;
       }
 
@@ -491,7 +532,7 @@ export default function LearnBid() {
           <BookOpen size={24} className="text-purple-600 mt-1" />
           <div>
             <h1 className="text-2xl font-bold text-gray-900">历史标书整理</h1>
-            <p className="text-gray-600 mt-1">上传几份历史投标文件，系统会自动整理出以后可直接复用的固定字段、正文内容和附件。</p>
+            <p className="text-gray-600 mt-1">上传几份历史投标文件，系统会自动整理出以后可直接复用的固定字段和正文内容。</p>
           </div>
         </div>
       </div>
@@ -501,12 +542,18 @@ export default function LearnBid() {
           <div className="flex flex-col gap-5">
             <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr_auto] gap-4 items-end">
               <div>
-                <div className="text-sm font-medium text-gray-700 mb-2">标准方案</div>
-                <Select value={templateName} options={[{ label: DEFAULT_TEMPLATE_NAME, value: DEFAULT_TEMPLATE_NAME }]} className="w-full" />
+                <div className="text-sm font-medium text-gray-700 mb-2">适用公司</div>
+                <Select
+                  value={selectedCompanyId}
+                  options={companyOptions}
+                  placeholder="先选择投标主体"
+                  className="w-full"
+                  onChange={setSelectedCompanyId}
+                />
               </div>
               <div>
                 <div className="text-sm font-medium text-gray-700 mb-2">历史投标文件</div>
-                <Button icon={<FileUp size={16} />} onClick={() => fileInputRef.current?.click()} className="w-full justify-start">
+                <Button icon={<FileUp size={16} />} disabled={!selectedCompanyId} onClick={() => fileInputRef.current?.click()} className="w-full justify-start">
                   {uploadedFiles.length ? `已选择 ${uploadedFiles.length} 份文件，点击重新上传` : '上传 3-5 份历史投标文件'}
                 </Button>
                 <input
@@ -518,7 +565,7 @@ export default function LearnBid() {
                   onChange={(e) => handleFilesSelect(Array.from(e.target.files || []))}
                 />
               </div>
-              <Button type="primary" loading={running} onClick={runLearning} className="min-w-[160px]">
+              <Button type="primary" loading={running} disabled={!selectedCompanyId} onClick={runLearning} className="min-w-[160px]">
                 开始整理
               </Button>
             </div>
@@ -526,8 +573,8 @@ export default function LearnBid() {
             <Alert
               type="info"
               showIcon
-              message={`上传历史文件后，系统会自动整理出可复用的固定字段、推荐正文和固定附件；每个内容项最多参考 ${learningConfig.maxSamplesPerSlot} 份样本。`}
-              description={learningConfig.aiEnabled ? '系统已启用 AI 归纳。请在确认前勾选最准确的参考样本并修正文案，后续系统会优先参考这些已确认样本。' : '当前未启用 AI 归纳，会先使用规则版摘要。建议先人工校对，再确认投入使用。'}
+              message={`先选择投标主体，再上传历史文件。系统会整理出这家公司的固定字段和推荐正文；每个内容项最多参考 ${learningConfig.maxSamplesPerSlot} 份样本。`}
+              description={learningConfig.aiEnabled ? '系统已启用 AI 归纳。请在确认前勾选最准确的参考样本并修正文案，后续系统会优先参考这些已确认样本。附件不在这里复用，仍由用户在生成标书时自行选择。' : '当前未启用 AI 归纳，会先使用规则版摘要。建议先人工校对，再确认投入使用。附件不在这里复用。'}
             />
 
             <div>
@@ -572,7 +619,7 @@ export default function LearnBid() {
               <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between mb-4">
                 <div>
                   <Typography.Title level={4} style={{ marginBottom: 0 }}>本次整理结果</Typography.Title>
-                  <Typography.Text type="secondary">系统已先给出建议，请逐项校对内容、附件和参考样本，确认后再正式投入使用。</Typography.Text>
+                  <Typography.Text type="secondary">系统已先给出建议，请逐项校对内容和参考样本，确认后再正式投入使用。</Typography.Text>
                 </div>
                 <Button type="primary" icon={<CheckCircle2 size={16} />} loading={confirming} onClick={confirmLearning}>
                   确认并投入使用
@@ -615,13 +662,6 @@ export default function LearnBid() {
                           </div>
                         )}
 
-                        {item.assetDraft.asset_binding_value && (
-                          <div className="text-sm text-gray-700 bg-indigo-50 rounded-lg p-3 border border-indigo-100 flex items-center gap-2">
-                            <ShieldCheck size={16} className="text-indigo-500" />
-                            推荐固定附件：{item.assetDraft.asset_binding_value}
-                          </div>
-                        )}
-
                         <div className="text-xs text-gray-500">
                           参考来源：{item.samples.slice(0, 3).map((sample) => sample.source_filename).join('，')}
                           {item.samples.length > 3 ? ' 等' : ''}
@@ -640,7 +680,7 @@ export default function LearnBid() {
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <Typography.Title level={4} style={{ marginBottom: 0 }}>已生效内容管理</Typography.Title>
-                <Typography.Text type="secondary">这里是已经投入使用的固定字段、正文和附件。你可以随时修正内容，并重新指定最准确的参考样本。</Typography.Text>
+                <Typography.Text type="secondary">这里是已经投入使用的固定字段和正文内容。你可以随时修正内容，并重新指定最准确的参考样本。</Typography.Text>
               </div>
               <Space wrap>
                 <Tag color="green">启用项 {savedSummary.enabledSlots}</Tag>
@@ -649,11 +689,11 @@ export default function LearnBid() {
               </Space>
             </div>
 
-            {!savedLearningRecords.some((item) => item.asset?.standard_content || item.asset?.asset_binding_value || item.samples.length > 0) ? (
+            {!savedLearningRecords.some((item) => item.asset?.standard_content || item.samples.length > 0) ? (
               <Empty description="还没有已生效内容。先完成一次整理并确认使用。" />
             ) : (
               <List
-                dataSource={savedLearningRecords.filter((item) => item.asset?.standard_content || item.asset?.asset_binding_value || item.samples.length > 0)}
+                dataSource={savedLearningRecords.filter((item) => item.asset?.standard_content || item.samples.length > 0)}
                 renderItem={(item) => (
                   <List.Item>
                     <Card size="small" className="w-full border border-gray-100">
@@ -683,13 +723,6 @@ export default function LearnBid() {
                           <div className="text-sm text-gray-700 whitespace-pre-wrap bg-gray-50 rounded-lg p-3 border border-gray-100">
                             {item.asset.standard_content.slice(0, 320)}
                             {item.asset.standard_content.length > 320 ? '...' : ''}
-                          </div>
-                        )}
-
-                        {item.asset?.asset_binding_value && (
-                          <div className="text-sm text-gray-700 bg-indigo-50 rounded-lg p-3 border border-indigo-100 flex items-center gap-2">
-                            <ShieldCheck size={16} className="text-indigo-500" />
-                            当前固定附件：{item.asset.asset_binding_value}
                           </div>
                         )}
 
@@ -732,17 +765,6 @@ export default function LearnBid() {
                 placeholder="把这项内容改成你希望系统长期复用的标准写法"
               />
             </div>
-
-            {editorState.item.slot.slot_type === 'fixed_asset' && (
-              <div>
-                <div className="text-sm font-medium text-gray-700 mb-2">固定附件名称</div>
-                <Input
-                  value={editorState.draft.asset_binding_value}
-                  onChange={(e) => updateEditorDraft({ asset_binding_value: e.target.value })}
-                  placeholder="例如：售后服务手册标准版"
-                />
-              </div>
-            )}
 
             {editorState.mode === 'saved' && (
               <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3 bg-gray-50">
@@ -793,11 +815,6 @@ export default function LearnBid() {
       </Modal>
     </div>
   );
-}
-
-function inferAssetBindingValue(samples = []) {
-  const manualSample = samples.find((sample) => /手册|彩页|白皮书|说明书/.test(sample.sample_title || sample.raw_content || ''));
-  return manualSample?.sample_title || null;
 }
 
 function getConfidence(slot, samples) {

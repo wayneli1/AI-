@@ -401,24 +401,33 @@ export default function CreateBid() {
 
   useEffect(() => {
     const loadTemplateLearning = async () => {
-      if (!user) return;
+      if (!user || !selectedCompany?.id) {
+        setTemplateSlots([]);
+        setTemplateSlotAssets([]);
+        setTemplateSlotSamples([]);
+        return;
+      }
+
       try {
         const [slotRes, assetRes, sampleRes] = await Promise.all([
           supabase
             .from('template_slots')
             .select('*')
             .eq('user_id', user.id)
+            .eq('company_profile_id', selectedCompany.id)
             .order('sort_order', { ascending: true })
             .order('created_at', { ascending: false }),
           supabase
             .from('template_slot_assets')
             .select('*')
             .eq('user_id', user.id)
+            .eq('company_profile_id', selectedCompany.id)
             .eq('enabled', true),
           supabase
             .from('template_slot_samples')
             .select('*')
             .eq('user_id', user.id)
+            .eq('company_profile_id', selectedCompany.id)
             .eq('is_selected', true)
         ]);
 
@@ -431,7 +440,7 @@ export default function CreateBid() {
     };
 
     loadTemplateLearning();
-  }, [user]);
+  }, [selectedCompany, user]);
 
   const templateAssetsBySlotId = useMemo(() => {
     const mapping = {};
@@ -1826,7 +1835,7 @@ export default function CreateBid() {
 
                   {Object.keys(matchedTemplateSlots).length > 0 && (
                     <Tag color="purple" className="h-8 leading-7 px-3 rounded-lg">
-                      已匹配模板学习槽位 {Object.keys(matchedTemplateSlots).length} 项
+                      已匹配历史整理内容 {Object.keys(matchedTemplateSlots).length} 项
                     </Tag>
                   )}
 

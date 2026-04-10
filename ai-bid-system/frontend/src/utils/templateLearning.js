@@ -102,19 +102,6 @@ export const DEFAULT_TEMPLATE_SLOTS = [
     sort_order: 32,
     match_keywords: ['质量保障', '质量保证', '质量控制', '质量管理措施'],
     notes: '企业标准版质量保障措施'
-  },
-  {
-    template_name: '默认模板',
-    slot_key: 'after_sales_manual',
-    slot_name: '售后服务手册',
-    chapter_path: '附件 / 服务手册',
-    slot_type: 'fixed_asset',
-    fill_strategy: 'asset_selection',
-    learning_mode: 'asset_detect',
-    required: false,
-    sort_order: 40,
-    match_keywords: ['售后服务手册', '服务手册', '售后手册', '手册'],
-    notes: '绑定固定手册资产'
   }
 ];
 
@@ -201,10 +188,12 @@ export const buildSlotMatcherText = (blank = {}) => normalizeLearningText([
 
 const normalizeMatcherToken = (value = '') => String(value)
   .toLowerCase()
-  .replace(/[\s/()（）【】\[\]{}:：,，.。;；、_-]+/g, '');
+  .replace(/[\s/()（）【】{}:：,，.。;；、_-]+/g, '')
+  .replace(/\[|\]/g, '');
 
 const splitMatcherTerms = (value = '') => String(value)
-  .split(/[\/｜|()（）【】\[\]\n:：,，.。;；、_-]+/)
+  .replace(/\[|\]/g, ' ')
+  .split(/[/｜|()（）【】{}\n:：,，.。;；、_-]+/)
   .map((item) => item.trim())
   .filter((item) => item.length >= 2 && !/^\d+(?:\.\d+)*$/.test(item));
 
@@ -290,9 +279,6 @@ export const buildTemplateLearningPrompt = (matchedSlots = []) => {
     lines.push(`- ${header}`);
     if (asset?.standard_content) {
       lines.push(asset.standard_content);
-    }
-    if (asset?.asset_binding_type && asset?.asset_binding_value) {
-      lines.push(`固定附件绑定：${asset.asset_binding_type} - ${asset.asset_binding_value}`);
     }
   });
 
