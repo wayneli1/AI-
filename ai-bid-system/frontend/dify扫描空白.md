@@ -148,11 +148,11 @@ workflow:
             \ 格式（如 ```json ），**绝对不允许**有任何解释性废话。\n2. **原样提取**：`matchText` 必须是 `context`\
             \ 中完全一致的子字符串，连一个半角空格都不能多或少！\n3. **排除干扰**：忽略页码（如 `第 1 页`）、目录（如 `第一章.....1`）等非填写项。\n\
             4. \U0001F6D1 **绝对封杀日期提取**：绝对不要提取任何落款日期、签订日期（如 `____年__月__日` 或 `202_年_月_日`），将其视为普通文本直接放过！绝不允许出现在输出的\
-            \ JSON 中！\n\n# 输出格式规范\n返回一个 JSON 数组，结构如下：\n[\n  {\n    \"paraIndex\":\
+            \ JSON 中！\n\n# 输出格式规范\n输入的每个段落对象除了 `paraIndex` 和 `text` 外，可能还会带有 `suspect_reason`，表示这是本地规则怀疑漏扫的原因。你应把它当作辅助线索，但最终仍必须以段落文本内容本身为准。\n\n返回一个 JSON 数组，结构如下：\n[\n  {\n    \"paraIndex\":\
             \ 0, // 必须与输入的索引完全一致\n    \"context\": \"完整的段落文本内容\",\n    \"matchText\"\
             : \"精确匹配到的空白占位符原文\",\n    \"type\": \"空白类型（underscore / dash / brackets\
             \ / keyword_space / placeholder）\",\n    \"fill_role\": \"auto 或 manual\"\
-            , \n    \"confidence\": \"high\" // 识别置信度（high/medium/low）\n  }\n]\n\n\
+            , \n    \"confidence\": \"high\", // 识别置信度（high/medium/low）\n    \"field_hint\": \"可选，字段提示（如 投标人名称 / 国家或地区 / 职务）\"\n  }\n]\n\n\
             # 示例参考\n输入数据示例：\n[\n  { \"paraIndex\": 0, \"text\": \"投标人名称：_________\"\
             \ },\n  { \"paraIndex\": 1, \"text\": \"投标总报价：________元\" },\n  { \"paraIndex\"\
             : 2, \"text\": \"法定代表人：       \" },\n  { \"paraIndex\": 3, \"text\": \"\

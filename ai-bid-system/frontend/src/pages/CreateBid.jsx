@@ -1593,8 +1593,8 @@ export default function CreateBid() {
 
         <div className="flex-1 flex flex-col xl:flex-row overflow-hidden">
           {/* ========== 左侧：原文对照侧边栏 ========== */}
-          <div className="h-[42vh] xl:h-auto xl:w-[42vw] xl:max-w-[720px] bg-white border-b xl:border-b-0 xl:border-r border-gray-200 flex flex-col shrink-0">
-            <div className="p-3 border-b border-gray-100 bg-gray-50 shrink-0">
+<div className="h-[40vh] xl:h-auto xl:w-[48vw] xl:max-w-[900px] bg-white border-b xl:border-b-0 xl:border-r border-gray-200 flex flex-col shrink-0">
+              <div className="p-3 border-b border-gray-100 bg-gray-50 shrink-0">
               <h4 className="font-bold text-gray-700 text-sm flex items-center">
                 <Eye size={14} className="mr-2 text-indigo-500" />
                 原文对照
@@ -1628,11 +1628,11 @@ export default function CreateBid() {
                   <p className="text-xs text-gray-400">原文预览为空</p>
                 </div>
               )}
-              <div className="p-3">
+              <div className="p-2 xl:p-3">
                 <div
-                  ref={previewRef}
-                  className="docx-preview-host min-h-full overflow-auto rounded-xl bg-white shadow-sm"
-                />
+  ref={previewRef}
+  className="docx-preview-host min-h-full overflow-auto rounded-xl bg-white shadow-sm [&_.docx-wrapper]:!items-start [&_.docx-wrapper_section.docx]:!mx-auto [&_.docx-wrapper]:!p-2 md:[&_.docx-wrapper]:!p-4"
+/>
               </div>
             </div>
           </div>
@@ -1674,81 +1674,82 @@ export default function CreateBid() {
               />
             </div>
 
-            <div className="p-4 bg-white border-t border-gray-100 shrink-0 overflow-auto">
-              <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-center">
-                <span className="text-sm font-bold text-gray-700 shrink-0">投标主体：</span>
-                <div className="flex w-full min-w-0 lg:min-w-[280px] lg:max-w-md lg:flex-1 items-center shadow-sm rounded-lg overflow-hidden border border-indigo-200 bg-gray-50">
-                  <Input
-                    placeholder="输入公司名称"
-                    value={targetCompany}
-                     onChange={(e) => {
-                       setTargetCompany(e.target.value);
-                       setProductCompanyName(e.target.value);
-                     }}
-                    className="flex-1 border-none h-9 bg-transparent font-medium text-sm"
-                  />
-                  <Button
-                    type="text"
-                    icon={<Database size={14} />}
-                    onClick={fetchCompanyList}
-                    className="bg-indigo-100 text-indigo-700 h-9 px-3 rounded-none border-l border-indigo-200 font-medium text-xs shrink-0"
-                  >
-                    从库中选
-                  </Button>
-                </div>
-
-                <Button 
-                  type={tenderContext ? "primary" : "default"}
-                  ghost={!!tenderContext}
-                  icon={<FileText size={16} />} 
-                  onClick={() => setIsContextModalVisible(true)}
-                  className={`h-9 w-full lg:w-auto px-4 rounded-lg font-medium transition-colors shrink-0 ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-500'}`}
-                >
-                  {tenderContext ? '已补充招标上下文' : '📎 贴入招标原文 (推荐)'}
-                </Button>
-
-                {/* 产品资产选择器 */}
-                <div className="flex w-full lg:w-auto items-center shrink-0 min-w-0 lg:min-w-[260px]">
-                  <Package size={14} className="text-gray-500 mr-1" />
-                  <TreeSelect
-                    treeData={productTreeData}
-                     value={[...selectedProductIds, ...selectedServiceManualIds]}
-                     onChange={handleTreeSelectChange}
-                    treeCheckable={true}
-                    showCheckedStrategy={TreeSelect.SHOW_CHILD}
-                    placeholder="关联产品资质"
-                    loading={loadingProducts}
-                    disabled={!productCompanyName.trim() || loadingProducts}
-                    className="w-full min-w-0 lg:min-w-[240px]"
-                    dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
-                    allowClear
-                    treeDefaultExpandAll
-                  />
-                </div>
-
-                <div className="hidden lg:block flex-1 min-w-0" />
-
-                {!isReviewed ? (
-                  <Button
-                    type="primary"
-                    size="large"
-                    onClick={handleAutoFill}
-                    loading={isFilling}
-                    className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-11 w-full lg:w-auto font-bold border-0 px-8 shadow-md shrink-0"
-                  >
-                    AI 自动填写
-                  </Button>
-                ) : (
-                  <>
+            <div className="p-3 xl:p-4 bg-white border-t border-gray-100 shrink-0 overflow-auto">
+              <div className="flex flex-col gap-2.5 xl:gap-3">
+                <div className="flex flex-wrap items-center gap-2.5 xl:gap-3">
+                  <span className="text-sm font-bold text-gray-700 shrink-0">投标主体：</span>
+                  <div className="flex min-w-[260px] flex-1 max-w-[380px] items-center shadow-sm rounded-lg overflow-hidden border border-indigo-200 bg-gray-50">
+                    <Input
+                      placeholder="输入公司名称"
+                      value={targetCompany}
+                       onChange={(e) => {
+                          setTargetCompany(e.target.value);
+                          setProductCompanyName(e.target.value);
+                        }}
+                      className="flex-1 border-none h-8 xl:h-9 bg-transparent font-medium text-sm"
+                    />
                     <Button
-                      onClick={handleAutoFill}
-                      loading={isFilling}
-                      className="rounded-xl h-11 w-full lg:w-auto font-bold px-6 border-gray-300 text-gray-700 shrink-0"
+                      type="text"
+                      icon={<Database size={14} />}
+                      onClick={fetchCompanyList}
+                      className="bg-indigo-100 text-indigo-700 h-8 xl:h-9 px-2.5 xl:px-3 rounded-none border-l border-indigo-200 font-medium text-xs shrink-0"
                     >
-                      重新 AI 填写
+                      从库中选
                     </Button>
-                  </>
-                )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2.5 xl:gap-3">
+                  <Button 
+                    type={tenderContext ? "primary" : "default"}
+                    ghost={!!tenderContext}
+                    icon={<FileText size={16} />} 
+                    onClick={() => setIsContextModalVisible(true)}
+                    className={`h-8 xl:h-9 px-3 xl:px-4 rounded-lg font-medium transition-colors shrink-0 text-xs xl:text-sm ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-500'}`}
+                  >
+                    {tenderContext ? '已补充招标上下文' : '📎 贴入招标原文 (推荐)'}
+                  </Button>
+
+                  <div className="flex min-w-[220px] flex-1 max-w-[320px] items-center shrink-0">
+                    <Package size={14} className="text-gray-500 mr-1" />
+                    <TreeSelect
+                      treeData={productTreeData}
+                       value={[...selectedProductIds, ...selectedServiceManualIds]}
+                       onChange={handleTreeSelectChange}
+                      treeCheckable={true}
+                      showCheckedStrategy={TreeSelect.SHOW_CHILD}
+                      placeholder="关联产品资质"
+                      loading={loadingProducts}
+                      disabled={!productCompanyName.trim() || loadingProducts}
+                      className="w-full min-w-0"
+                      dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+                      allowClear
+                      treeDefaultExpandAll
+                    />
+                  </div>
+
+                  <div className="ml-auto shrink-0">
+                    {!isReviewed ? (
+                      <Button
+                        type="primary"
+                        size="large"
+                        onClick={handleAutoFill}
+                        loading={isFilling}
+                        className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-9 xl:h-11 font-bold border-0 px-5 xl:px-8 shadow-md shrink-0 text-xs xl:text-sm"
+                      >
+                        AI 自动填写
+                      </Button>
+                    ) : (
+                      <Button
+                        onClick={handleAutoFill}
+                        loading={isFilling}
+                        className="rounded-xl h-9 xl:h-11 font-bold px-4 xl:px-6 border-gray-300 text-gray-700 shrink-0 text-xs xl:text-sm"
+                      >
+                        重新 AI 填写
+                      </Button>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
           </div>

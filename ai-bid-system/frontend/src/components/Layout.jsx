@@ -1,5 +1,7 @@
-import React from 'react';
+import { useEffect, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
+import { Button } from 'antd';
+import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import Sidebar from './Sidebar';
 
 const pageTitles = {
@@ -17,13 +19,25 @@ const Layout = () => {
   const location = useLocation();
   const currentPath = location.pathname;
   const pageTitle = pageTitles[currentPath] || 'AI标书系统';
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  useEffect(() => {
+    const saved = window.localStorage.getItem('layout-sidebar-collapsed');
+    if (saved !== null) {
+      setSidebarCollapsed(saved === 'true');
+    }
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem('layout-sidebar-collapsed', String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
 
   return (
     <div className="flex h-screen bg-gray-50 text-gray-800">
-      <Sidebar />
+      <Sidebar collapsed={sidebarCollapsed} />
       <main className="flex-1 overflow-auto flex flex-col">
         {/* 页面标题栏 */}
-        <div className="bg-white border-b border-gray-100 px-8 py-4">
+        <div className="bg-white border-b border-gray-100 px-6 py-4">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-xl font-bold text-gray-900">{pageTitle}</h1>
@@ -32,7 +46,14 @@ const Layout = () => {
               </p>
             </div>
             <div className="flex items-center space-x-4">
-              {/* 可以添加全局操作按钮 */}
+              <Button
+                type="text"
+                icon={sidebarCollapsed ? <PanelLeftOpen size={18} /> : <PanelLeftClose size={18} />}
+                onClick={() => setSidebarCollapsed((prev) => !prev)}
+                className="text-gray-600 font-medium"
+              >
+                {sidebarCollapsed ? '展开导航' : '收起导航'}
+              </Button>
             </div>
           </div>
         </div>
