@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { BookOpen, CheckCircle2, FileUp, PencilLine, Sparkles } from 'lucide-react';
+import { BookOpen, Building2, CheckCircle2, FileUp, PencilLine, Sparkles } from 'lucide-react';
 import {
   Alert,
   Button,
@@ -11,11 +11,11 @@ import {
   message,
   Modal,
   Progress,
-  Select,
   Space,
   Spin,
   Switch,
   Tag,
+  Tabs,
   Typography
 } from 'antd';
 import { supabase } from '../lib/supabase';
@@ -94,6 +94,10 @@ export default function LearnBid() {
   const [editorState, setEditorState] = useState({ open: false, mode: 'preview', item: null, draft: createEditorDraft() });
 
   const learnedSlots = learningResult?.learnedSlots || [];
+  const currentCompany = useMemo(
+    () => companyOptions.find((item) => item.value === selectedCompanyId) || null,
+    [companyOptions, selectedCompanyId]
+  );
 
   const loadExistingSlots = useCallback(async () => {
     if (!user) return;
@@ -215,6 +219,20 @@ export default function LearnBid() {
   }), [savedLearningRecords]);
 
   const learningConfig = useMemo(() => getTemplateLearningContextConfig(), []);
+  const companyTabItems = useMemo(() => companyOptions.map((company) => ({
+    key: company.value,
+    label: (
+      <div className="flex min-w-[160px] items-center gap-3 py-1 pr-2">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100">
+          <Building2 size={16} />
+        </div>
+        <div className="min-w-0 text-left">
+          <div className="truncate text-sm font-semibold">{company.label}</div>
+          <div className="text-xs text-gray-500">独立整理空间</div>
+        </div>
+      </div>
+    )
+  })), [companyOptions]);
 
   const handleFilesSelect = async (files) => {
     setUploadedFiles(files);
@@ -526,72 +544,131 @@ export default function LearnBid() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="bg-white border-b border-gray-200 px-8 py-6">
-        <div className="flex items-start gap-3">
-          <BookOpen size={24} className="text-purple-600 mt-1" />
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">历史标书整理</h1>
-            <p className="text-gray-600 mt-1">上传几份历史投标文件，系统会自动整理出以后可直接复用的固定字段和正文内容。</p>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-indigo-50/40">
+      <div className="px-6 py-6 md:px-8 md:py-8">
+        <div className="rounded-[28px] border border-indigo-100 bg-gradient-to-r from-slate-900 via-indigo-950 to-violet-900 px-6 py-7 text-white shadow-[0_20px_60px_-24px_rgba(79,70,229,0.55)] md:px-8">
+          <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-3xl">
+              <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs text-white/90 backdrop-blur">
+                <BookOpen size={14} />
+                历史标书整理工作台
+              </div>
+              <h1 className="text-3xl font-semibold tracking-tight md:text-4xl">按公司沉淀可复用内容</h1>
+              <p className="mt-3 text-sm leading-6 text-white/75 md:text-base">
+                上传该公司的历史标书后，系统会自动整理固定字段和推荐正文。你只需要校对结果，后续新建标书时就会优先参考这些已确认内容。
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
+              <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 backdrop-blur">
+                <div className="text-xs text-white/60">当前公司</div>
+                <div className="mt-2 text-sm font-medium">{currentCompany?.label || '未选择'}</div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 backdrop-blur">
+                <div className="text-xs text-white/60">已生效内容</div>
+                <div className="mt-2 text-sm font-medium">{savedSummary.managedSlots} 项</div>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-white/10 px-4 py-3 backdrop-blur col-span-2 md:col-span-1">
+                <div className="text-xs text-white/60">已选参考</div>
+                <div className="mt-2 text-sm font-medium">{savedSummary.selectedSamples} 份</div>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="p-8 space-y-8">
-        <Card loading={loading} className="border border-gray-200">
-          <div className="flex flex-col gap-5">
-            <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr_auto] gap-4 items-end">
-              <div>
-                <div className="text-sm font-medium text-gray-700 mb-2">适用公司</div>
-                <Select
-                  value={selectedCompanyId}
-                  options={companyOptions}
-                  placeholder="先选择投标主体"
-                  className="w-full"
-                  onChange={setSelectedCompanyId}
-                />
-              </div>
-              <div>
-                <div className="text-sm font-medium text-gray-700 mb-2">历史投标文件</div>
-                <Button icon={<FileUp size={16} />} disabled={!selectedCompanyId} onClick={() => fileInputRef.current?.click()} className="w-full justify-start">
-                  {uploadedFiles.length ? `已选择 ${uploadedFiles.length} 份文件，点击重新上传` : '上传 3-5 份历史投标文件'}
-                </Button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  accept=".pdf,.docx"
-                  className="hidden"
-                  onChange={(e) => handleFilesSelect(Array.from(e.target.files || []))}
-                />
-              </div>
-              <Button type="primary" loading={running} disabled={!selectedCompanyId} onClick={runLearning} className="min-w-[160px]">
-                开始整理
-              </Button>
+        <div className="mt-6 space-y-8">
+          {companyOptions.length > 0 ? (
+            <div className="rounded-[24px] border border-gray-200/80 bg-white/90 p-2 shadow-sm backdrop-blur">
+              <Tabs
+                activeKey={selectedCompanyId || undefined}
+                items={companyTabItems}
+                onChange={setSelectedCompanyId}
+                tabBarGutter={8}
+              />
             </div>
+          ) : (
+            <Card className="border border-dashed border-indigo-200 bg-white/90 shadow-sm">
+              <Empty
+                description="还没有投标主体。先去公司信息库添加公司，历史标书整理才会按公司独立保存。"
+              />
+            </Card>
+          )}
 
-            <Alert
-              type="info"
-              showIcon
-              message={`先选择投标主体，再上传历史文件。系统会整理出这家公司的固定字段和推荐正文；每个内容项最多参考 ${learningConfig.maxSamplesPerSlot} 份样本。`}
-              description={learningConfig.aiEnabled ? '系统已启用 AI 归纳。请在确认前勾选最准确的参考样本并修正文案，后续系统会优先参考这些已确认样本。附件不在这里复用，仍由用户在生成标书时自行选择。' : '当前未启用 AI 归纳，会先使用规则版摘要。建议先人工校对，再确认投入使用。附件不在这里复用。'}
-            />
-
-            <div>
-              <div className="flex items-center justify-between mb-2 text-sm text-gray-600">
-                <span>{progress.text}</span>
-                <span>{progress.percent}%</span>
+          <Card loading={loading} className="overflow-hidden border border-gray-200/80 shadow-sm">
+            <div className="flex flex-col gap-6">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                <div>
+                  <div className="text-lg font-semibold text-gray-900">{currentCompany?.label || '请选择投标主体'}</div>
+                  <div className="mt-1 text-sm text-gray-500">当前工作区只会整理和展示该公司的历史标书内容，互不混淆。</div>
+                </div>
+                {currentCompany && <Tag color="purple" className="px-3 py-1 rounded-full">独立整理空间</Tag>}
               </div>
-              <Progress percent={progress.percent} status={running ? 'active' : 'normal'} />
+
+              <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+                <div className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50 to-white p-5">
+                  <div className="text-sm font-medium text-gray-700 mb-3">历史投标文件</div>
+                  <Button
+                    icon={<FileUp size={16} />}
+                    disabled={!selectedCompanyId}
+                    onClick={() => fileInputRef.current?.click()}
+                    className="h-11 w-full justify-start rounded-xl border-indigo-200 bg-white text-gray-700 shadow-sm"
+                  >
+                    {uploadedFiles.length ? `已选择 ${uploadedFiles.length} 份文件，点击重新上传` : '上传 3-5 份历史投标文件'}
+                  </Button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    accept=".pdf,.docx"
+                    className="hidden"
+                    onChange={(e) => handleFilesSelect(Array.from(e.target.files || []))}
+                  />
+
+                  {uploadedFiles.length > 0 ? (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {uploadedFiles.map((file) => <Tag key={`${file.name}-${file.size}`} className="rounded-full px-3 py-1">{file.name}</Tag>)}
+                    </div>
+                  ) : (
+                    <div className="mt-4 text-xs text-gray-500">建议上传 3-5 份同类项目历史标书，整理结果会更稳定。</div>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-5">
+                  <div className="text-sm font-medium text-gray-700">整理操作</div>
+                  <div className="mt-2 text-xs leading-6 text-gray-500">
+                    {learningConfig.aiEnabled
+                      ? '系统已启用 AI 归纳。整理完成后，请勾选最准确的参考样本并修正文案。'
+                      : '当前未启用 AI 归纳，会先使用规则版摘要，建议人工校对后再投入使用。'}
+                  </div>
+                  <Button
+                    type="primary"
+                    loading={running}
+                    disabled={!selectedCompanyId}
+                    onClick={runLearning}
+                    className="mt-5 h-11 w-full rounded-xl border-0 bg-indigo-600 shadow-md shadow-indigo-200"
+                  >
+                    开始整理
+                  </Button>
+                </div>
+              </div>
+
+              <Alert
+                type="info"
+                showIcon
+                className="rounded-2xl"
+                message={`系统会为 ${currentCompany?.label || '当前公司'} 整理固定字段和推荐正文；每个内容项最多参考 ${learningConfig.maxSamplesPerSlot} 份样本。`}
+                description="附件不在这里复用，仍由用户在生成标书时自行选择。"
+              />
+
+              <div className="rounded-2xl border border-gray-200 bg-white p-4">
+                <div className="mb-2 flex items-center justify-between text-sm text-gray-600">
+                  <span>{progress.text}</span>
+                  <span>{progress.percent}%</span>
+                </div>
+                <Progress percent={progress.percent} status={running ? 'active' : 'normal'} strokeColor="#4f46e5" />
+              </div>
             </div>
-
-            {uploadedFiles.length > 0 && (
-              <div className="text-sm text-gray-500 flex flex-wrap gap-2">
-                {uploadedFiles.map((file) => <Tag key={`${file.name}-${file.size}`}>{file.name}</Tag>)}
-              </div>
-            )}
-          </div>
-        </Card>
+          </Card>
 
         {!learningResult ? (
           <Card className="border border-gray-200">
@@ -675,7 +752,7 @@ export default function LearnBid() {
           </>
         )}
 
-        <Card className="border border-gray-200" loading={savedLoading}>
+          <Card className="border border-gray-200" loading={savedLoading}>
           <div className="flex flex-col gap-4">
             <div className="flex flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
               <div>
@@ -737,7 +814,8 @@ export default function LearnBid() {
               />
             )}
           </div>
-        </Card>
+          </Card>
+        </div>
       </div>
 
       <Modal
