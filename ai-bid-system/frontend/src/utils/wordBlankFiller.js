@@ -345,9 +345,27 @@ function shouldSkipEmptyCellLabel(label) {
   return nonReusablePatterns.some((pattern) => pattern.test(normalizedLabel));
 }
 
+function normalizeInlineFieldLabel(text = '') {
+  return String(text)
+    .replace(/^\s*\d+(?:\.\d+)*[.、]\s*/, '')
+    .replace(/[：:]\s*$/, '')
+    .trim();
+}
+
+function isLikelyInlineFieldLabel(text = '') {
+  const label = normalizeInlineFieldLabel(text);
+  if (!label || label.length < 2 || label.length > 120) return false;
+  if (/。|；|;|，|,/.test(label)) return false;
+  if (/复印件|原件|提供|详见|证明材料|证明文件|说明如下|如下所示|是否|要求|不得|应当|包括/.test(label)) return false;
+  return /(?:名称|姓名|单位|地址|电话|邮箱|邮编|账号|代码|编号|日期|期限|时间|内容|版本|型号|系统|平台|网关|软件|硬件|产品|服务|代表人|联系人|供应商|投标人|申请人)/.test(label)
+    || /[A-Za-z].*V\d+(?:\.\d+)?/i.test(label)
+    || /^[A-Za-z0-9（）()\-\u4e00-\u9fa5]+$/.test(label);
+}
+
 function isDocReferenceContext(text) {
   if (!text || typeof text !== 'string') return false;
-  return /服务手册|售后服务手册|技术方案|实施方案|产品说明书|白皮书|产品彩页|手册/.test(text);
+  return /服务手册|售后服务手册|技术方案|实施方案|产品说明书|白皮书|产品彩页|手册|系统|平台|网关|软件|硬件|产品|版本|V\d+(?:\.\d+)?/i.test(text)
+    || isLikelyInlineFieldLabel(text);
 }
 
 function isInlineBlankType(type) {
@@ -538,7 +556,7 @@ export function scanBlanksFromXml(xmlString) {
         }
       }
 
-      // 服务手册等文档引用位置经常只给两个下划线，例如：Coremail产品VIP级售后服务手册（20250923）：__
+      // 文档引用、产品名称等位置经常只给两个下划线，例如：Coremail XT电子邮件系统V6.0：__
       if (isDocReferenceContext(text)) {
         const shortUnderscorePattern = /_{2,}/g;
         while ((m = shortUnderscorePattern.exec(text)) !== null) {
@@ -577,6 +595,32 @@ export function scanBlanksFromXml(xmlString) {
         );
         if (!alreadyExists) {
           blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: spaceStr, index: spaceIndex, textStart: spaceIndex, textEnd: spaceIndex + spaceStr.length, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, spaceStr) });
+        }
+      }
+
+      // 识别“字段名：”或“产品名：”后面直接为空的场景，例如：单位名称： / Coremail XT电子邮件系统V6.0:
+      const colonEndPattern = /^\s*((?:\d+(?:\.\d+)*[.、]\s*)?[^：:\n]{2,120})([：:])\s*$/;
+      const colonEndMatch = text.match(colonEndPattern);
+      if (colonEndMatch && isLikelyInlineFieldLabel(colonEndMatch[1])) {
+        const colonIndex = text.lastIndexOf(colonEndMatch[2]);
+        const blankIndex = colonIndex + colonEndMatch[2].length;
+        const alreadyExists = blanks.some(
+          (b) => b.paraIndex === currentParaIndex && (b.index ?? -1) === blankIndex
+        );
+        if (!alreadyExists) {
+          blanks.push({
+            id: `blank_${++blankCounter}`,
+            context: text,
+            matchText: '',
+            index: blankIndex,
+            textStart: blankIndex,
+            textEnd: blankIndex,
+            type: 'keyword_space',
+            confidence: 'medium',
+            paraIndex: currentParaIndex,
+            fill_role: determineFillRole(text),
+            fieldHint: inferFieldHint(text, '') || normalizeInlineFieldLabel(colonEndMatch[1])
+          });
         }
       }
 
@@ -741,6 +785,9 @@ function rebuildParagraphXml(paragraphXml, nodes) {
 }
 
 function findBlankInFullText(fullText, blank) {
+  if (!blank.matchText) {
+    return Number.isInteger(blank.index) ? blank.index : -1;
+  }
   let searchFrom = Math.max(0, (blank.index || 0) - 5);
   let idx = fullText.indexOf(blank.matchText, searchFrom);
   if (idx !== -1) return idx;
