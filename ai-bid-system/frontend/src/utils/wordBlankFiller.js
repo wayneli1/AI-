@@ -225,10 +225,37 @@ function addRelationship(relsObj, target, type) {
 }
 
 const PX_TO_EMU = 914400 / 96;
+const CM_TO_EMU = 360000;
 function getImageDimensionsEmu(pxWidth, naturalW, naturalH) {
   const cx = Math.round(pxWidth * PX_TO_EMU);
   const ratio = naturalH / naturalW;
   return { cx, cy: Math.round(cx * ratio) };
+}
+
+function getCmDimensionsEmu(widthCm, heightCm) {
+  return {
+    cx: Math.round(widthCm * CM_TO_EMU),
+    cy: Math.round(heightCm * CM_TO_EMU)
+  };
+}
+
+function detectImageInsertType(blank = {}, imageUrl = '', naturalW = 0, naturalH = 0) {
+  const text = `${blank.context || ''} ${blank.markedContext || ''} ${imageUrl || ''}`.toLowerCase();
+  const isPortrait = naturalH > naturalW * 1.15;
+  if (/身份证|身份证正面|身份证反面|人像面|国徽面|法人身份证/.test(text)) return 'id_card';
+  if (/营业执照/.test(text)) return 'business_license';
+  if (/资质证书|证书|许可证|认证证书|检验报告|检测报告|iso|体系认证/.test(text)) return 'certificate';
+  if (isPortrait && /系统|网关|平台|软件|硬件|产品|v\d+(?:\.\d+)?|xt电子邮件系统|邮件安全卫士|coremail|cacter/i.test(text)) return 'certificate';
+  return 'generic';
+}
+
+function getImageSizeStrategy(type, naturalW, naturalH) {
+  const safeW = naturalW || 400;
+  const safeH = naturalH || 300;
+  if (type === 'id_card') return getCmDimensionsEmu(7.05, 5.07);
+  if (type === 'business_license') return getCmDimensionsEmu(14.65, 9.5);
+  if (type === 'certificate') return getCmDimensionsEmu(14.64, 20.63);
+  return getImageDimensionsEmu(220, safeW, safeH);
 }
 
 function loadImageNaturalSize(buffer) {
@@ -273,7 +300,7 @@ export function scanBlanksFromXml(xmlString) {
       // 识别纯文字贴图提示
       const imagePlaceholderPattern1 = /贴.*(?:复印件|扫描件|照片|图片)处/;
       const imagePlaceholderPattern2 = /(?:复印件|扫描件|证明文件)粘贴处/;
-      if ((imagePlaceholderPattern1.test(text) || imagePlaceholderPattern2.test(text)) &&
+    if ((imagePlaceholderPattern1.test(text) || imagePlaceholderPattern2.test(text)) &&
           !blanks.some(b => b.paraIndex === currentParaIndex && b.type === 'image_placeholder')) {
         blanks.push({
           id: `blank_${++blankCounter}`,
@@ -285,6 +312,25 @@ export function scanBlanksFromXml(xmlString) {
           confidence: 'high',
           paraIndex: currentParaIndex,
           fill_role: 'auto'
+        });
+      }
+
+      const colonEndPattern = /^\s*((?:\d+(?:\.\d+)*[.、]\s*)?[^：:\n]{2,120})([：:])\s*$/;
+      const colonEndMatch = text.match(colonEndPattern);
+      if (colonEndMatch) {
+        const colonIndex = text.lastIndexOf(colonEndMatch[2]);
+        blanks.push({
+          id: `blank_${++blankCounter}`,
+          context: text,
+          markedContext: `${text.slice(0, colonIndex + 1)}【🎯】`,
+          matchText: '',
+          index: colonIndex + 1,
+          textStart: colonIndex + 1,
+          textEnd: colonIndex + 1,
+          type: 'keyword_space',
+          confidence: 'medium',
+          paraIndex: currentParaIndex,
+          fill_role: determineFillRole(text)
         });
       }
 
@@ -369,7 +415,7 @@ export function scanBlanksFromXml(xmlString) {
     const cellInfo = cellInfoMap.get(blank.paraIndex);
     if (!cellInfo) continue;
 
-    const currentText = blank.context.replace(/[_－\-\s【🎯】]/g, '').trim();
+    const currentText = blank.context.replace('【🎯】', '').replace(/[_－\-\s]/g, '').trim();
     const chineseChars = (currentText.match(/[\u4e00-\u9fa5]/g) || []).length;
     
     if (chineseChars < 3) {
@@ -386,7 +432,7 @@ export function scanBlanksFromXml(xmlString) {
   }
 
   for (const cell of cellInfos) {
-    if (cell.cellText !== '' && !/^[\s　_－-]+$/.test(cell.cellText)) continue;
+    if (cell.cellText !== '' && !/^[\s\u3000_－-]+$/.test(cell.cellText)) continue;
     if (cell.rowIndex === 0) continue;
 
     let label = '';
@@ -454,8 +500,8 @@ function buildTextNodeMap(paragraphXml) {
       nodes.push({ fullMatch: m[0], openTag: '', text, closeTag: '', matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: true });
       offset += text.length;
     } else {
-      const text = m[3];
-      nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[4], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
+      const text = m[2] || '';
+      nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[3], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
       offset += text.length;
     }
   }
@@ -485,10 +531,27 @@ function rebuildParagraphXml(paragraphXml, nodes) {
 }
 
 function findBlankInFullText(fullText, blank) {
+  if (!blank.matchText) {
+    return Number.isInteger(blank.index) ? blank.index : -1;
+  }
   let searchFrom = Math.max(0, (blank.index || 0) - 5);
   let idx = fullText.indexOf(blank.matchText, searchFrom);
   if (idx !== -1) return idx;
   return fullText.indexOf(blank.matchText);
+}
+
+function getExpandedPlaceholderRange(fullText, start, blank) {
+  const matchText = blank.matchText || '';
+  let rangeStart = start;
+  let rangeEnd = start + matchText.length;
+  if (blank.type === 'underscore') {
+    while (rangeStart > 0 && /[_＿]/.test(fullText[rangeStart - 1])) rangeStart -= 1;
+    while (rangeEnd < fullText.length && /[_＿]/.test(fullText[rangeEnd])) rangeEnd += 1;
+  } else if (blank.type === 'dash') {
+    while (rangeStart > 0 && /[-－—─﹣]/.test(fullText[rangeStart - 1])) rangeStart -= 1;
+    while (rangeEnd < fullText.length && /[-－—─﹣]/.test(fullText[rangeEnd])) rangeEnd += 1;
+  }
+  return { start: rangeStart, end: rangeEnd };
 }
 
 function getOverlappingNodes(nodes, textStart, textEnd) {
@@ -498,6 +561,27 @@ function getOverlappingNodes(nodes, textStart, textEnd) {
     result.push(node);
   }
   return result;
+}
+
+function replaceTextRangeInNodes(nodes, textStart, textEnd, replacementText) {
+  let overlappingNodes = getOverlappingNodes(nodes, textStart, textEnd);
+  if (overlappingNodes.length === 0 && textStart === textEnd) {
+    const insertNode = nodes.find((node) => textStart >= node.textStart && textStart <= node.textEnd);
+    if (insertNode) overlappingNodes = [insertNode];
+  }
+  if (overlappingNodes.length === 0) return false;
+
+  const safeReplacement = replacementText ?? '';
+  for (let i = 0; i < overlappingNodes.length; i++) {
+    const node = overlappingNodes[i];
+    const sliceStart = Math.max(textStart, node.textStart) - node.textStart;
+    const sliceEnd = Math.min(textEnd, node.textEnd) - node.textStart;
+    const prefix = node.text.slice(0, sliceStart);
+    const suffix = node.text.slice(sliceEnd);
+    node._replaced = true;
+    node._newText = i === 0 ? prefix + safeReplacement + suffix : prefix + suffix;
+  }
+  return true;
 }
 
 export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap, hyperlinkRidMap = {}) {
@@ -549,10 +633,28 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
       let matchText = blank.matchText;
       
       const searchBlank = { ...blank, matchText };
-      const blankPos = findBlankInFullText(fullText, searchBlank);
+      let blankPos = findBlankInFullText(fullText, searchBlank);
+      if (blankPos === -1 && Number.isInteger(blank.index) && blank.index >= 0 && blank.index <= fullText.length) {
+        blankPos = blank.index;
+      }
       
       if (blankPos === -1 || blank.type === 'attachment') {
-        if (isImage) {
+        if (blank.type !== 'attachment' && replaceTextRangeInNodes(nodes, blank.index || fullText.length, blank.index || fullText.length, !isImage && !isDocUrl ? escapeXml(value) : '')) {
+          let tempParaXml = rebuildParagraphXml(paraXml, nodes);
+          if (isImage) {
+            const imgInfo = imageRidMap[blank.id];
+            newParaXml = tempParaXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
+          } else if (isDocUrl) {
+            const displayText = getDisplayTextFromUrl(value, blank.context);
+            if (hyperlinkRId) {
+              newParaXml = tempParaXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
+            } else {
+              newParaXml = tempParaXml;
+            }
+          } else {
+            newParaXml = tempParaXml;
+          }
+        } else if (isImage) {
           const imgInfo = imageRidMap[blank.id];
           newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
         } else if (isDocUrl) {
@@ -566,8 +668,8 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
           newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
         }
       } else {
-        const blankEnd = blankPos + matchText.length;
-        const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
+        const expandedRange = getExpandedPlaceholderRange(fullText, blankPos, blank);
+        const coveredNodes = getOverlappingNodes(nodes, expandedRange.start, expandedRange.end);
         if (coveredNodes.length > 0) {
           if (isImage) {
             const imgInfo = imageRidMap[blank.id];
@@ -588,10 +690,7 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
               newParaXml = rebuildParagraphXml(paraXml, nodes);
             }
           } else {
-            for (let i = 0; i < coveredNodes.length; i++) {
-              coveredNodes[i]._replaced = true;
-              coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
-            }
+            replaceTextRangeInNodes(nodes, expandedRange.start, expandedRange.end, escapeXml(value));
             newParaXml = rebuildParagraphXml(paraXml, nodes);
           }
         }
@@ -624,7 +723,7 @@ export function extractIndexedParagraphs(xmlString) {
 
   for (const cell of cellInfos) {
     tableParaSet.add(cell.paraIndex);
-    if (cell.cellText === '' || /^[\s　_－-]+$/.test(cell.cellText)) {
+    if (cell.cellText === '' || /^[\s\u3000_－-]+$/.test(cell.cellText)) {
       if (cell.rowIndex === 0) continue;
       
       let label = '';
@@ -807,7 +906,7 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
     }
     
     if (val && isImageUrl(val)) {
-      imageEntries.push({ blankId: blank.id, url: val.trim() });
+      imageEntries.push({ blankId: blank.id, url: val.trim(), blank });
     }
     
     if (val && isDocumentUrl(val)) {
@@ -821,13 +920,9 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
   if (imageEntries.length > 0) {
     const results = await Promise.allSettled(
       imageEntries.map(async (entry) => {
-        try {
-          const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
-          const { w, h } = await loadImageNaturalSize(buffer);
-          return { ...entry, buffer, mime, naturalW: w, naturalH: h };
-        } catch (error) {
-          throw error;
-        }
+        const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
+        const { w, h } = await loadImageNaturalSize(buffer);
+        return { ...entry, buffer, mime, naturalW: w, naturalH: h };
       })
     );
     for (const r of results) {
@@ -864,8 +959,8 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
       const target = `media/injected_${i + 1}.${ext}`;
       zip.file(mediaFileName, img.buffer);
       const rId = addRelationship(relsObj, target, IMAGE_REL_TYPE);
-      const TARGET_PX = 160;
-      const { cx, cy } = getImageDimensionsEmu(TARGET_PX, img.naturalW, img.naturalH);
+      const imageType = detectImageInsertType(img.blank, img.url, img.naturalW, img.naturalH);
+      const { cx, cy } = getImageSizeStrategy(imageType, img.naturalW, img.naturalH);
       imageRidMap[img.blankId] = { rId, cxEmu: cx, cyEmu: cy };
     }
     zip.file(RELS_PATH, relsObj.xml);

@@ -1,13 +1,13 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect } from 'antd';
+import { Alert, Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect } from 'antd';
 import {
-  UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package
+  UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package, ShieldCheck, TriangleAlert
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import { useSearchParams } from 'react-router-dom';
 import { renderAsync } from 'docx-preview';
 
-import { fillDocumentBlanks, scanBlanksWithAI } from '../utils/difyWorkflow';
+import { fillDocumentBlanks, reviewFilledBlanksWithAI, scanBlanksWithAI } from '../utils/difyWorkflow';
 import { extractTextFromDocument } from '../utils/documentParser';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
@@ -19,6 +19,166 @@ import {
   mergeBlanks
 } from '../utils/wordBlankFiller';
 import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
+
+const normalizeAuditText = (value = '') => String(value || '').replace(/\s+/g, '').trim().toLowerCase();
+
+const deriveAuditFieldHint = (blank) => {
+  const rawHint = String(blank?.fieldHint || '').trim();
+  const localContext = String(blank?.localContext || blank?.context || '');
+  const marker = '【🎯】';
+  const markerIndex = localContext.indexOf(marker);
+  const before = markerIndex >= 0 ? localContext.slice(0, markerIndex) : localContext;
+  const after = markerIndex >= 0 ? localContext.slice(markerIndex + marker.length) : '';
+
+  const lastColonMatch = before.match(/([^：:，。,；;（）()\n]{1,24})[：:]\s*$/);
+  if (lastColonMatch?.[1]) {
+    return lastColonMatch[1].trim();
+  }
+
+  const nearestBefore = [...before.matchAll(/(单位名称|投标人名称|供应商名称|报价人单位名称|法定代表人姓名|法定代表人|被授权人姓名|被授权人|委托代理人|授权代表|姓名|性别|年龄|职务|身份证号码|身份证号|联系电话|电子邮箱|开户地址|联系地址|注册地址|详细通讯地址|地址|邮编|开户行|银行账号|统一社会信用代码|项目名称|项目|报价|版本号|型号)/g)];
+  const nearestAfter = after.match(/^(单位名称|投标人名称|供应商名称|报价人单位名称|法定代表人姓名|法定代表人|被授权人姓名|被授权人|委托代理人|授权代表|姓名|性别|年龄|职务|身份证号码|身份证号|联系电话|电子邮箱|开户地址|联系地址|注册地址|详细通讯地址|地址|邮编|开户行|银行账号|统一社会信用代码|项目名称|项目|报价|版本号|型号)/);
+
+  const candidate = nearestAfter?.[1] || nearestBefore.at(-1)?.[1] || rawHint;
+  if (/开户地址|联系地址|注册地址|详细通讯地址/.test(candidate)) return '地址';
+  if (/报价人单位名称|投标人名称|供应商名称|单位名称|公司名称/.test(candidate)) return '投标人名称';
+  if (/法定代表人姓名|法定代表人/.test(candidate)) return '法定代表人信息';
+  if (/被授权人姓名|被授权人|委托代理人|授权代表/.test(candidate)) return '被授权人信息';
+  if (/身份证号码|身份证号/.test(candidate)) return '身份证号码';
+  if (/联系电话/.test(candidate)) return '电话';
+  if (/电子邮箱/.test(candidate)) return '邮箱';
+  return candidate;
+};
+
+const getRuleSuggestion = (blank, company) => {
+  if (!blank || !company) return '';
+  const hint = deriveAuditFieldHint(blank);
+  if (/投标人名称|单位名称|公司名称/.test(hint)) return company.company_name || '';
+  if (/法定代表人信息|法定代表人姓名|姓名/.test(hint)) return company.legal_rep_name || '';
+  if (/被授权人信息|委托代理人|授权代表/.test(hint)) return company.legal_rep_name || '';
+  if (/性别/.test(hint)) return company.gender || '';
+  if (/职务/.test(hint)) return company.position || '';
+  if (/身份证号码|身份证号/.test(hint)) return company.id_number || '';
+  if (/电话|联系电话|联系方式/.test(hint)) return company.phone || '';
+  if (/邮箱|电子邮箱/.test(hint)) return company.email || '';
+  if (/地址|联系地址|通讯地址/.test(hint)) return company.address || '';
+  if (/统一社会信用代码|信用代码/.test(hint)) return company.uscc || '';
+  return '';
+};
+
+const validateFilledBlanksWithRules = (blanks = [], values = {}, company = null) => {
+  const results = {};
+
+  blanks.forEach((blank) => {
+    const value = String(values[blank.id] || '').trim();
+    if (!value) return;
+
+    const hint = deriveAuditFieldHint(blank);
+    const normalizedValue = normalizeAuditText(value);
+    const normalizedCompanyName = normalizeAuditText(company?.company_name || '');
+    const result = {
+      blankId: blank.id,
+      fieldHint: hint || '未命名字段',
+      status: 'pass',
+      source: 'rule',
+      reason: '规则校验通过',
+      suggestedValue: ''
+    };
+
+    const companyLikeInWrongField = normalizedCompanyName && normalizedValue === normalizedCompanyName && !/投标人名称|单位名称|公司名称/.test(hint);
+    if (companyLikeInWrongField) {
+      result.status = 'error';
+      result.reason = `${hint || '该字段'} 不应填写为公司名称`;
+      result.suggestedValue = getRuleSuggestion(blank, company);
+      results[blank.id] = result;
+      return;
+    }
+
+    if (/性别/.test(hint)) {
+      if (!['男', '女'].includes(value)) {
+        result.status = 'error';
+        result.reason = '性别字段只能填写“男”或“女”';
+        result.suggestedValue = company?.gender || '';
+      }
+    } else if (/年龄/.test(hint)) {
+      if (!/^\d{1,3}$/.test(value)) {
+        result.status = 'warning';
+        result.reason = '年龄字段建议填写纯数字';
+      }
+    } else if (/邮箱|电子邮箱/.test(hint)) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
+        result.status = 'error';
+        result.reason = '邮箱格式不正确';
+        result.suggestedValue = company?.email || '';
+      }
+    } else if (/身份证号码|身份证号/.test(hint)) {
+      if (!/^(\d{17}[\dXx]|\d{15})$/.test(value)) {
+        result.status = 'error';
+        result.reason = '身份证号码格式不正确';
+        result.suggestedValue = company?.id_number || '';
+      }
+    } else if (/电话|联系电话|联系方式/.test(hint)) {
+      if (!/^[\d\-+()\s]{7,20}$/.test(value)) {
+        result.status = 'warning';
+        result.reason = '联系电话格式看起来不合理';
+        result.suggestedValue = company?.phone || '';
+      }
+    } else if (/统一社会信用代码|信用代码/.test(hint)) {
+      if (!/^[0-9A-Z]{18}$/.test(value.toUpperCase())) {
+        result.status = 'error';
+        result.reason = '统一社会信用代码格式不正确';
+        result.suggestedValue = company?.uscc || '';
+      }
+    } else if (/投标人名称|单位名称|公司名称/.test(hint)) {
+      if (normalizedCompanyName && normalizedValue !== normalizedCompanyName) {
+        result.status = 'warning';
+        result.reason = '单位名称与当前投标主体档案不一致';
+        result.suggestedValue = company?.company_name || '';
+      }
+    } else if (/法定代表人信息|法定代表人姓名|姓名/.test(hint)) {
+      const normalizedLegalRep = normalizeAuditText(company?.legal_rep_name || '');
+      if (normalizedLegalRep && normalizedValue !== normalizedLegalRep) {
+        result.status = 'warning';
+        result.reason = '姓名与当前投标主体档案中的法定代表人不一致';
+        result.suggestedValue = company?.legal_rep_name || '';
+      }
+    }
+
+    results[blank.id] = result;
+  });
+
+  return results;
+};
+
+const mergeAuditResults = (blanks = [], values = {}, ruleResults = {}, aiResults = {}) => {
+  return blanks
+    .filter((blank) => values[blank.id])
+    .map((blank) => {
+      const ruleResult = ruleResults[blank.id] || null;
+      const aiResult = aiResults[blank.id] || null;
+      let status = 'pass';
+      if (ruleResult?.status === 'error' || aiResult?.status === 'error') status = 'error';
+      else if (ruleResult?.status === 'warning' || aiResult?.status === 'warning') status = 'warning';
+
+      return {
+        blankId: blank.id,
+        fieldHint: deriveAuditFieldHint(blank) || blank.fieldHint || '未命名字段',
+        localContext: blank.localContext || blank.context || '',
+        value: values[blank.id] || '',
+        status,
+        ruleResult,
+        aiResult,
+        suggestedValue: aiResult?.suggestedValue || ruleResult?.suggestedValue || ''
+      };
+    });
+};
+
+const summarizeAuditResults = (results = []) => ({
+  total: results.length,
+  pass: results.filter((item) => item.status === 'pass').length,
+  warning: results.filter((item) => item.status === 'warning').length,
+  error: results.filter((item) => item.status === 'error').length,
+  suggested: results.filter((item) => item.suggestedValue).length
+});
 
 export default function CreateBid() {
   const { user } = useAuth();
@@ -61,8 +221,10 @@ export default function CreateBid() {
 
   const [isScanning, setIsScanning] = useState(false);
   const [isFilling, setIsFilling] = useState(false);
+  const [isAuditing, setIsAuditing] = useState(false);
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const [imageUrlMap, setImageUrlMap] = useState({}); // 保存占位符到URL的映射
+  const [auditResults, setAuditResults] = useState([]);
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -193,6 +355,7 @@ export default function CreateBid() {
         if (data.analysis_report) {
           const edits = JSON.parse(data.analysis_report);
           setManualEdits(edits);
+          setAuditResults([]);
           setStep('review'); 
         } else if (data.framework_content) {
           setStep('scan'); 
@@ -472,6 +635,9 @@ export default function CreateBid() {
     });
     return mapping;
   }, [scannedBlanks, selectedTemplateSamplesBySlotId, templateAssetsBySlotId, templateSlots]);
+
+  const auditSummary = useMemo(() => summarizeAuditResults(auditResults), [auditResults]);
+  const auditResultsById = useMemo(() => Object.fromEntries(auditResults.map((item) => [item.blankId, item])), [auditResults]);
 
   // 处理树选择变化
   const handleTreeSelectChange = useCallback((selectedValues) => {
@@ -794,6 +960,7 @@ export default function CreateBid() {
 
     setOriginalFile(file);
     setIsScanning(true);
+    setAuditResults([]);
 
     try {
       message.loading({ content: '正在扫描投标文件中的空白位置...', key: 'scan', duration: 0 });
@@ -832,6 +999,7 @@ export default function CreateBid() {
       const initialEdits = {};
       mergedBlanks.forEach(b => { initialEdits[b.id] = ''; });
       setManualEdits(initialEdits);
+      setAuditResults([]);
 
       const fileExtension = '.' + ext;
       const safeFileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${fileExtension}`;
@@ -879,6 +1047,7 @@ export default function CreateBid() {
     }
 
     setIsFilling(true);
+    setIsAuditing(false);
     try {
       message.loading({ content: `正在调用 AI 分析并填写 ${scannedBlanks.length} 处空白...`, key: 'fill', duration: 0 });
 
@@ -1242,6 +1411,17 @@ export default function CreateBid() {
       }
       setManualEdits(merged);
 
+      setIsAuditing(true);
+      message.loading({ content: 'AI 填写完成，正在执行智能审核...', key: 'audit', duration: 0 });
+      const reviewedResults = await runSmartAudit(merged, enrichedContext);
+      setAuditResults(reviewedResults);
+      const reviewedSummary = summarizeAuditResults(reviewedResults);
+      message.success({
+        content: `智能审核完成：通过 ${reviewedSummary.pass} 项，可疑 ${reviewedSummary.warning} 项，高风险 ${reviewedSummary.error} 项`,
+        key: 'audit',
+        duration: 4
+      });
+
       if (currentProjectId) {
         await supabase.from('bidding_projects').update({
           analysis_report: JSON.stringify(merged),
@@ -1253,10 +1433,12 @@ export default function CreateBid() {
       setStep('review');
     } catch (err) {
       console.error('AI 填写失败:', err);
+      message.destroy('audit');
       message.error({ content: 'AI 填写失败: ' + err.message, key: 'fill' });
       setStep('scan');
     } finally {
       setIsFilling(false);
+      setIsAuditing(false);
     }
   };
 
@@ -1549,9 +1731,47 @@ export default function CreateBid() {
     return text;
   };
 
+  const runSmartAudit = useCallback(async (filledValues, enrichedContext) => {
+    const ruleResults = validateFilledBlanksWithRules(scannedBlanks, filledValues, selectedCompany);
+    const reviewCandidates = scannedBlanks.filter((blank) => {
+      const value = String(filledValues[blank.id] || '').trim();
+      if (!value) return false;
+      if (/^https?:\/\//i.test(value)) return false;
+      if (blank.type === 'image_placeholder' || blank.type === 'attachment') return false;
+      return true;
+    });
+
+    const aiResults = {};
+    if (reviewCandidates.length > 0) {
+      try {
+        const auditCandidates = reviewCandidates.map((blank) => ({
+          ...blank,
+          auditFieldHint: deriveAuditFieldHint(blank)
+        }));
+        const reviewed = await reviewFilledBlanksWithAI(auditCandidates, filledValues, selectedCompany || {}, tenderContext || enrichedContext || '');
+        Object.assign(aiResults, reviewed);
+      } catch (error) {
+        console.warn('智能审核 AI 复核失败，保留规则校验结果:', error);
+      }
+    }
+
+    return mergeAuditResults(scannedBlanks, filledValues, ruleResults, aiResults);
+  }, [scannedBlanks, selectedCompany, tenderContext]);
+
+  const handleApplyAuditSuggestion = useCallback((blankId, suggestedValue) => {
+    if (!suggestedValue) return;
+    setManualEdits((prev) => ({ ...prev, [blankId]: suggestedValue }));
+    setAuditResults((prev) => prev.map((item) => (
+      item.blankId === blankId
+        ? { ...item, value: suggestedValue, status: 'warning', ruleResult: item.ruleResult, aiResult: item.aiResult }
+        : item
+    )));
+    message.success('已采用智能审核建议');
+  }, []);
+
   const getStructuredFieldValue = (blank, company) => {
     if (!blank || !company) return '';
-    const hint = String(blank.fieldHint || '').trim();
+    const hint = deriveAuditFieldHint(blank);
     const localContext = String(blank.localContext || '');
 
     if (/投标人名称|单位名称|公司名称/.test(hint)) {
@@ -1639,11 +1859,11 @@ export default function CreateBid() {
     {
       title: '定位',
       key: 'locator',
-      width: 360,
+      width: 300,
       render: (_, record) => (
         <div className="leading-snug">
           <div className="text-xs font-medium text-gray-700">
-            {record.fieldHint || '未命名字段'}
+            {deriveAuditFieldHint(record) || record.fieldHint || '未命名字段'}
             <span className="ml-2 text-[11px] text-gray-400">P{record.paraIndex} / 第{record.blankOrdinalInParagraph || 1}空</span>
           </div>
           {/* 💡 核心：优先显示 markedContext，让你清清楚楚看到【🎯】到底指着谁！ */}
@@ -1652,8 +1872,31 @@ export default function CreateBid() {
       )
     },
     {
+      title: '智能审核',
+      key: 'audit',
+      width: 180,
+      render: (_, record) => {
+        const audit = auditResultsById[record.id];
+        if (!audit) return <span className="text-xs text-gray-400">待审核</span>;
+        const color = audit.status === 'error' ? 'red' : audit.status === 'warning' ? 'gold' : 'green';
+        const label = audit.status === 'error' ? '高风险' : audit.status === 'warning' ? '可疑' : '通过';
+        return (
+          <div className="space-y-1">
+            <Tag color={color}>{label}</Tag>
+            <div className="text-[11px] text-gray-500 leading-5">{audit.aiResult?.reason || audit.ruleResult?.reason || '智能审核通过'}</div>
+            {audit.suggestedValue && audit.suggestedValue !== (manualEdits[record.id] || '') && (
+              <Button type="link" size="small" className="px-0 text-[11px]" onClick={() => handleApplyAuditSuggestion(record.id, audit.suggestedValue)}>
+                采用建议
+              </Button>
+            )}
+          </div>
+        );
+      }
+    },
+    {
       title: 'AI 填写结果 / 手动修改',
       key: 'value',
+      width: 320,
       render: (_, record) => (
         <Input
           value={manualEdits[record.id] || ''}
@@ -1733,7 +1976,7 @@ export default function CreateBid() {
             <Button
               type="text"
               icon={<ArrowLeft size={18} />}
-                onClick={() => { setStep('upload'); setScannedBlanks([]); setManualEdits({}); setTenderContext(''); }}
+                onClick={() => { setStep('upload'); setScannedBlanks([]); setManualEdits({}); setTenderContext(''); setAuditResults([]); }}
               className="text-gray-600 font-medium"
             >
               重新上传
@@ -1820,6 +2063,51 @@ export default function CreateBid() {
                     : '点击任意行 ↔ 左右双向联动定位'}
                 </p>
               </div>
+
+              {isReviewed && (
+                <div className="mt-4 rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50 via-white to-emerald-50 p-4">
+                  <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                    <div>
+                      <div className="flex items-center gap-2 text-gray-800 font-semibold">
+                        <ShieldCheck size={16} className="text-indigo-600" />
+                        智能审核
+                        {isAuditing && <Tag color="processing">审核中</Tag>}
+                      </div>
+                      <div className="mt-1 text-xs leading-5 text-gray-500">
+                        已对填写结果执行规则校验 + AI 二次复核
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                      <div className="rounded-xl bg-white px-3 py-2 shadow-sm border border-gray-100">
+                        <div className="text-[11px] text-gray-500">已审核</div>
+                        <div className="mt-1 text-lg font-semibold text-gray-900">{auditSummary.total}</div>
+                      </div>
+                      <div className="rounded-xl bg-white px-3 py-2 shadow-sm border border-gray-100">
+                        <div className="text-[11px] text-gray-500">通过</div>
+                        <div className="mt-1 text-lg font-semibold text-emerald-600">{auditSummary.pass}</div>
+                      </div>
+                      <div className="rounded-xl bg-white px-3 py-2 shadow-sm border border-gray-100">
+                        <div className="text-[11px] text-gray-500">可疑</div>
+                        <div className="mt-1 text-lg font-semibold text-amber-500">{auditSummary.warning}</div>
+                      </div>
+                      <div className="rounded-xl bg-white px-3 py-2 shadow-sm border border-gray-100">
+                        <div className="text-[11px] text-gray-500">高风险</div>
+                        <div className="mt-1 text-lg font-semibold text-red-500">{auditSummary.error}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {auditSummary.total > 0 && (auditSummary.warning > 0 || auditSummary.error > 0) && (
+                    <Alert
+                      className="mt-4 rounded-xl"
+                      type={auditSummary.error > 0 ? 'warning' : 'info'}
+                      showIcon
+                      icon={<TriangleAlert size={16} />}
+                      message={`智能审核发现 ${auditSummary.error} 项高风险、${auditSummary.warning} 项可疑，建议优先查看表格中的“智能审核”列。`}
+                    />
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="flex-1 overflow-auto min-w-0">
@@ -1830,6 +2118,7 @@ export default function CreateBid() {
                 pagination={false}
                 size="middle"
                 className="blank-table"
+                scroll={{ x: 980 }}
                 onRow={(record) => ({
                   onClick: () => scrollToBlank(record.id),
                   className: 'cursor-pointer hover:bg-indigo-50/50 transition-colors'

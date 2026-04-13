@@ -4,32 +4,31 @@
 const DIFY_API_BASE = import.meta.env.VITE_DIFY_API_BASE || 'https://api.dify.ai/v1';
 const FILL_BLANK_API_KEY = import.meta.env.VITE_DIFY_FILL_BLANK_API_KEY;
 const SCAN_BLANK_API_KEY = import.meta.env.VITE_DIFY_SCAN_BLANK_API_KEY;
+const AUDIT_API_KEY = import.meta.env.VITE_DIFY_AUDIT_API_KEY;
 
-const buildMarkedContext = (blank) => {
-  if (blank.type === 'attachment') {
-    return `【🎯资质附件插入位置🎯】 ${blank.context}`;
+const parseDifyJsonOutput = (result = {}) => {
+  const outputStr = result.data?.outputs?.text || result.data?.outputs?.result;
+  if (!outputStr) return null;
+
+  let cleanStr = String(outputStr)
+    .replace(/<think[\s\S]*?<\/think>/gi, '')
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/g, '')
+    .trim();
+
+  try {
+    return JSON.parse(cleanStr);
+  } catch (error) {
+    const jsonMatch = cleanStr.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      try {
+        return JSON.parse(jsonMatch[0]);
+      } catch (nestedError) {
+        return null;
+      }
+    }
+    return null;
   }
-
-  if (blank.localContext) {
-    return blank.localContext;
-  }
-
-  const context = blank.context || '';
-  const start = Number.isInteger(blank.textStart) ? blank.textStart : (blank.index ?? 0);
-  const matchText = blank.matchText || '';
-  const end = Number.isInteger(blank.textEnd) ? blank.textEnd : start + matchText.length;
-
-  if (start >= 0 && end >= start && end <= context.length) {
-    const windowStart = Math.max(0, start - 20);
-    const windowEnd = Math.min(context.length, end + 20);
-    return `${context.slice(windowStart, start)}【🎯】${context.slice(end, windowEnd)}`.replace(/\s+/g, ' ').trim();
-  }
-
-  if (matchText) {
-    return context.replace(matchText, '【🎯】');
-  }
-
-  return `${context}【🎯】`;
 };
 
 export const scanBlanksWithAI = async (paragraphs) => {
@@ -201,6 +200,61 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
   }
 
   return finalFilledData;
+};
+
+export const reviewFilledBlanksWithAI = async (blanks = [], filledValues = {}, companyProfile = {}, tenderContext = '') => {
+  if (!AUDIT_API_KEY || !DIFY_API_BASE) {
+    throw new Error('未配置智能审核 API Key (VITE_DIFY_AUDIT_API_KEY)');
+  }
+
+  const companyProfileJson = JSON.stringify(companyProfile || {});
+  const results = {};
+
+  await Promise.all(blanks.map(async (blank) => {
+    const filledValue = String(filledValues[blank.id] || '').trim();
+    if (!filledValue) return;
+
+    const payload = {
+      inputs: {
+        blank_id: blank.id,
+        field_hint: blank.auditFieldHint || blank.fieldHint || '',
+        local_context: blank.localContext || blank.context || '',
+        full_context: blank.context || '',
+        filled_value: filledValue,
+        company_profile_json: companyProfileJson,
+        tender_context: tenderContext || ''
+      },
+      response_mode: 'blocking',
+      user: 'frontend-smart-audit-user'
+    };
+
+    const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${AUDIT_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error(`智能审核请求失败: ${response.status}`);
+    }
+
+    const result = await response.json();
+    const parsed = parseDifyJsonOutput(result);
+    if (parsed && parsed.blank_id) {
+      results[parsed.blank_id] = {
+        blankId: parsed.blank_id,
+        status: parsed.status || 'warning',
+        source: 'ai',
+        reason: parsed.reason || 'AI 审核已完成',
+        suggestedValue: parsed.suggested_value || ''
+      };
+    }
+  }));
+
+  return results;
 };
 
 // ============================================================
