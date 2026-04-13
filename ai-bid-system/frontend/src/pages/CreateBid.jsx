@@ -20,6 +20,11 @@ import {
 } from '../utils/wordBlankFiller';
 import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
 
+const DESKTOP_BREAKPOINT = 1280;
+const MIN_PREVIEW_PANEL_WIDTH = 360;
+const MAX_PREVIEW_PANEL_WIDTH = 960;
+const MIN_EDITOR_PANEL_WIDTH = 480;
+
 const normalizeAuditText = (value = '') => String(value || '').replace(/\s+/g, '').trim().toLowerCase();
 
 const deriveAuditFieldHint = (blank) => {
@@ -282,14 +287,70 @@ export default function CreateBid() {
   const [highlightBlankId, setHighlightBlankId] = useState(null);
   const previewRef = useRef(null);
   const previewScrollRef = useRef(null);
+  const previewResizeStateRef = useRef({ startX: 0, startWidth: 0 });
   const [isRenderingPreview, setIsRenderingPreview] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const [isDesktopViewport, setIsDesktopViewport] = useState(() => window.innerWidth >= DESKTOP_BREAKPOINT);
+  const [isResizingPreview, setIsResizingPreview] = useState(false);
+  const [previewPanelWidth, setPreviewPanelWidth] = useState(() => {
+    const viewportWidth = window.innerWidth;
+    const maxWidth = Math.min(MAX_PREVIEW_PANEL_WIDTH, viewportWidth - MIN_EDITOR_PANEL_WIDTH);
+    const defaultWidth = Math.round(viewportWidth * 0.48);
+    return Math.min(Math.max(defaultWidth, MIN_PREVIEW_PANEL_WIDTH), maxWidth);
+  });
+
+  const clampPreviewPanelWidth = useCallback((nextWidth, viewportWidth = window.innerWidth) => {
+    const maxWidth = Math.max(
+      MIN_PREVIEW_PANEL_WIDTH,
+      Math.min(MAX_PREVIEW_PANEL_WIDTH, viewportWidth - MIN_EDITOR_PANEL_WIDTH)
+    );
+    return Math.min(Math.max(nextWidth, MIN_PREVIEW_PANEL_WIDTH), maxWidth);
+  }, []);
 
   useEffect(() => {
     if (urlProjectId && user) {
       loadExistingProject(urlProjectId);
     }
   }, [urlProjectId, user]);
+
+  useEffect(() => {
+    const handleWindowResize = () => {
+      const viewportWidth = window.innerWidth;
+      setIsDesktopViewport(viewportWidth >= DESKTOP_BREAKPOINT);
+      setPreviewPanelWidth((currentWidth) => clampPreviewPanelWidth(currentWidth, viewportWidth));
+    };
+
+    window.addEventListener('resize', handleWindowResize);
+    return () => window.removeEventListener('resize', handleWindowResize);
+  }, [clampPreviewPanelWidth]);
+
+  useEffect(() => {
+    if (!isResizingPreview) return undefined;
+
+    const handleMouseMove = (event) => {
+      const { startX, startWidth } = previewResizeStateRef.current;
+      const deltaX = event.clientX - startX;
+      setPreviewPanelWidth(clampPreviewPanelWidth(startWidth + deltaX));
+    };
+
+    const stopResize = () => {
+      setIsResizingPreview(false);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', stopResize);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', stopResize);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [clampPreviewPanelWidth, isResizingPreview]);
 
   useEffect(() => {
     const container = previewRef.current;
@@ -956,6 +1017,16 @@ export default function CreateBid() {
       }
     }, 100);
   }, [findPreviewAnchor, scannedBlanks]);
+
+  const handlePreviewResizeStart = useCallback((event) => {
+    if (!isDesktopViewport) return;
+
+    previewResizeStateRef.current = {
+      startX: event.clientX,
+      startWidth: previewPanelWidth
+    };
+    setIsResizingPreview(true);
+  }, [isDesktopViewport, previewPanelWidth]);
 
   useEffect(() => {
     if (!previewRef.current || isRenderingPreview) return;
@@ -2023,7 +2094,10 @@ export default function CreateBid() {
 
         <div className="flex-1 flex flex-col xl:flex-row overflow-hidden">
           {/* ========== 左侧：原文对照侧边栏 ========== */}
-<div className="h-[40vh] xl:h-auto xl:w-[48vw] xl:max-w-[900px] bg-white border-b xl:border-b-0 xl:border-r border-gray-200 flex flex-col shrink-0">
+<div
+            className="h-[40vh] xl:h-auto bg-white border-b xl:border-b-0 border-gray-200 flex flex-col shrink-0 w-full"
+            style={isDesktopViewport ? { width: `${previewPanelWidth}px` } : undefined}
+          >
               <div className="p-3 border-b border-gray-100 bg-gray-50 shrink-0">
               <h4 className="font-bold text-gray-700 text-sm flex items-center">
                 <Eye size={14} className="mr-2 text-indigo-500" />
@@ -2065,6 +2139,16 @@ export default function CreateBid() {
 />
               </div>
             </div>
+          </div>
+
+          <div
+            className={`hidden xl:flex w-2 shrink-0 cursor-col-resize items-stretch justify-center bg-white transition-colors ${isResizingPreview ? 'bg-indigo-50' : 'hover:bg-indigo-50/70'}`}
+            onMouseDown={handlePreviewResizeStart}
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="调整原文对照宽度"
+          >
+            <div className={`my-2 w-px rounded-full transition-colors ${isResizingPreview ? 'bg-indigo-400' : 'bg-gray-200'}`} />
           </div>
 
           {/* ========== 中间：表格编辑区 ========== */}
