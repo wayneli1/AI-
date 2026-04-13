@@ -31,6 +31,34 @@ const parseDifyJsonOutput = (result = {}) => {
   }
 };
 
+const buildFocusHint = (blank = {}) => {
+  const hint = String(blank.auditFieldHint || blank.fieldHint || '').trim();
+  if (!hint) return '当前只填写【🎯】对应的这个空白，不要参考同一句中的其他空白。';
+
+  const fieldSpecific = {
+    '投标人名称': '当前只填写公司名称，不要填写法定代表人、地址、电话、信用代码。',
+    '法定代表人信息': '当前只填写法定代表人姓名，不要填写公司名称、性别、身份证号、职务。',
+    '被授权人信息': '当前只填写被授权人姓名，不要填写公司名称、电话、身份证号。',
+    '性别': '当前只填写性别，只能是男或女，不要填写姓名、公司名称、年龄、职务。',
+    '年龄': '当前只填写年龄，必须是数字，不要填写姓名、公司名称、职务。',
+    '职务': '当前只填写职务，不要填写姓名、公司名称、身份证号。',
+    '身份证号码': '当前只填写身份证号码，不要填写姓名、公司名称、电话。',
+    '电话': '当前只填写联系电话，不要填写姓名、公司名称、身份证号。',
+    '邮箱': '当前只填写邮箱地址，不要填写公司名称、电话。',
+    '地址': '当前只填写地址，不要填写公司名称、信用代码、电话。',
+    '统一社会信用代码': '当前只填写统一社会信用代码，不要填写公司名称、地址、电话。',
+    '开户行': '当前只填写开户行名称，不要填写账号或公司名称。',
+    '银行账号': '当前只填写银行账号，不要填写开户行或公司名称。',
+    '项目名称': '当前只填写项目名称，不要填写公司名称或报价。',
+    '项目': '当前只填写项目名称，不要填写公司名称或报价。',
+    '报价': '当前只填写报价相关内容，不要填写公司名称或项目名称。',
+    '型号': '当前只填写型号，不要填写产品名称或版本号。',
+    '版本号': '当前只填写版本号，不要填写产品名称或型号。'
+  };
+
+  return `${hint}。${fieldSpecific[hint] || '当前只填写这个字段本身，不要把同一句里的其他字段内容填进来。'}`;
+};
+
 export const scanBlanksWithAI = async (paragraphs) => {
   if (!SCAN_BLANK_API_KEY || !DIFY_API_BASE) {
     throw new Error("未配置空白扫描 API Key (VITE_DIFY_SCAN_BLANK_API_KEY)");
@@ -142,7 +170,13 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
       finalMarkedContext = "【🎯资质附件插入位置🎯】 " + (b.context || '');
     }
     
-    return { id: b.id, context: finalMarkedContext, type: b.type };
+    return {
+      id: b.id,
+      context: finalMarkedContext,
+      type: b.type,
+      field_hint: b.auditFieldHint || b.fieldHint || '',
+      focus_hint: buildFocusHint(b)
+    };
   });
   const CHUNK_SIZE = 10;
   const chunks = [];

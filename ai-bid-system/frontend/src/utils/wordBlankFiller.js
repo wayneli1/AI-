@@ -500,7 +500,7 @@ function buildTextNodeMap(paragraphXml) {
       nodes.push({ fullMatch: m[0], openTag: '', text, closeTag: '', matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: true });
       offset += text.length;
     } else {
-      const text = m[2] || '';
+      const text = m[2]; // ✅ 改为 m[2]（真正的文本内容）
       nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[3], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
       offset += text.length;
     }
