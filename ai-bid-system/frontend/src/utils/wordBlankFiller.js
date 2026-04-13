@@ -27,118 +27,32 @@ function buildPlaceholderRegex(placeholder) {
   return new RegExp(pattern, 'g');
 }
 
-// 💡 核心修复 1：过滤 Fallback 冗余文本，并将 Word 制表符转化为普通空格
 function getVisibleTextFromXml(xml) {
   if (!xml) return '';
-  
-  // 智能XML清理：只删除Fallback，保留Choice
-  let cleanXml = xml;
-  
-  // 调试：记录原始XML长度
-  const originalLength = xml.length;
-  
-  // 💡 改进：使用多次迭代确保所有Fallback被完全移除
-  // 方法：迭代直到没有变化为止，处理嵌套的Fallback标签
-  
-  let iterations = 0;
-  const maxIterations = 5;
-  let hasFallback = true;
-  
-  while (iterations < maxIterations && hasFallback) {
-    // 使用更精确的正则：匹配 mc:Fallback 标签及其所有内容（包括嵌套情况）
-    cleanXml = cleanXml.replace(/<mc:Fallback(?:\s+[^>]*)?>[\s\S]*?<\/mc:Fallback>/gi, '');
-    cleanXml = cleanXml.replace(/<mc:Fallback[\s\S]*?\/>/gi, ''); // 处理自闭合的Fallback
-    hasFallback = cleanXml.includes('<mc:Fallback', 0) || cleanXml.includes('mc:Fallback', 0);
-    iterations++;
-  }
-  
-  // 2. 移除<mc:AlternateContent>标签本身（因为我们已经移除了Fallback，只需清理外壳）
-  // 注意：这比之前更保守，不会删除整个块
-  cleanXml = cleanXml.replace(/<mc:AlternateContent[^>]*>|<\/mc:AlternateContent>/gi, '');
-  cleanXml = cleanXml.replace(/<mc:Choice(?:\s+[^>]*)?>[\s\S]*?<\/mc:Choice>/gi, '');
-  cleanXml = cleanXml.replace(/<mc:Choice[^>]*\/>/gi, ''); // 处理自闭合的Choice
-  
-  // 3. 清理其他不需要的内容
-  cleanXml = cleanXml.replace(/<w:del[\s\S]*?>[\s\S]*?<\/w:del>/g, '');
-  cleanXml = cleanXml.replace(/<w:ins[\s\S]*?>[\s\S]*?<\/w:ins>/g, '');
-  cleanXml = cleanXml.replace(/<w:comment[\s\S]*?>[\s\S]*?<\/w:comment>/g, '');
-  
-  // 调试：检查清理结果
-  if (originalLength > cleanXml.length && originalLength - cleanXml.length > 1000) {
-    console.log(`⚡ XML清理: 原始长度 ${originalLength} -> 清理后 ${cleanXml.length}, 减少了 ${originalLength - cleanXml.length} 字符`);
-    console.log(`⚡ 清理比例: ${((originalLength - cleanXml.length) / originalLength * 100).toFixed(1)}%`);
-    
-    // 特别检查是否有重复问题相关的内容
-    const originalSample = xml.substring(0, Math.min(500, xml.length));
-    const cleanedSample = cleanXml.substring(0, Math.min(500, cleanXml.length));
-    
-    if (originalSample.includes('承诺人') || originalSample.includes('单位名称')) {
-      console.log('🔍 检查清理前后的"承诺人"/"单位名称"相关片段:');
-      console.log('  清理前:', originalSample.replace(/\n/g, ' ').substring(0, 300));
-      console.log('  清理后:', cleanedSample.replace(/\n/g, ' ').substring(0, 300));
-    }
-  }
+  let cleanXml = xml.replace(/<mc:Fallback[\s\S]*?<\/mc:Fallback>/g, '');
+  cleanXml = cleanXml.replace(/<w:del[\s\S]*?<\/w:del>/g, '');
 
   const textParts = [];
-  // 同时匹配普通文本和制表符
   const NODE_REGEX = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab(?:\s[^>]*)?\/>/g;
   let m;
-  
-  // 调试：检测重复文本
-  let lastText = '';
-  let duplicateCount = 0;
-  let duplicateSamples = [];
-  
   while ((m = NODE_REGEX.exec(cleanXml)) !== null) {
     if (m[0].startsWith('<w:tab')) {
-      textParts.push('    '); // 将制表符当做 4 个空格提取
-      continue;
+      textParts.push('    ');
+    } else {
+      textParts.push(m[1]);
     }
-    
-    const text = m[1];
-    
-    // 检测重复文本
-    if (text === lastText && text.trim().length > 2) {
-      duplicateCount++;
-      if (duplicateCount <= 3 && !duplicateSamples.includes(text)) {
-        duplicateSamples.push(text);
-        console.warn(`⚠️ getVisibleTextFromXml 检测到重复文本: "${text}"`);
-      }
-    }
-    
-    lastText = text;
-    textParts.push(text);
   }
-  
-  if (duplicateCount > 0) {
-    console.log(`📊 getVisibleTextFromXml: 总共检测到 ${duplicateCount} 次文本重复`);
-  }
-  
-  // 💡 后处理：使用 Set 去重连续的重复文本
-  const dedupedParts = [];
-  for (let i = 0; i < textParts.length; i++) {
-    const current = textParts[i];
-    const next = textParts[i + 1];
-    // 如果当前文本和下一个文本完全相同（且不是空格），跳过重复
-    if (current === next && current.trim().length > 0) {
-      continue;
-    }
-    dedupedParts.push(current);
-  }
-  
-  return dedupedParts.join('');
+  return textParts.join('');
 }
 
 function buildTableStructureMap(xmlString) {
   const cellInfos = [];
   const tblRegex = /<w:tbl[\s>][\s\S]*?<\/w:tbl>/g;
   let tblMatch;
-  let tableIndex = 0;
 
   while ((tblMatch = tblRegex.exec(xmlString)) !== null) {
     const tblXml = tblMatch[0];
     const tblGlobalOffset = tblMatch.index;
-    const verticalMergeTracker = new Map();
 
     const rowRegex = /<w:tr[\s>][\s\S]*?<\/w:tr>/g;
     let rowMatch;
@@ -165,24 +79,10 @@ function buildTableStructureMap(xmlString) {
         const tcXml = tcMatch[0];
         const tcGlobalOffset = rowGlobalOffset + tcMatch.index;
         const text = getVisibleTextFromXml(tcXml).trim();
-        const vMergeMatch = tcXml.match(/<w:vMerge(?:\s+w:val="(restart|continue)")?\s*\/?>/);
-        const vMergeState = vMergeMatch ? (vMergeMatch[1] || 'continue') : null;
 
         let span = 1;
         const spanMatch = tcXml.match(/<w:gridSpan w:val="(\d+)"/);
         if (spanMatch) span = parseInt(spanMatch[1], 10);
-
-        const cellColumnKey = `${tableIndex}:${colIndex}`;
-        if (vMergeState === 'continue' && verticalMergeTracker.has(cellColumnKey)) {
-          colIndex += span;
-          continue;
-        }
-
-        if (vMergeState === 'restart') {
-          verticalMergeTracker.set(cellColumnKey, true);
-        } else if (!vMergeState) {
-          verticalMergeTracker.delete(cellColumnKey);
-        }
 
         if (rowIndex === 0) {
           for(let s=0; s<span; s++) columnHeaders[colIndex + s] = text;
@@ -190,37 +90,15 @@ function buildTableStructureMap(xmlString) {
 
         const pRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
         let pMatch;
-        const cellParagraphs = []; // 收集该单元格的所有段落去重
-        
         while ((pMatch = pRegex.exec(tcXml)) !== null) {
           const pLocalOffset = pMatch.index;
           const pGlobalOffset = tcGlobalOffset + pLocalOffset;
           const paraIdx = countParagraphsBefore(xmlString, pGlobalOffset);
-          const cellText = getVisibleTextFromXml(pMatch[0]).trim();
-          
-          cellParagraphs.push({
-            paraIndex: paraIdx,
-            cellText
-          });
-        }
-        
-        // 💡 修复：对于同一个单元格的多个段落，只使用第一个（非空的）段落
-        // 避免同一单元格被识别为多个空白
-        if (cellParagraphs.length > 0) {
-          // 尝试找到第一个非空段落
-          let targetPara = cellParagraphs[0];
-          for (const para of cellParagraphs) {
-            if (para.cellText.trim().length > 0) {
-              targetPara = para;
-              break;
-            }
-          }
-          
+
           cellInfos.push({
-            paraIndex: targetPara.paraIndex,
+            paraIndex: paraIdx,
             cellXml: tcXml,
-            cellText: targetPara.cellText,
-            tableIndex,
+            cellText: getVisibleTextFromXml(pMatch[0]).trim(),
             rowIndex,
             colIndex,
             headerText: columnHeaders[colIndex] || '',
@@ -231,270 +109,28 @@ function buildTableStructureMap(xmlString) {
       }
       rowIndex++;
     }
-    tableIndex++;
   }
   return cellInfos;
-}
-
-function buildLocalContext(text, start, end, marker = '【🎯】') {
-  if (!text) return '';
-  const safeStart = Math.max(0, Math.min(start ?? 0, text.length));
-  const safeEnd = Math.max(safeStart, Math.min(end ?? safeStart, text.length));
-  const windowStart = Math.max(0, safeStart - 20);
-  const windowEnd = Math.min(text.length, safeEnd + 20);
-  const prefix = text.slice(windowStart, safeStart);
-  const suffix = text.slice(safeEnd, windowEnd);
-  return `${prefix}${marker}${suffix}`.replace(/\s+/g, ' ').trim();
-}
-
-function normalizeBlankContextKey(value = '') {
-  return String(value)
-    .replace(/【🎯】/g, '')
-    .replace(/[\s：:（）()【】[]，,。.;；、_-]+/g, '')
-    .toLowerCase();
-}
-
-function findNearestFieldLabel(text = '', marker = '') {
-  const combined = `${text || ''}`;
-  if (!combined.trim()) return '';
-
-  const markerIndex = marker ? combined.indexOf(marker) : -1;
-  const cursor = markerIndex >= 0 ? markerIndex : combined.length;
-  const before = combined.slice(0, cursor);
-  const after = combined.slice(cursor + (marker ? marker.length : 0));
-
-  const colonMatches = [...before.matchAll(/([\u4e00-\u9fa5A-Za-z0-9（）()/·-]{1,30})[：:]\s*$/g)];
-  if (colonMatches.length > 0) {
-    return colonMatches[colonMatches.length - 1][1].trim();
-  }
-
-  const bracketTailMatches = [...before.matchAll(/[（(]\s*([^（）()]{1,30}(?:名称|姓名|职务|性别|身份证号码|年龄|单位|法定代表人|被授权人|委托代理人|授权代表|项目))\s*[)）]\s*$/g)];
-  if (bracketTailMatches.length > 0) {
-    return bracketTailMatches[bracketTailMatches.length - 1][1].trim();
-  }
-
-  const leadingSuffixMatch = after.match(/^\s*([^\s，。；;（）()]{1,20}(?:项目|报价|单位名称|姓名|职务|性别|年龄|身份证号码))/);
-  if (leadingSuffixMatch) {
-    return leadingSuffixMatch[1].trim();
-  }
-
-  return '';
-}
-
-function normalizeFieldHintAlias(hint = '') {
-  const text = String(hint || '').trim();
-  if (!text) return '';
-  if (/报价人单位名称|投标人名称|投标单位|供应商名称|单位名称|公司名称|企业名称/.test(text)) return '投标人名称';
-  if (/法定代表人姓名|法人代表|法定代表人/.test(text)) return '法定代表人信息';
-  if (/被授权人姓名|委托代理人|授权代表|被授权人/.test(text)) return '被授权人信息';
-  if (/联系电话|联系方式|电话/.test(text)) return '电话';
-  if (/联系地址|通讯地址|地址/.test(text)) return '地址';
-  if (/身份证号码|身份证号/.test(text)) return '身份证号码';
-  return text;
-}
-
-function inferFieldHint(context, matchText = '') {
-  const nearestLabel = findNearestFieldLabel(context, matchText);
-  const text = `${nearestLabel || ''} ${context || ''} ${matchText || ''}`;
-  const hintPatterns = [
-    ['投标人名称', /投标人名称|投标单位|投标人(?!代表|签字)/],
-    ['承诺人', /承诺人/],
-    ['国家或地区', /国家或地区/],
-    ['法定代表人信息', /法定代表人姓名|法定代表人.*身份证|法定代表人/],
-    ['被授权人信息', /被授权人|委托代理人|授权代表/],
-    ['职务', /职务/],
-    ['性别', /性别/],
-    ['身份证号码', /身份证号码|身份证号/],
-    ['单位名称', /单位名称|公司名称|企业名称|供应商名称/],
-    ['地址', /地址|住所|通讯地址/],
-    ['电话', /电话|联系电话|联系方式/],
-    ['邮编', /邮编|邮政编码/],
-    ['开户行', /开户行|开户银行/],
-    ['银行账号', /银行账号|账号/],
-    ['统一社会信用代码', /统一社会信用代码|信用代码/],
-    ['签字', /签字|签名/],
-    ['盖章', /盖章|公章|签章/]
-  ];
-
-  for (const [hint, pattern] of hintPatterns) {
-    if (pattern.test(text)) return normalizeFieldHintAlias(hint);
-  }
-
-  if (nearestLabel) return normalizeFieldHintAlias(nearestLabel);
-  return '';
-}
-
-function enrichBlankMetadata(blanks) {
-  const grouped = new Map();
-
-  blanks.forEach((blank) => {
-    const key = blank.paraIndex;
-    if (!grouped.has(key)) grouped.set(key, []);
-    grouped.get(key).push(blank);
-  });
-
-  grouped.forEach((items) => {
-    items.sort((a, b) => {
-      const aStart = Number.isInteger(a.textStart) ? a.textStart : (a.index ?? 0);
-      const bStart = Number.isInteger(b.textStart) ? b.textStart : (b.index ?? 0);
-      return aStart - bStart;
-    });
-
-    items.forEach((blank, idx) => {
-      const start = Number.isInteger(blank.textStart) ? blank.textStart : (blank.index ?? 0);
-      const end = Number.isInteger(blank.textEnd) ? blank.textEnd : start + ((blank.matchText || '').length || 0);
-      blank.textStart = start;
-      blank.textEnd = end;
-      blank.blankOrdinalInParagraph = idx + 1;
-      blank.localContext = buildLocalContext(blank.context || '', start, end);
-      if (!blank.fieldHint) {
-        blank.fieldHint = inferFieldHint(blank.context || '', blank.matchText || '');
-      }
-    });
-  });
-
-  return blanks;
-}
-
-function buildCellLabel(cell) {
-  if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
-    return `${cell.headerText}（项：${cell.rowHeader}）`;
-  }
-  if (cell.headerText) return cell.headerText;
-  if (cell.rowHeader) return cell.rowHeader;
-  return '';
-}
-
-function shouldSkipEmptyCellLabel(label) {
-  if (!label) return true;
-
-  const normalizedLabel = label.replace(/\s+/g, ' ').trim();
-  if (!normalizedLabel) return true;
-
-  const nonReusablePatterns = [
-    /^报价项目$/,
-    /^报价（元）$/,
-    /^总报价（元）$/,
-    /^采购报价单$/,
-    /^分项报价表$/,
-    /^报价明细表$/,
-    /^货物名称$/,
-    /^规格型号$/,
-    /^数量$/,
-    /^单位$/,
-    /^单价（元）$/,
-    /^合计（元）$/,
-    /报价（元）（项：/,
-    /采购报价单/,
-    /分项报价/,
-    /明细报价/
-  ];
-
-  return nonReusablePatterns.some((pattern) => pattern.test(normalizedLabel));
-}
-
-function normalizeInlineFieldLabel(text = '') {
-  return String(text)
-    .replace(/^\s*\d+(?:\.\d+)*[.、]\s*/, '')
-    .replace(/[：:]\s*$/, '')
-    .trim();
-}
-
-function isChainedFieldParagraph(text = '') {
-  const normalized = String(text || '');
-  const labels = ['姓名', '性别', '年龄', '职务', '身份证号码', '联系电话'];
-  const hitCount = labels.reduce((sum, label) => sum + (normalized.includes(`${label}：`) || normalized.includes(`${label}:`) ? 1 : 0), 0);
-  return hitCount >= 2;
-}
-
-function scanChainedFieldBlanks(text, currentParaIndex, currentBlankCounter, blanks) {
-  if (!isChainedFieldParagraph(text)) {
-    return currentBlankCounter;
-  }
-
-  const fieldPattern = /(姓名|性别|年龄|职务|身份证号码|联系电话)[：:]([_＿－—─﹣-]{2,}|\s{2,}|\u3000{1,}|_{2,})/g;
-  let match;
-
-  while ((match = fieldPattern.exec(text)) !== null) {
-    const fieldLabel = normalizeFieldHintAlias(match[1]);
-    const placeholderText = match[2];
-    const placeholderIndex = match.index + match[1].length + 1;
-    const alreadyExists = blanks.some(
-      (b) => b.paraIndex === currentParaIndex && (b.textStart ?? b.index ?? -1) === placeholderIndex
-    );
-    if (alreadyExists) {
-      continue;
-    }
-
-    blanks.push({
-      id: `blank_${++currentBlankCounter}`,
-      context: text,
-      matchText: placeholderText,
-      index: placeholderIndex,
-      textStart: placeholderIndex,
-      textEnd: placeholderIndex + placeholderText.length,
-      type: /[_＿]/.test(placeholderText) ? 'underscore' : 'keyword_space',
-      confidence: 'high',
-      paraIndex: currentParaIndex,
-      fill_role: determineFillRole(text),
-      fieldHint: fieldLabel
-    });
-  }
-
-  return currentBlankCounter;
-}
-
-function isLikelyInlineFieldLabel(text = '') {
-  const label = normalizeInlineFieldLabel(text);
-  if (!label || label.length < 2 || label.length > 120) return false;
-  if (/。|；|;|，|,/.test(label)) return false;
-  if (/复印件|原件|提供|详见|证明材料|证明文件|说明如下|如下所示|是否|要求|不得|应当|包括/.test(label)) return false;
-  return /(?:名称|姓名|单位|地址|电话|邮箱|邮编|账号|代码|编号|日期|期限|时间|内容|版本|型号|系统|平台|网关|软件|硬件|产品|服务|代表人|联系人|供应商|投标人|申请人)/.test(label)
-    || /[A-Za-z].*V\d+(?:\.\d+)?/i.test(label)
-    || /^[A-Za-z0-9（）()\-\u4e00-\u9fa5]+$/.test(label);
-}
-
-function isDocReferenceContext(text) {
-  if (!text || typeof text !== 'string') return false;
-  return /服务手册|售后服务手册|技术方案|实施方案|产品说明书|白皮书|产品彩页|手册|系统|平台|网关|软件|硬件|产品|版本|V\d+(?:\.\d+)?/i.test(text)
-    || isLikelyInlineFieldLabel(text);
-}
-
-function isInlineBlankType(type) {
-  return ['underscore', 'dash', 'keyword_space', 'brackets', 'placeholder'].includes(type);
-}
-
-function shouldAppendAfterAnchor(blank) {
-  const hint = blank.fieldHint || '';
-  const context = `${blank.context || ''} ${blank.localContext || ''}`;
-
-  if (/签字|签名/.test(hint) || /签字|签名/.test(context)) return false;
-  if (['underscore', 'brackets'].includes(blank.type)) return false;
-
-  const appendableHints = [
-    '投标人名称',
-    '投标单位',
-    '承诺人',
-    '单位名称',
-    '法定代表人信息',
-    '被授权人信息',
-    '职务',
-    '地址',
-    '电话',
-    '邮编',
-    '开户行',
-    '银行账号',
-    '统一社会信用代码'
-  ];
-
-  if (appendableHints.includes(hint)) return true;
-
-  return /^【🎯】/.test(blank.localContext || '') && /：|:/.test(blank.context || '');
 }
 
 function countParagraphsBefore(xmlString, globalOffset) {
   return (xmlString.substring(0, globalOffset).match(/<w:p[\s>]/g) || []).length;
 }
+
+// 获取表格同行左侧相邻单元格的文本
+const getAdjacentCellLabel = (currentCellInfo, allCellInfos) => {
+  if (!currentCellInfo || typeof currentCellInfo.rowIndex !== 'number' || typeof currentCellInfo.cellIndex !== 'number') {
+    return null;
+  }
+  const prevCell = allCellInfos.find(c => 
+    c.rowIndex === currentCellInfo.rowIndex && 
+    c.colIndex === currentCellInfo.colIndex - 1
+  );
+  if (prevCell && prevCell.cellText) {
+    return prevCell.cellText.replace(/[\r\n\t]+/g, '').trim();
+  }
+  return null;
+};
 
 function isImageUrl(value) {
   if (!value || typeof value !== 'string') return false;
@@ -589,64 +225,10 @@ function addRelationship(relsObj, target, type) {
 }
 
 const PX_TO_EMU = 914400 / 96;
-const CM_TO_EMU = 360000;
-
 function getImageDimensionsEmu(pxWidth, naturalW, naturalH) {
   const cx = Math.round(pxWidth * PX_TO_EMU);
   const ratio = naturalH / naturalW;
   return { cx, cy: Math.round(cx * ratio) };
-}
-
-function getCmDimensionsEmu(widthCm, heightCm) {
-  return {
-    cx: Math.round(widthCm * CM_TO_EMU),
-    cy: Math.round(heightCm * CM_TO_EMU)
-  };
-}
-
-function detectImageInsertType(blank = {}, imageUrl = '', naturalW = 0, naturalH = 0) {
-  const text = `${blank.context || ''} ${blank.fieldHint || ''} ${imageUrl || ''}`.toLowerCase();
-  const isPortrait = naturalH > naturalW * 1.15;
-
-  if (/身份证|身份证正面|身份证反面|人像面|国徽面|法人身份证/.test(text)) {
-    return 'id_card';
-  }
-
-  if (/营业执照/.test(text)) {
-    return 'business_license';
-  }
-
-  if (/资质证书|证书|许可证|认证证书|检验报告|检测报告|iso|体系认证/.test(text)) {
-    return 'certificate';
-  }
-
-  if (
-    isPortrait &&
-    /(?:系统|网关|平台|软件|硬件|产品|v\d+(?:\.\d+)?|xt电子邮件系统|邮件安全卫士|coremail|cacter)/i.test(text)
-  ) {
-    return 'certificate';
-  }
-
-  return 'generic';
-}
-
-function getImageSizeStrategy(type, naturalW, naturalH) {
-  const safeW = naturalW || 400;
-  const safeH = naturalH || 300;
-
-  if (type === 'id_card') {
-    return getCmDimensionsEmu(7.05, 5.07);
-  }
-
-  if (type === 'business_license') {
-    return getCmDimensionsEmu(14.65, 9.5);
-  }
-
-  if (type === 'certificate') {
-    return getCmDimensionsEmu(14.64, 20.63);
-  }
-
-  return getImageDimensionsEmu(220, safeW, safeH);
 }
 
 function loadImageNaturalSize(buffer) {
@@ -667,7 +249,6 @@ function escapeXml(str) {
 export function scanBlanksFromXml(xmlString) {
   const blanks = [];
   let blankCounter = 0;
-  console.log('🔍 [scanBlanksFromXml] 开始扫描XML空白');
 
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
@@ -679,17 +260,25 @@ export function scanBlanksFromXml(xmlString) {
     if (text.trim().length > 0) {
       let m;
 
-      blankCounter = scanChainedFieldBlanks(text, currentParaIndex, blankCounter, blanks);
+      // 识别"复读机式"占位符
+      const repeatedKeywordPattern = /(单位名称|单位性质|地\s*址|经营期限|法定代表人)[:：]\s*\1[:：]?/g;
+      while ((m = repeatedKeywordPattern.exec(text)) !== null) {
+        const markedCtx = text.substring(0, m.index) + '【🎯】' + text.substring(m.index + m[0].length);
+        const isDuplicate = blanks.some(b => b.paraIndex === currentParaIndex && b.index === m.index && b.type === 'repeated_keyword');
+        if (!isDuplicate) {
+          blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[1], index: m.index, type: 'repeated_keyword', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+        }
+      }
 
       // 识别纯文字贴图提示
       const imagePlaceholderPattern1 = /贴.*(?:复印件|扫描件|照片|图片)处/;
       const imagePlaceholderPattern2 = /(?:复印件|扫描件|证明文件)粘贴处/;
-      const imagePlaceholderPattern3 = /(?:法定代表人)?身份证(?:正面|反面|人像面|国徽面)?(?:复印件|扫描件|照片|图片)?(?:粘贴处|贴处)/;
       if ((imagePlaceholderPattern1.test(text) || imagePlaceholderPattern2.test(text)) &&
           !blanks.some(b => b.paraIndex === currentParaIndex && b.type === 'image_placeholder')) {
         blanks.push({
           id: `blank_${++blankCounter}`,
-          context: "[图片插入位置：]【🎯】",
+          context: text,
+          markedContext: "[图片插入位置：]【🎯】",
           matchText: text,
           index: 0,
           type: 'image_placeholder',
@@ -698,176 +287,48 @@ export function scanBlanksFromXml(xmlString) {
           fill_role: 'auto'
         });
       }
-      if (imagePlaceholderPattern3.test(text) && !blanks.some(b => b.paraIndex === currentParaIndex && b.type === 'image_placeholder')) {
-        blanks.push({
-          id: `blank_${++blankCounter}`,
-          context: '[图片插入位置：]【🎯】',
-          matchText: text,
-          index: 0,
-          type: 'image_placeholder',
-          confidence: 'high',
-          paraIndex: currentParaIndex,
-          fill_role: 'auto',
-          fieldHint: inferFieldHint(text, '')
-        });
-      }
 
-      const underscorePattern = /_{3,}/g;
+      // 坐标切片生成 markedContext (下划线)
+      const underscorePattern = /_{2,}/g;
       while ((m = underscorePattern.exec(text)) !== null) {
-        const alreadyExists = blanks.some(
-          (b) => b.paraIndex === currentParaIndex && (b.textStart ?? b.index ?? -1) === m.index
-        );
-        if (m[0].length >= 2 && !alreadyExists) {
-          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
-        }
+        const markedCtx = text.substring(0, m.index) + '【🎯】' + text.substring(m.index + m[0].length);
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[0], index: m.index, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
-      const leadingUnderscorePattern = /(_{2,})([^_\n]{1,30}(?:项目|报价|名称|姓名|职务|性别|年龄|身份证号码))/g;
-      while ((m = leadingUnderscorePattern.exec(text)) !== null) {
-        const alreadyExists = blanks.some(
-          (b) => b.paraIndex === currentParaIndex && b.matchText === m[1] && b.index === m.index
-        );
-        if (!alreadyExists) {
-          blanks.push({
-            id: `blank_${++blankCounter}`,
-            context: text,
-            matchText: m[1],
-            index: m.index,
-            textStart: m.index,
-            textEnd: m.index + m[1].length,
-            type: 'underscore',
-            confidence: 'high',
-            paraIndex: currentParaIndex,
-            fill_role: determineFillRole(text),
-            fieldHint: inferFieldHint(`${m[2]} ${text}`, m[1]) || m[2].trim()
-          });
-        }
-      }
-
-      // 文档引用、产品名称等位置经常只给两个下划线，例如：Coremail XT电子邮件系统V6.0：__
-      if (isDocReferenceContext(text)) {
-        const shortUnderscorePattern = /_{2,}/g;
-        while ((m = shortUnderscorePattern.exec(text)) !== null) {
-          const alreadyExists = blanks.some(
-            (b) => b.paraIndex === currentParaIndex && b.matchText === m[0] && b.index === m.index
-          );
-          if (!alreadyExists) {
-            blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
-          }
-        }
-      }
-
-      const dashPattern = /[-－—─﹣]{3,}/g;
+      // 坐标切片生成 markedContext (短横线)
+      const dashPattern = /-{3,}/g;
       while ((m = dashPattern.exec(text)) !== null) {
-        if (m[0].length >= 3) {
-          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'dash', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
-        }
+        const markedCtx = text.substring(0, m.index) + '【🎯】' + text.substring(m.index + m[0].length);
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[0], index: m.index, type: 'dash', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
-      // 匹配冒号后带有至少 2 个空格/全角空格的空白（得益于我们转化了 tab 符，这里能完美抓取长空格）
-      const spacePattern = /([：:])([\s\u3000]{2,})/g;
+      // 坐标切片生成 markedContext (关键词+长空格)
+      const spacePattern = /([：:])(\s{3,})/g;
       while ((m = spacePattern.exec(text)) !== null) {
         const colonStr = m[1];
         const spaceStr = m[2];
         const spaceIndex = m.index + colonStr.length; 
-        const alreadyExists = blanks.some(
-          (b) => b.paraIndex === currentParaIndex && (b.textStart ?? b.index ?? -1) === spaceIndex
-        );
-        if (!alreadyExists) {
-          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: spaceStr, index: spaceIndex, textStart: spaceIndex, textEnd: spaceIndex + spaceStr.length, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, spaceStr) });
-        }
+        const markedCtx = text.substring(0, spaceIndex) + '【🎯】' + text.substring(spaceIndex + spaceStr.length);
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: spaceStr, index: spaceIndex, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
-      // 无冒号但字段名后直接跟随空格的场景，例如：承诺人      、投标人      
-      const trailingSpacePattern = /((?:投标人|承诺人|供应商|投标主体|投标单位|申请人|法定代表人|委托代理人|授权代表|联系人|地址|电话|传真|邮编|开户行|银行账号|统一社会信用代码|单位名称))([\s\u3000]{2,})/g;
-      while ((m = trailingSpacePattern.exec(text)) !== null) {
-        const spaceStr = m[2];
-        const spaceIndex = m.index + m[1].length;
-        const alreadyExists = blanks.some(
-          (b) => b.paraIndex === currentParaIndex && b.matchText === spaceStr && b.index === spaceIndex
-        );
-        if (!alreadyExists) {
-          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: spaceStr, index: spaceIndex, textStart: spaceIndex, textEnd: spaceIndex + spaceStr.length, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, spaceStr) });
-        }
-      }
-
-      // 识别“字段名：”或“产品名：”后面直接为空的场景，例如：单位名称： / Coremail XT电子邮件系统V6.0:
-      const colonEndPattern = /^\s*((?:\d+(?:\.\d+)*[.、]\s*)?[^：:\n]{2,120})([：:])\s*$/;
-      const colonEndMatch = text.match(colonEndPattern);
-      if (colonEndMatch && isLikelyInlineFieldLabel(colonEndMatch[1])) {
-        const colonIndex = text.lastIndexOf(colonEndMatch[2]);
-        const blankIndex = colonIndex + colonEndMatch[2].length;
-        const alreadyExists = blanks.some(
-          (b) => b.paraIndex === currentParaIndex && (b.index ?? -1) === blankIndex
-        );
-        if (!alreadyExists) {
-          blanks.push({
-            id: `blank_${++blankCounter}`,
-            context: text,
-            matchText: '',
-            index: blankIndex,
-            textStart: blankIndex,
-            textEnd: blankIndex,
-            type: 'keyword_space',
-            confidence: 'medium',
-            paraIndex: currentParaIndex,
-            fill_role: determineFillRole(text),
-            fieldHint: inferFieldHint(text, '') || normalizeInlineFieldLabel(colonEndMatch[1])
-          });
-        }
-      }
-
+      // 坐标切片生成 markedContext (括号填空)
       const roundBracketPattern = /[（(]\s*(盖章处|签章处|盖章|签字|请填写[^）)]*|待补充|待定|填写[^）)]*|请盖章)\s*[)）]/g;
       while ((m = roundBracketPattern.exec(text)) !== null) {
-        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
+        const markedCtx = text.substring(0, m.index) + '【🎯】' + text.substring(m.index + m[0].length);
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[0], index: m.index, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
       const squareBracketPattern = /[[【]\s*(填写[^\]】]*|待补充|待定|请填写[^\]】]*)\s*[\]】]/g;
       while ((m = squareBracketPattern.exec(text)) !== null) {
-        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
-      }
-
-      const bracketFieldPattern = /[（(]\s*([^（）()]{1,50}(?:名称|姓名|职务|性别|身份证号码|国家或地区|地址|电话|邮编|开户行|账号|代码|单位|投标人|供应商|法定代表人|被授权人|委托代理人|授权代表))\s*[)）]/g;
-      while ((m = bracketFieldPattern.exec(text)) !== null) {
-        const prevText = text.slice(Math.max(0, m.index - 8), m.index);
-        if (/[_＿－—─﹣-]{2,}\s*$/.test(prevText)) {
-          continue;
-        }
-        const alreadyExists = blanks.some(
-          (b) => b.paraIndex === currentParaIndex && b.matchText === m[0] && b.index === m.index
-        );
-        if (!alreadyExists) {
-          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
-        }
-      }
-
-      const leadingBracketFieldPattern = /^\s*[（(]\s*([^（）()]{1,50}(?:名称|姓名|职务|性别|身份证号码|单位|投标人|供应商|法定代表人|被授权人|委托代理人|授权代表))\s*[)）]/;
-      const leadingBracketFieldMatch = text.match(leadingBracketFieldPattern);
-      if (leadingBracketFieldMatch) {
-        const leadingUnderscoreExists = /^\s*[_＿－—─﹣-]{2,}/.test(text);
-        const alreadyExists = blanks.some(
-          (b) => b.paraIndex === currentParaIndex && b.matchText === leadingBracketFieldMatch[0] && b.index === text.indexOf(leadingBracketFieldMatch[0])
-        );
-        if (!alreadyExists && !leadingUnderscoreExists) {
-          blanks.push({
-            id: `blank_${++blankCounter}`,
-            context: text,
-            matchText: leadingBracketFieldMatch[0],
-            index: text.indexOf(leadingBracketFieldMatch[0]),
-            textStart: text.indexOf(leadingBracketFieldMatch[0]),
-            textEnd: text.indexOf(leadingBracketFieldMatch[0]) + leadingBracketFieldMatch[0].length,
-            type: 'brackets',
-            confidence: 'high',
-            paraIndex: currentParaIndex,
-            fill_role: determineFillRole(text),
-            fieldHint: leadingBracketFieldMatch[1].trim()
-          });
-        }
+        const markedCtx = text.substring(0, m.index) + '【🎯】' + text.substring(m.index + m[0].length);
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[0], index: m.index, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
       const placeholderPattern = /待补充|待填/g;
       while ((m = placeholderPattern.exec(text)) !== null) {
-        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, type: 'placeholder', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+        const markedCtx = text.substring(0, m.index) + '【🎯】' + text.substring(m.index + m[0].length);
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[0], index: m.index, type: 'placeholder', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
       const attachmentKeywords = ['营业执照', '审计报告', '资信证明', '法人证书', '资质证书', '财务报表', '无重大违法记录', '资格证明文件', '声明', '承诺函'];
@@ -876,13 +337,14 @@ export function scanBlanksFromXml(xmlString) {
       const isRequirement = /复印件|原件|提供|出具|须具备|副本|声明|加盖公章/.test(text) || hasBlankMarker;
       const alreadyHasBlank = blanks.some(
         b => b.paraIndex === currentParaIndex && 
-             ['underscore', 'dash', 'keyword_space', 'brackets', 'placeholder', 'image_placeholder'].includes(b.type)
+             ['underscore', 'dash', 'keyword_space', 'brackets', 'placeholder', 'image_placeholder', 'repeated_keyword'].includes(b.type)
       );
 
       if (hasAttachmentHint && isRequirement && !alreadyHasBlank && text.length > 5 && text.length < 300) {
         blanks.push({
           id: `blank_${++blankCounter}`,
           context: text,
+          markedContext: "【🎯】" + text,
           matchText: '[附件/资质插入位]',
           index: text.length, 
           type: 'attachment',
@@ -896,49 +358,70 @@ export function scanBlanksFromXml(xmlString) {
   }
 
   const cellInfos = buildTableStructureMap(xmlString);
-  console.log(`📊 表格解析结果: ${cellInfos.length} 个单元格`);
-  const seenEmptyCells = new Set();
   
+  const cellInfoMap = new Map();
   for (const cell of cellInfos) {
-    if (cell.cellText !== '' && !/^[\s_－-]+$/.test(cell.cellText)) continue;
-    if (cell.rowIndex === 0) continue;
+    if (cell.paraIndex !== undefined) cellInfoMap.set(cell.paraIndex, cell);
+  }
+
+  for (const blank of blanks) {
+    if (!['underscore', 'dash', 'keyword_space', 'spaces'].includes(blank.type)) continue;
+    const cellInfo = cellInfoMap.get(blank.paraIndex);
+    if (!cellInfo) continue;
+
+    const currentText = blank.context.replace(/[_－\-\s【🎯】]/g, '').trim();
+    const chineseChars = (currentText.match(/[\u4e00-\u9fa5]/g) || []).length;
     
-    // 记录关键单元格信息
-    if (cell.headerText?.includes('承诺人') || cell.rowHeader?.includes('单位名称') || 
-        cell.headerText?.includes('单位名称') || cell.rowHeader?.includes('承诺人')) {
-      console.log(`🔍 发现相关单元格: headerText="${cell.headerText}", rowHeader="${cell.rowHeader}", paraIndex: ${cell.paraIndex}`);
+    if (chineseChars < 3) {
+      let label = getAdjacentCellLabel(cellInfo, cellInfos);
+      if (!label && cellInfo.rowHeader) label = cellInfo.rowHeader;
+      if (!label && cellInfo.headerText) label = cellInfo.headerText;
+
+      if (label) {
+        blank.context = `${label}：${blank.context}`;
+        if (blank.markedContext) blank.markedContext = `${label}：${blank.markedContext}`;
+        blank._tableContextEnhanced = true;
+      }
+    }
+  }
+
+  for (const cell of cellInfos) {
+    if (cell.cellText !== '' && !/^[\s　_－-]+$/.test(cell.cellText)) continue;
+    if (cell.rowIndex === 0) continue;
+
+    let label = '';
+    if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
+      label = `${cell.headerText}（项：${cell.rowHeader}）`;
+    } else if (cell.headerText) {
+      label = cell.headerText;
+    } else if (cell.rowHeader) {
+      label = cell.rowHeader;
     }
 
-    const label = buildCellLabel(cell);
-
-    if (!label || /^[0-9]+$/.test(label) || shouldSkipEmptyCellLabel(label)) continue;
-
-    const cellKey = `${cell.tableIndex}:${cell.rowIndex}:${cell.colIndex}:${label}`;
-    if (seenEmptyCells.has(cellKey)) continue;
-    seenEmptyCells.add(cellKey);
+    if (!label || /^[0-9]+$/.test(label)) continue;
 
     const context = `${label}：[空白单元格]`;
-      blanks.push({
-        id: `blank_${++blankCounter}`,
-        context,
-        matchText: '[空白单元格]',
-        _cellLabel: label,
-        index: label.length + 1, 
-        textStart: label.length + 1,
-        textEnd: label.length + 1 + '[空白单元格]'.length,
-        type: 'empty_cell',
-        confidence: 'medium',
-        paraIndex: cell.paraIndex,
-        fill_role: determineFillRole(label),
-        fieldHint: label
-      });
+    blanks.push({
+      id: `blank_${++blankCounter}`,
+      context,
+      markedContext: `${label}：【🎯】`,
+      matchText: '[空白单元格]',
+      _cellLabel: label,
+      index: label.length + 1, 
+      type: 'empty_cell',
+      confidence: 'medium',
+      paraIndex: cell.paraIndex,
+      fill_role: determineFillRole(label)
+    });
   }
 
   const uniqueBlanks = [];
   const seen = new Set();
   for (const b of blanks) {
     let key;
-    if (b.type === 'image_placeholder') {
+    if (b.type === 'repeated_keyword') {
+      key = `${b.paraIndex}::${b.type}::${b.index}`;
+    } else if (b.type === 'image_placeholder') {
       key = `${b.paraIndex}::${b.type}`;
     } else {
       key = `${b.paraIndex}::${b.matchText}::${b.index}`;
@@ -956,10 +439,9 @@ export function scanBlanksFromXml(xmlString) {
       b.need_image = true;
     }
   }
-  return enrichBlankMetadata(uniqueBlanks);
+  return uniqueBlanks;
 }
 
-// 💡 核心修复 2：在替换引擎中同样支持 <w:tab/> 的抓取，确保文字和空格映射不错位
 function buildTextNodeMap(paragraphXml) {
   const NODE_REGEX = /(<w:t(?:\s[^>]*)?>)([^<]*)(<\/w:t>)|(<w:tab(?:\s[^>]*)?\/>)/g;
   const nodes = [];
@@ -968,14 +450,12 @@ function buildTextNodeMap(paragraphXml) {
   
   while ((m = NODE_REGEX.exec(paragraphXml)) !== null) {
     if (m[4]) {
-      // 这是一个制表符节点
       const text = '    ';
       nodes.push({ fullMatch: m[0], openTag: '', text, closeTag: '', matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: true });
       offset += text.length;
     } else {
-      // 这是一个普通文本节点
-      const text = m[2] || '';
-      nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[3], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
+      const text = m[3];
+      nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[4], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
       offset += text.length;
     }
   }
@@ -991,7 +471,6 @@ function rebuildParagraphXml(paragraphXml, nodes) {
     if (node._replaced) {
       let newFull;
       if (node.isTab) {
-        // 如果我们替换掉的是一个 <w:tab/>，需要将其包装为标准的文本节点插入
         newFull = node._newText ? `<w:t>${node._newText}</w:t>` : '';
       } else {
         newFull = node.openTag + node._newText + node.closeTag;
@@ -1006,35 +485,10 @@ function rebuildParagraphXml(paragraphXml, nodes) {
 }
 
 function findBlankInFullText(fullText, blank) {
-  if (!blank.matchText) {
-    return Number.isInteger(blank.index) ? blank.index : -1;
-  }
   let searchFrom = Math.max(0, (blank.index || 0) - 5);
   let idx = fullText.indexOf(blank.matchText, searchFrom);
   if (idx !== -1) return idx;
   return fullText.indexOf(blank.matchText);
-}
-
-function expandInlinePlaceholderRange(fullText, blankPos, blank) {
-  const matchText = blank.matchText || '';
-  let start = blankPos;
-  let end = blankPos + matchText.length;
-
-  if (blank.type === 'underscore') {
-    while (start > 0 && /[_＿]/.test(fullText[start - 1])) start -= 1;
-    while (end < fullText.length && /[_＿]/.test(fullText[end])) end += 1;
-  }
-
-  if (blank.type === 'dash') {
-    while (start > 0 && /[-－—─﹣]/.test(fullText[start - 1])) start -= 1;
-    while (end < fullText.length && /[-－—─﹣]/.test(fullText[end])) end += 1;
-  }
-
-  if (blank.type === 'keyword_space' && matchText) {
-    while (end < fullText.length && /[\s\u3000]/.test(fullText[end])) end += 1;
-  }
-
-  return { start, end };
 }
 
 function getOverlappingNodes(nodes, textStart, textEnd) {
@@ -1044,36 +498,6 @@ function getOverlappingNodes(nodes, textStart, textEnd) {
     result.push(node);
   }
   return result;
-}
-
-function replaceTextRangeInNodes(nodes, textStart, textEnd, replacementText) {
-  let overlappingNodes = getOverlappingNodes(nodes, textStart, textEnd);
-  if (overlappingNodes.length === 0 && textStart === textEnd) {
-    const insertNode = nodes.find((node) => textStart >= node.textStart && textStart <= node.textEnd);
-    if (insertNode) {
-      overlappingNodes = [insertNode];
-    }
-  }
-  if (overlappingNodes.length === 0) return false;
-
-  const safeReplacement = replacementText ?? '';
-
-  for (let i = 0; i < overlappingNodes.length; i++) {
-    const node = overlappingNodes[i];
-    const sliceStart = Math.max(textStart, node.textStart) - node.textStart;
-    const sliceEnd = Math.min(textEnd, node.textEnd) - node.textStart;
-    const prefix = node.text.slice(0, sliceStart);
-    const suffix = node.text.slice(sliceEnd);
-
-    node._replaced = true;
-    if (i === 0) {
-      node._newText = prefix + safeReplacement + suffix;
-    } else {
-      node._newText = prefix + suffix;
-    }
-  }
-
-  return true;
 }
 
 export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap, hyperlinkRidMap = {}) {
@@ -1125,12 +549,9 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
       let matchText = blank.matchText;
       
       const searchBlank = { ...blank, matchText };
-      let blankPos = findBlankInFullText(fullText, searchBlank);
-      if (blankPos === -1 && Number.isInteger(blank.index) && blank.index >= 0 && blank.index <= fullText.length) {
-        blankPos = blank.index;
-      }
+      const blankPos = findBlankInFullText(fullText, searchBlank);
       
-      if (blank.type === 'attachment') {
+      if (blankPos === -1 || blank.type === 'attachment') {
         if (isImage) {
           const imgInfo = imageRidMap[blank.id];
           newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
@@ -1144,54 +565,33 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
         } else {
           newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
         }
-      } else if (blankPos === -1) {
-        if (shouldAppendAfterAnchor(blank)) {
-          if (replaceTextRangeInNodes(nodes, fullText.length, fullText.length, escapeXml(value))) {
-            newParaXml = rebuildParagraphXml(paraXml, nodes);
-          }
-        } else if (!isInlineBlankType(blank.type)) {
-          if (isImage) {
-            const imgInfo = imageRidMap[blank.id];
-            newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
-          } else if (isDocUrl) {
-            const displayText = getDisplayTextFromUrl(value, blank.context);
-            if (hyperlinkRId) {
-              newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
-            } else {
-              newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
-            }
-          } else {
-            newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
-          }
-        } else {
-          console.warn(`⚠️ 未定位到空白位置，跳过追加以避免写到后缀后面: ${blank.id}`, {
-            paraIndex: blank.paraIndex,
-            matchText: blank.matchText,
-            context: blank.context
-          });
-        }
       } else {
-        const expandedRange = expandInlinePlaceholderRange(fullText, blankPos, blank);
-        const blankEnd = expandedRange.end;
-        const preserveAnchorText = blank.type === 'brackets' && /盖章|公章|签章/.test(blank.matchText || blank.context || '');
-        const replaceStart = preserveAnchorText ? blankEnd : expandedRange.start;
-        const replaceEnd = preserveAnchorText ? blankEnd : expandedRange.end;
-        const inlineReplacement = (!isImage && !isDocUrl) ? escapeXml(value) : '';
-
-        if (replaceTextRangeInNodes(nodes, replaceStart, replaceEnd, inlineReplacement)) {
+        const blankEnd = blankPos + matchText.length;
+        const coveredNodes = getOverlappingNodes(nodes, blankPos, blankEnd);
+        if (coveredNodes.length > 0) {
           if (isImage) {
             const imgInfo = imageRidMap[blank.id];
+            for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
             let tempParaXml = rebuildParagraphXml(paraXml, nodes);
             newParaXml = tempParaXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
           } else if (isDocUrl) {
             const displayText = getDisplayTextFromUrl(value, blank.context);
             if (hyperlinkRId) {
+              for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
               let tempParaXml = rebuildParagraphXml(paraXml, nodes);
               newParaXml = tempParaXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
             } else {
+              for (let i = 0; i < coveredNodes.length; i++) {
+                coveredNodes[i]._replaced = true;
+                coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
+              }
               newParaXml = rebuildParagraphXml(paraXml, nodes);
             }
           } else {
+            for (let i = 0; i < coveredNodes.length; i++) {
+              coveredNodes[i]._replaced = true;
+              coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
+            }
             newParaXml = rebuildParagraphXml(paraXml, nodes);
           }
         }
@@ -1221,19 +621,20 @@ export function extractIndexedParagraphs(xmlString) {
   const cellInfos = buildTableStructureMap(xmlString);
   const tableParaSet = new Set();
   const paraToLabel = new Map();
-  const seenPreviewCells = new Set();
 
   for (const cell of cellInfos) {
-    const label = buildCellLabel(cell);
-    const cellKey = `${cell.tableIndex}:${cell.rowIndex}:${cell.colIndex}:${label}`;
-    if (seenPreviewCells.has(cellKey)) continue;
-    seenPreviewCells.add(cellKey);
-
     tableParaSet.add(cell.paraIndex);
-    if (cell.cellText === '' || /^[\s_－-]+$/.test(cell.cellText)) {
+    if (cell.cellText === '' || /^[\s　_－-]+$/.test(cell.cellText)) {
       if (cell.rowIndex === 0) continue;
-      if (!label || shouldSkipEmptyCellLabel(label)) continue;
-
+      
+      let label = '';
+      if (cell.headerText && cell.rowHeader && cell.headerText !== cell.rowHeader) {
+        label = `${cell.headerText}（项：${cell.rowHeader}）`;
+      } else if (cell.headerText) {
+        label = cell.headerText;
+      } else if (cell.rowHeader) {
+        label = cell.rowHeader;
+      }
       paraToLabel.set(cell.paraIndex, label);
     }
   }
@@ -1254,137 +655,93 @@ export function extractIndexedParagraphs(xmlString) {
   return paragraphs;
 }
 
+// ====== 替换 wordBlankFiller.js 最底部的 mergeBlanks 函数 ======
+
 export function mergeBlanks(regexBlanks, aiBlanks) {
   const merged = [...regexBlanks];
-  const regexRichParagraphs = new Set();
-  const regexCountByParagraph = new Map();
-  regexBlanks.forEach((blank) => {
-    const count = (regexCountByParagraph.get(blank.paraIndex) || 0) + 1;
-    regexCountByParagraph.set(blank.paraIndex, count);
-    if (count >= 2) {
-      regexRichParagraphs.add(blank.paraIndex);
+  
+  const regexParaMatches = new Set();
+  const regexParaHasLines = new Set();
+  
+  regexBlanks.forEach(b => {
+    // 剔除所有空格后记录，防止 AI 扫描因多一个空格导致去重失败
+    const matchTrim = (b.matchText || '').replace(/\s+/g, '');
+    regexParaMatches.add(`${b.paraIndex}|${matchTrim}`);
+    if (b.type === 'underscore' || b.type === 'dash') {
+      regexParaHasLines.add(b.paraIndex);
     }
   });
-  const buildSignature = (blank) => {
-    const start = blank.textStart ?? blank.index ?? 0;
-    const end = blank.textEnd ?? (start + ((blank.matchText || '').length || 0));
-    const localKey = normalizeBlankContextKey(buildLocalContext(blank.context || '', start, end));
-    const hintKey = normalizeBlankContextKey(blank.fieldHint || '');
-    return `${blank.paraIndex}|${hintKey}|${localKey}`;
-  };
 
-  const isLikelyDuplicateBlank = (candidate) => merged.some((existing) => {
-    if (existing.paraIndex !== candidate.paraIndex) return false;
-    const existingStart = existing.textStart ?? existing.index ?? 0;
-    const candidateStart = candidate.textStart ?? candidate.index ?? 0;
-    const sameHint = normalizeBlankContextKey(existing.fieldHint || '')
-      && normalizeBlankContextKey(existing.fieldHint || '') === normalizeBlankContextKey(candidate.fieldHint || '');
-    const sameLocalContext = normalizeBlankContextKey(existing.localContext || '')
-      && normalizeBlankContextKey(existing.localContext || '') === normalizeBlankContextKey(candidate.localContext || '');
-    return sameLocalContext || (sameHint && Math.abs(existingStart - candidateStart) <= 3);
-  });
-
-  const existingKeys = new Set(regexBlanks.map(buildSignature));
   aiBlanks.forEach(aiBlank => {
-    if (regexRichParagraphs.has(aiBlank.paraIndex) || (isChainedFieldParagraph(aiBlank.context || '') && regexCountByParagraph.has(aiBlank.paraIndex))) {
-      return;
-    }
+    const matchTrim = (aiBlank.matchText || '').replace(/\s+/g, '');
+    const key = `${aiBlank.paraIndex}|${matchTrim}`;
+    
+    // 1. 去重：正则已经找到完全一样的填空词，坚决丢弃！
+    if (regexParaMatches.has(key)) return;
+    
+    // 2. 去重：如果 AI 找到的仅仅是下划线，且该段落正则已经扫过下划线，直接拦截！
+    const isJustLines = /^[_－\-\s]+$/.test(aiBlank.matchText || '');
+    if (isJustLines && regexParaHasLines.has(aiBlank.paraIndex)) return;
+    
     const computedIndex = aiBlank.index ?? 
-      (aiBlank.context && aiBlank.matchText 
-        ? aiBlank.context.indexOf(aiBlank.matchText) 
-        : 0);
-    const textStart = computedIndex >= 0 ? computedIndex : 0;
-    const textEnd = textStart + ((aiBlank.matchText || '').length || 0);
-    const candidate = {
-      ...aiBlank,
-      id: `blank_ai_${merged.length + 1}`,
+      (aiBlank.context && aiBlank.matchText ? aiBlank.context.indexOf(aiBlank.matchText) : -1);
+        
+    // 3. 强行给 AI 扫描的空白补上靶心 markedContext
+    let markedCtx = aiBlank.markedContext;
+    if (!markedCtx && aiBlank.context && aiBlank.matchText) {
+      if (computedIndex >= 0) {
+         markedCtx = aiBlank.context.substring(0, computedIndex) + '【🎯】' + aiBlank.context.substring(computedIndex + aiBlank.matchText.length);
+      } else {
+         markedCtx = aiBlank.context.replace(aiBlank.matchText, '【🎯】');
+      }
+    }
+    
+    merged.push({ 
+      ...aiBlank, 
+      id: `blank_ai_${merged.length + 1}`, 
       confidence: aiBlank.confidence || 'medium',
       fill_role: aiBlank.fill_role || determineFillRole(aiBlank.context || '', aiBlank.type || ''),
-      index: textStart,
-      textStart,
-      textEnd,
-      fieldHint: aiBlank.field_hint || inferFieldHint(aiBlank.context || '', aiBlank.matchText || ''),
-      localContext: buildLocalContext(aiBlank.context || '', textStart, textEnd)
-    };
-    const key = buildSignature(candidate);
-    if (!existingKeys.has(key) && !isLikelyDuplicateBlank(candidate)) {
-      merged.push({ 
-        ...candidate
-      });
-      existingKeys.add(key);
-    }
+      index: computedIndex >= 0 ? computedIndex : 0,
+      markedContext: markedCtx || (aiBlank.context + '【🎯】')
+    });
+    
+    regexParaMatches.add(key);
   });
-  return enrichBlankMetadata(merged);
+  
+  // ================= 🚨 新增：严格排序与动态序号计算 =================
+  // 将所有填空题严格按照物理文档的阅读顺序排序
+  merged.sort((a, b) => {
+    // 1. 先按段落先后排序
+    if (a.paraIndex !== b.paraIndex) return (a.paraIndex || 0) - (b.paraIndex || 0);
+    // 2. 同一段落内，按字符坐标(index)从左到右排序
+    return (a.index || 0) - (b.index || 0);
+  });
+
+  // 动态分配段落内的第几空（blankOrdinalInParagraph）
+  let currentPara = -1;
+  let ordinal = 1;
+  merged.forEach(b => {
+    if (b.paraIndex !== currentPara) {
+      currentPara = b.paraIndex;
+      ordinal = 1; // 遇到新段落，重新从 1 开始计数
+    }
+    b.blankOrdinalInParagraph = ordinal++;
+  });
+  // ====================================================================
+
+  return merged;
 }
 
 export function extractParagraphsForPreview(xmlString, blanks) {
   const paragraphs = [];
-  console.log('🔍 [extractParagraphsForPreview] 开始，空白总数:', blanks.length);
-  
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
   let paraMatch;
   let paraIndex = 0;
-  let lastDisplayText = '';
-  let lastBlankSignature = '';
 
   while ((paraMatch = paragraphRegex.exec(xmlString)) !== null) {
     const xml = paraMatch[0];
-    let text = getVisibleTextFromXml(xml).trim();
+    const text = getVisibleTextFromXml(xml).trim();
     const matchedBlanks = blanks.filter(b => b.paraIndex === paraIndex);
-
-    // 增强的重复检测：使用正则表达式匹配任何文本在冒号后的重复
-    if (text) {
-      // 模式1：检测 "文本：文本："
-      const colonDuplicatePattern = /([^：\n]+：)\1/;
-      // 模式2：检测具体已知的重复模式
-      const specificPatterns = [
-        /承诺人（公章）：承诺人（公章）：/,
-        /单位名称：单位名称：/,
-        /承诺日期：承诺日期：/,
-        /地 址：地 址：/,
-        /单位性质：单位性质：/,
-        /经营期限：经营期限：/
-      ];
-      
-      let hasDuplicate = false;
-      let duplicateMatch = null;
-      
-      // 先检查通用的冒号重复
-      const colonMatch = text.match(colonDuplicatePattern);
-      if (colonMatch) {
-        hasDuplicate = true;
-        duplicateMatch = colonMatch[0];
-      } else {
-        // 检查具体的重复模式
-        for (const pattern of specificPatterns) {
-          if (pattern.test(text)) {
-            hasDuplicate = true;
-            duplicateMatch = pattern.toString().replace(/^\/|\/$/g, '');
-            break;
-          }
-        }
-      }
-      
-      if (hasDuplicate) {
-        console.warn(`⚠️⚠️⚠️ [extractParagraphsForPreview] 段落 ${paraIndex} 检测到重复文本！`);
-        console.log(`  重复模式: ${duplicateMatch}`);
-        console.log(`  完整文本（前200字符）: "${text.substring(0, 200)}${text.length > 200 ? '...' : ''}"`);
-        console.log(`  关联空白数量: ${matchedBlanks.length}`);
-        if (matchedBlanks.length > 0) {
-          console.log('  关联空白详情:', matchedBlanks.map(b => ({
-            id: b.id,
-            type: b.type,
-            matchText: b.matchText,
-            context: b.context ? b.context.substring(0, 80) + (b.context.length > 80 ? '...' : '') : null
-          })));
-        }
-        
-        // 💡 修复：使用正则表达式替换移除重复的文本
-        // 例如："承诺人（公章）：承诺人（公章）：" -> "承诺人（公章）："
-        text = text.replace(/([^：\n]+：)\1/g, '$1');
-        console.log(`  ✅ 修复后文本: "${text.substring(0, 200)}${text.length > 200 ? '...' : ''}"`);
-      }
-    }
 
     if (text.length > 0 || matchedBlanks.length > 0) {
       let displayText = text;
@@ -1396,23 +753,11 @@ export function extractParagraphsForPreview(xmlString, blanks) {
 
       if (displayText.length === 0 && matchedBlanks.length > 0) {
         displayText = matchedBlanks[0].context; 
-        console.log(`ℹ️ 段落 ${paraIndex} 为空，使用空白上下文: "${displayText}"`);
       }
-      const blankIds = matchedBlanks.map(b => b.id);
-      const blankSignature = matchedBlanks
-        .map((b) => `${b.type}:${b._cellLabel || b.matchText}:${b.paraIndex}`)
-        .join('|');
-
-      if (!(displayText === lastDisplayText && blankSignature === lastBlankSignature)) {
-        paragraphs.push({ text: displayText || '[空段落]', blankIds });
-        lastDisplayText = displayText;
-        lastBlankSignature = blankSignature;
-      }
+      paragraphs.push({ text: displayText || '[空段落]', blankIds: matchedBlanks.map(b => b.id) });
     }
     paraIndex++;
   }
-  
-  console.log(`📊 [extractParagraphsForPreview] 生成 ${paragraphs.length} 个段落`);
   return paragraphs;
 }
 
@@ -1462,7 +807,7 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
     }
     
     if (val && isImageUrl(val)) {
-      imageEntries.push({ blankId: blank.id, url: val.trim(), blank });
+      imageEntries.push({ blankId: blank.id, url: val.trim() });
     }
     
     if (val && isDocumentUrl(val)) {
@@ -1476,9 +821,13 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
   if (imageEntries.length > 0) {
     const results = await Promise.allSettled(
       imageEntries.map(async (entry) => {
-        const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
-        const { w, h } = await loadImageNaturalSize(buffer);
-        return { ...entry, buffer, mime, naturalW: w, naturalH: h };
+        try {
+          const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
+          const { w, h } = await loadImageNaturalSize(buffer);
+          return { ...entry, buffer, mime, naturalW: w, naturalH: h };
+        } catch (error) {
+          throw error;
+        }
       })
     );
     for (const r of results) {
@@ -1515,8 +864,8 @@ export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues,
       const target = `media/injected_${i + 1}.${ext}`;
       zip.file(mediaFileName, img.buffer);
       const rId = addRelationship(relsObj, target, IMAGE_REL_TYPE);
-      const imageType = detectImageInsertType(img.blank, img.url, img.naturalW, img.naturalH);
-      const { cx, cy } = getImageSizeStrategy(imageType, img.naturalW, img.naturalH);
+      const TARGET_PX = 160;
+      const { cx, cy } = getImageDimensionsEmu(TARGET_PX, img.naturalW, img.naturalH);
       imageRidMap[img.blankId] = { rId, cxEmu: cx, cyEmu: cy };
     }
     zip.file(RELS_PATH, relsObj.xml);

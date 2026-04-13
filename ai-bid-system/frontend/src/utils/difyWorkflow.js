@@ -123,20 +123,28 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
     }
   }
 
-  // ================= 🚨 核心修复点 🚨 =================
+  // ====== 修改 difyWorkflow.js 中的 blankList 映射逻辑 ======
   const blankList = autoBlanks.map(b => {
-    return {
-      id: b.id,
-      context: buildMarkedContext(b),
-      full_context: b.context,
-      type: b.type,
-      field_hint: b.fieldHint || '',
-      ordinal: b.blankOrdinalInParagraph || 1,
-      para_index: b.paraIndex
-    };
-  });
-  // ====================================================
+    // 优先使用底层（正则或上面去重函数）精准生成的 markedContext
+    let finalMarkedContext = b.markedContext;
+    
+    // 🛡️ 极致兜底：万一遇到极特殊的缺失情况，利用坐标强行切出一个靶心
+    if (!finalMarkedContext) {
+       if (b.index !== undefined && b.index >= 0 && b.matchText) {
+          finalMarkedContext = (b.context || '').substring(0, b.index) + '【🎯】' + (b.context || '').substring(b.index + b.matchText.length);
+       } else if (b.matchText) {
+          finalMarkedContext = (b.context || '').replace(b.matchText, '【🎯】');
+       } else {
+          finalMarkedContext = (b.context || '') + '【🎯】';
+       }
+    }
 
+    if (b.type === 'attachment') {
+      finalMarkedContext = "【🎯资质附件插入位置🎯】 " + (b.context || '');
+    }
+    
+    return { id: b.id, context: finalMarkedContext, type: b.type };
+  });
   const CHUNK_SIZE = 10;
   const chunks = [];
   for (let i = 0; i < blankList.length; i += CHUNK_SIZE) {

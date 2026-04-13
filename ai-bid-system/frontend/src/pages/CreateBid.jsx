@@ -1635,6 +1635,7 @@ export default function CreateBid() {
         return <Tag color={info.color} className="text-xs">{info.label}</Tag>;
       }
     },
+    // ====== 修改 CreateBid.jsx 中的 blankColumns 数组 ======
     {
       title: '定位',
       key: 'locator',
@@ -1645,14 +1646,8 @@ export default function CreateBid() {
             {record.fieldHint || '未命名字段'}
             <span className="ml-2 text-[11px] text-gray-400">P{record.paraIndex} / 第{record.blankOrdinalInParagraph || 1}空</span>
           </div>
-          {matchedTemplateSlots[record.id]?.slot && (
-            <div className="mt-1">
-              <Tag color="purple" className="text-[10px]">
-                模板槽位：{matchedTemplateSlots[record.id].slot.slot_name}
-              </Tag>
-            </div>
-          )}
-          <div className="mt-1 text-[11px] text-gray-500 break-all">{record.localContext || record.context}</div>
+          {/* 💡 核心：优先显示 markedContext，让你清清楚楚看到【🎯】到底指着谁！ */}
+          <div className="mt-1 text-[11px] text-gray-500 break-all">{record.markedContext || record.context}</div>
         </div>
       )
     },
