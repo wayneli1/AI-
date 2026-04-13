@@ -134,6 +134,7 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
 
   // 💡 修复重点：大幅度放宽拦截网，防止误杀！只有极其明确的金额和偏离才会拦截
   const MANUAL_CONTEXT_PATTERN = /总价|单价|费率|偏离度|响应差异/;
+  const DATE_CONTEXT_PATTERN = /(?:^|\b)(?:投标)?日期[：:]?|年月日[：:]?/;
   
   const autoBlanks = [];
   const manualBlanks = [];
@@ -142,8 +143,9 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
     const role = b.fill_role || 'auto'; // 💡 默认改为 auto！相信大模型的判断能力
     const isManualType = b.type === 'date_pattern';
     const hasManualContext = MANUAL_CONTEXT_PATTERN.test(b.context || '');
+    const hasDateContext = DATE_CONTEXT_PATTERN.test(`${b.context || ''} ${b.markedContext || ''} ${b.auditFieldHint || ''} ${b.fieldHint || ''}`);
     
-    if (role === 'manual' || isManualType || hasManualContext) {
+    if (role === 'manual' || isManualType || hasManualContext || hasDateContext) {
       manualBlanks.push(b);
     } else {
       autoBlanks.push(b);

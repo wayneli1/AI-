@@ -27,6 +27,29 @@ function buildPlaceholderRegex(placeholder) {
   return new RegExp(pattern, 'g');
 }
 
+function isStructuralEmptyParagraph(paragraphXml = '') {
+  if (!paragraphXml) return false;
+
+  const visibleText = getVisibleTextFromXml(paragraphXml).replace(/[\s\u3000]/g, '');
+  if (visibleText.length > 0) return false;
+
+  // 节分隔、书签、仅段落属性这类“视觉留白段”也视为可填写留白。
+  return /<w:sectPr[\s>]|<w:bookmarkStart[\s>]|<w:bookmarkEnd[\s>]|<w:pPr[\s>]/.test(paragraphXml);
+}
+
+function isStandaloneLabelParagraph(text = '') {
+  const normalized = String(text || '').replace(/\s+/g, '').trim();
+  if (!normalized) return false;
+
+  return /(?:签字或盖章|签字|盖章|法人公章|法定代表人|被授权人|委托代理人|授权代表|投标人|职务|日期|年月日)[：:]?$/.test(normalized);
+}
+
+function isDateLikeLabel(text = '') {
+  const normalized = String(text || '').replace(/\s+/g, '').trim();
+  if (!normalized) return false;
+  return /^(?:投标)?日期[：:]?$|^年月日[：:]?$/.test(normalized);
+}
+
 function getVisibleTextFromXml(xml) {
   if (!xml) return '';
   let cleanXml = xml.replace(/<mc:Fallback[\s\S]*?<\/mc:Fallback>/g, '');
@@ -278,6 +301,7 @@ export function scanBlanksFromXml(xmlString) {
   let blankCounter = 0;
 
   const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
+  const paragraphs = [...xmlString.matchAll(paragraphRegex)];
   let paraMatch;
   let currentParaIndex = 0;
 
@@ -317,7 +341,7 @@ export function scanBlanksFromXml(xmlString) {
 
       const colonEndPattern = /^\s*((?:\d+(?:\.\d+)*[.、]\s*)?[^：:\n]{2,120})([：:])\s*$/;
       const colonEndMatch = text.match(colonEndPattern);
-      if (colonEndMatch) {
+      if (colonEndMatch && !isDateLikeLabel(text)) {
         const colonIndex = text.lastIndexOf(colonEndMatch[2]);
         blanks.push({
           id: `blank_${++blankCounter}`,
@@ -397,6 +421,32 @@ export function scanBlanksFromXml(xmlString) {
           confidence: 'high',
           paraIndex: currentParaIndex,
           fill_role: 'auto' 
+        });
+      }
+
+      const nextParagraphXml = paragraphs[currentParaIndex + 1]?.[0] || '';
+      const shouldInferBlankAfterLabel =
+        isStandaloneLabelParagraph(text) &&
+        !isDateLikeLabel(text) &&
+        isStructuralEmptyParagraph(nextParagraphXml) &&
+        !alreadyHasBlank;
+
+      if (shouldInferBlankAfterLabel) {
+        const colonMatch = text.match(/[：:]/);
+        const colonIndex = colonMatch ? text.lastIndexOf(colonMatch[0]) : text.length;
+        blanks.push({
+          id: `blank_${++blankCounter}`,
+          context: text,
+          markedContext: `${text.slice(0, colonIndex + (colonMatch ? 1 : 0))}【🎯】`,
+          matchText: '',
+          index: colonIndex + (colonMatch ? 1 : 0),
+          textStart: colonIndex + (colonMatch ? 1 : 0),
+          textEnd: colonIndex + (colonMatch ? 1 : 0),
+          type: 'keyword_space',
+          confidence: 'medium',
+          paraIndex: currentParaIndex,
+          fill_role: determineFillRole(text),
+          inferredFromNextParagraph: true
         });
       }
     }
