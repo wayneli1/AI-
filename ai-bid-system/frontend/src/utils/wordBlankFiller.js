@@ -50,6 +50,20 @@ function isDateLikeLabel(text = '') {
   return /^(?:投标)?日期[：:]?$|^年月日[：:]?$/.test(normalized);
 }
 
+function isDateLikeBlankContent(text = '') {
+  const normalized = String(text || '').replace(/\s+/g, '').trim();
+  if (!normalized) return false;
+
+  return /(?:投标)?日期|年月日|成立日期|出生日期|注册日期|签字生效|有效期|自.*?年.*?月.*?日.*?至.*?年.*?月.*?日|于.*?年.*?月.*?日/.test(normalized);
+}
+
+export function filterIgnoredBlanks(blanks = []) {
+  return blanks.filter((blank) => {
+    const haystack = `${blank.context || ''} ${blank.markedContext || ''} ${blank.matchText || ''} ${blank.auditFieldHint || ''} ${blank.fieldHint || ''}`;
+    return !isDateLikeBlankContent(haystack);
+  });
+}
+
 function getVisibleTextFromXml(xml) {
   if (!xml) return '';
   let cleanXml = xml.replace(/<mc:Fallback[\s\S]*?<\/mc:Fallback>/g, '');

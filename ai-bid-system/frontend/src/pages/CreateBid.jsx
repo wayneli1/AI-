@@ -16,7 +16,8 @@ import {
   extractDocumentXml,
   generateFilledDocx,
   extractIndexedParagraphs,
-  mergeBlanks
+  mergeBlanks,
+  filterIgnoredBlanks
 } from '../utils/wordBlankFiller';
 import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
 
@@ -428,7 +429,7 @@ export default function CreateBid() {
         }
 
         if (data.framework_content) {
-          const blanks = JSON.parse(data.framework_content);
+          const blanks = filterIgnoredBlanks(JSON.parse(data.framework_content));
           setScannedBlanks(blanks);
         }
 
@@ -1076,7 +1077,7 @@ export default function CreateBid() {
         message.warning({ content: 'AI 扫描失败，仅使用正则识别结果', key: 'scan', duration: 3 });
       }
 
-      const mergedBlanks = mergeBlanks(regexBlanks, aiBlanks);
+      const mergedBlanks = filterIgnoredBlanks(mergeBlanks(regexBlanks, aiBlanks));
 
       if (mergedBlanks.length === 0) {
         message.warning({ content: '未扫描到空白位置，该文件可能不需要填报，或空白格式未被识别。', key: 'scan', duration: 5 });

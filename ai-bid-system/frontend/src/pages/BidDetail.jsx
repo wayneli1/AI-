@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { Button, Spin, message } from 'antd';
-import { ArrowLeft, ChevronLeft, ChevronRight, Eye, EyeOff, List } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Download, Eye, EyeOff, List } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { renderAsync } from 'docx-preview';
@@ -818,6 +818,26 @@ const BidDetail = () => {
     };
   }, [activeTab]);
 
+  const downloadContent = async (content, variant, suffix) => {
+    if (!content) return message.warning(`${suffix}内容为空`);
+    try {
+      const html = markdownToHtml(content, variant, `${project?.project_name || '标书'}_${suffix}`);
+      const blob = new Blob([html], { type: 'application/msword' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${project?.project_name || '标书'}_${suffix}.doc`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      message.success(`${suffix}下载开始`);
+    } catch (error) {
+      console.error('下载失败:', error);
+      message.error('生成文档失败，请重试');
+    }
+  };
+
   if (loading) {
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-[#f8fafc]">
@@ -995,7 +1015,7 @@ const BidDetail = () => {
               </div>
             </div>
 
-            <div ref={scrollContainerRef} className="h-full overflow-y-auto px-8 pb-36 pt-8">
+            <div ref={scrollContainerRef} className="h-full overflow-y-auto px-8 pb-32 pt-8">
               <div className="mx-auto max-w-5xl">
                 <div className="rounded-[32px] border border-[#d7dee9] bg-[#fffefe] px-10 py-10 shadow-[0_24px_60px_rgba(15,23,42,0.06)] md:px-14">
                   <div className="mb-8 border-b border-[#e1e7f0] pb-6">
@@ -1061,6 +1081,35 @@ const BidDetail = () => {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-6 z-30 flex justify-center px-6">
+          <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-3 rounded-full border border-white/80 bg-white/92 px-4 py-3 shadow-2xl backdrop-blur-xl">
+            <button
+              type="button"
+              onClick={() => downloadContent(reportMarkdown, 'report', '深度解析报告')}
+              className="inline-flex items-center gap-2 rounded-full bg-violet-500 px-5 py-3 text-sm font-semibold text-white shadow-[0_10px_24px_rgba(139,92,246,0.28)] transition hover:bg-violet-600"
+            >
+              <Download size={16} />
+              下载深度解析报告
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadContent(frameworkMarkdown, 'framework', '投标文件完整框架')}
+              className="inline-flex items-center gap-2 rounded-full border border-[#d8e0eb] bg-white px-5 py-3 text-sm font-semibold text-gray-700 transition hover:border-violet-300 hover:text-violet-600"
+            >
+              <Download size={16} />
+              下载投标文件完整框架
+            </button>
+            <button
+              type="button"
+              onClick={() => downloadContent(checklistMarkdown, 'checklist', '商务资料清单')}
+              className="inline-flex items-center gap-2 rounded-full border border-[#d8e0eb] bg-white px-5 py-3 text-sm font-semibold text-gray-700 transition hover:border-violet-300 hover:text-violet-600"
+            >
+              <Download size={16} />
+              下载商务资料清单
+            </button>
           </div>
         </div>
 

@@ -134,7 +134,7 @@ export const fillDocumentBlanks = async (blankContexts, companyName, tenderConte
 
   // 💡 修复重点：大幅度放宽拦截网，防止误杀！只有极其明确的金额和偏离才会拦截
   const MANUAL_CONTEXT_PATTERN = /总价|单价|费率|偏离度|响应差异/;
-  const DATE_CONTEXT_PATTERN = /(?:^|\b)(?:投标)?日期[：:]?|年月日[：:]?/;
+  const DATE_CONTEXT_PATTERN = /(?:投标)?日期[：:]?|年月日[：:]?|成立日期|出生日期|注册日期|签字生效|有效期|自.*?年.*?月.*?日.*?至.*?年.*?月.*?日|于.*?年.*?月.*?日/;
   
   const autoBlanks = [];
   const manualBlanks = [];
