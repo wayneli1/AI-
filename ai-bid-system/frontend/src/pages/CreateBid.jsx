@@ -24,19 +24,38 @@ const normalizeAuditText = (value = '') => String(value || '').replace(/\s+/g, '
 
 const deriveAuditFieldHint = (blank) => {
   const rawHint = String(blank?.fieldHint || '').trim();
-  const localContext = String(blank?.localContext || blank?.context || '');
+  const localContext = String(blank?.markedContext || blank?.localContext || blank?.context || '');
   const marker = '【🎯】';
   const markerIndex = localContext.indexOf(marker);
   const before = markerIndex >= 0 ? localContext.slice(0, markerIndex) : localContext;
   const after = markerIndex >= 0 ? localContext.slice(markerIndex + marker.length) : '';
 
+  // 1. 冒号就近匹配
   const lastColonMatch = before.match(/([^：:，。,；;（）()\n]{1,24})[：:]\s*$/);
   if (lastColonMatch?.[1]) {
-    return lastColonMatch[1].trim();
+    return lastColonMatch[1].replace(/[_－\-\s]+/g, '').trim();
   }
 
+  // 🐛 核心修复：处理特殊倒装句式（无冒号，且真实含义向后倒装）
+  const cleanBefore = before.replace(/[_－\-\s]+/g, '');
+  const cleanAfter = after.replace(/[_－\-\s]+/g, '');
+  
+  // 句式 1："系 [公司名称] 的法定代表人"
+  if (/(?:系|是|为)$/.test(cleanBefore) && /^的?(?:法定代表人|法人代表|法人|委托代理人|授权代表)/.test(cleanAfter)) {
+    return '投标人名称'; 
+  }
+  // 句式 2："( [公司名称] ) 法定代表人"
+  if (cleanBefore.endsWith('（') || cleanBefore.endsWith('(')) {
+    if (/^(?:法定代表人|法人代表|法人|委托代理人|授权代表)/.test(cleanAfter)) {
+      return '投标人名称'; 
+    }
+  }
+
+  // 2. 关键词模糊距离匹配
   const nearestBefore = [...before.matchAll(/(单位名称|投标人名称|供应商名称|报价人单位名称|法定代表人姓名|法定代表人|被授权人姓名|被授权人|委托代理人|授权代表|姓名|性别|年龄|职务|身份证号码|身份证号|联系电话|电子邮箱|开户地址|联系地址|注册地址|详细通讯地址|地址|邮编|开户行|银行账号|统一社会信用代码|项目名称|项目|报价|版本号|型号)/g)];
-  const nearestAfter = after.match(/^(单位名称|投标人名称|供应商名称|报价人单位名称|法定代表人姓名|法定代表人|被授权人姓名|被授权人|委托代理人|授权代表|姓名|性别|年龄|职务|身份证号码|身份证号|联系电话|电子邮箱|开户地址|联系地址|注册地址|详细通讯地址|地址|邮编|开户行|银行账号|统一社会信用代码|项目名称|项目|报价|版本号|型号)/);
+  
+  // 稍微放宽向后匹配的条件，允许带一点点介词或符号
+  const nearestAfter = after.match(/^.{0,3}?(单位名称|投标人名称|供应商名称|报价人单位名称|法定代表人姓名|法定代表人|被授权人姓名|被授权人|委托代理人|授权代表|姓名|性别|年龄|职务|身份证号码|身份证号|联系电话|电子邮箱|开户地址|联系地址|注册地址|详细通讯地址|地址|邮编|开户行|银行账号|统一社会信用代码|项目名称|项目|报价|版本号|型号)/);
 
   const candidate = nearestAfter?.[1] || nearestBefore.at(-1)?.[1] || rawHint;
   if (/开户地址|联系地址|注册地址|详细通讯地址/.test(candidate)) return '地址';

@@ -669,7 +669,14 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
         }
       } else {
         const expandedRange = getExpandedPlaceholderRange(fullText, blankPos, blank);
-        const coveredNodes = getOverlappingNodes(nodes, expandedRange.start, expandedRange.end);
+        let coveredNodes = getOverlappingNodes(nodes, expandedRange.start, expandedRange.end);
+        
+        // 🐛 BUG 修复：针对冒号后直接为空（0长度插入，start === end）的极端边界情况
+        // 因为 getOverlappingNodes 在边界上会返回空数组，导致替换逻辑直接被跳过，致使数据丢失
+        if (coveredNodes.length === 0 && expandedRange.start === expandedRange.end) {
+          const insertNode = nodes.find((node) => expandedRange.start >= node.textStart && expandedRange.start <= node.textEnd);
+          if (insertNode) coveredNodes = [insertNode];
+        }
         if (coveredNodes.length > 0) {
           if (isImage) {
             const imgInfo = imageRidMap[blank.id];
