@@ -2152,8 +2152,9 @@ export default function CreateBid() {
           </div>
 
           {/* ========== 中间：表格编辑区 ========== */}
-          <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-            <div className="bg-white border-b border-gray-100 p-4 shrink-0">
+          <div className="flex-1 flex flex-col overflow-hidden min-w-0 bg-white">
+            {/* 1. 顶部标题与审核提示区 */}
+            <div className="bg-white border-b border-gray-100 p-3 shrink-0">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <h3 className="text-base font-bold text-gray-800 flex items-center">
                   <Edit3 size={16} className="mr-2 text-indigo-500" />
@@ -2161,161 +2162,154 @@ export default function CreateBid() {
                   <Tag color="blue" className="ml-2">{scannedBlanks.length} 处</Tag>
                 </h3>
                 <p className="text-xs text-gray-400">
-                  {isReviewed
-                    ? 'AI 已完成填写，可直接修改后导出'
-                    : '点击任意行 ↔ 左右双向联动定位'}
+                  {isReviewed ? 'AI 已完成填写，可直接修改后导出' : '点击任意行 ↔ 左右双向联动定位'}
                 </p>
               </div>
 
               {isReviewed && (
-                <div className="mt-4 rounded-2xl border border-indigo-100 bg-gradient-to-r from-indigo-50 via-white to-emerald-50 p-4">
-                  <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                <div className="mt-2 rounded-xl border border-indigo-100 bg-gradient-to-r from-indigo-50 via-white to-emerald-50 p-2.5">
+                  <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
                     <div>
-                      <div className="flex items-center gap-2 text-gray-800 font-semibold">
+                      <div className="flex items-center gap-2 text-gray-800 font-semibold text-sm">
                         <ShieldCheck size={16} className="text-indigo-600" />
                         智能审核
                         {isAuditing && <Tag color="processing">审核中</Tag>}
                       </div>
-                      <div className="mt-1 text-xs leading-5 text-gray-500">
-                        已对填写结果执行规则校验 + AI 二次复核
-                      </div>
                     </div>
-                    <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-                      <div className="rounded-xl bg-white px-3 py-2 shadow-sm border border-gray-100">
-                        <div className="text-[11px] text-gray-500">已审核</div>
-                        <div className="mt-1 text-lg font-semibold text-gray-900">{auditSummary.total}</div>
+                    <div className="flex gap-2">
+                      <div className="rounded-lg bg-white px-3 py-1 shadow-sm border border-gray-100 text-center">
+                        <div className="text-[10px] text-gray-500">已审</div>
+                        <div className="text-sm font-bold text-gray-900">{auditSummary.total}</div>
                       </div>
-                      <div className="rounded-xl bg-white px-3 py-2 shadow-sm border border-gray-100">
-                        <div className="text-[11px] text-gray-500">通过</div>
-                        <div className="mt-1 text-lg font-semibold text-emerald-600">{auditSummary.pass}</div>
+                      <div className="rounded-lg bg-white px-3 py-1 shadow-sm border border-gray-100 text-center">
+                        <div className="text-[10px] text-gray-500">通过</div>
+                        <div className="text-sm font-bold text-emerald-600">{auditSummary.pass}</div>
                       </div>
-                      <div className="rounded-xl bg-white px-3 py-2 shadow-sm border border-gray-100">
-                        <div className="text-[11px] text-gray-500">可疑</div>
-                        <div className="mt-1 text-lg font-semibold text-amber-500">{auditSummary.warning}</div>
+                      <div className="rounded-lg bg-white px-3 py-1 shadow-sm border border-gray-100 text-center">
+                        <div className="text-[10px] text-gray-500">可疑</div>
+                        <div className="text-sm font-bold text-amber-500">{auditSummary.warning}</div>
                       </div>
-                      <div className="rounded-xl bg-white px-3 py-2 shadow-sm border border-gray-100">
-                        <div className="text-[11px] text-gray-500">高风险</div>
-                        <div className="mt-1 text-lg font-semibold text-red-500">{auditSummary.error}</div>
+                      <div className="rounded-lg bg-white px-3 py-1 shadow-sm border border-gray-100 text-center">
+                        <div className="text-[10px] text-gray-500">风险</div>
+                        <div className="text-sm font-bold text-red-500">{auditSummary.error}</div>
                       </div>
                     </div>
                   </div>
-
                   {auditSummary.total > 0 && (auditSummary.warning > 0 || auditSummary.error > 0) && (
                     <Alert
-                      className="mt-4 rounded-xl"
+                      className="mt-2 rounded-md py-1 px-3 text-xs"
                       type={auditSummary.error > 0 ? 'warning' : 'info'}
                       showIcon
-                      icon={<TriangleAlert size={16} />}
-                      message={`智能审核发现 ${auditSummary.error} 项高风险、${auditSummary.warning} 项可疑，建议优先查看表格中的“智能审核”列。`}
+                      icon={<TriangleAlert size={14} />}
+                      message={`发现 ${auditSummary.error} 项高风险、${auditSummary.warning} 项可疑，建议优先检查。`}
                     />
                   )}
                 </div>
               )}
             </div>
 
-            <div className="flex-1 overflow-auto min-w-0">
-              <Table
-                dataSource={scannedBlanks}
-                columns={blankColumns}
-                rowKey="id"
-                pagination={false}
-                size="middle"
-                className="blank-table"
-                scroll={{ x: 980 }}
-                onRow={(record) => ({
-                  onClick: () => scrollToBlank(record.id),
-                  className: 'cursor-pointer hover:bg-indigo-50/50 transition-colors'
-                })}
-                rowClassName={(record) => {
-                  const filled = manualEdits[record.id];
-                  if (highlightBlankId === record.id) return 'bg-indigo-50';
-                  return filled ? 'bg-green-50/40' : '';
-                }}
-              />
+            {/* 2. 表格区域：移除 overflow-auto，让 Table 接管滚动 */}
+            <div className="flex-1 min-w-0 p-0 relative bg-white">
+              <div className="absolute inset-0">
+                <Table
+                  dataSource={scannedBlanks}
+                  columns={blankColumns}
+                  rowKey="id"
+                  pagination={false}
+                  size="small"
+                  className="blank-table h-full [&_.ant-table-body]:custom-scrollbar"
+                  // 💡 核心优化：固定表头，横向和纵向滚动由 Table 内部接管，横向滚动条永远吸底！
+                  scroll={{ x: 980, y: 'calc(100vh - 320px)' }}
+                  onRow={(record) => ({
+                    onClick: () => scrollToBlank(record.id),
+                    className: 'cursor-pointer hover:bg-indigo-50/50 transition-colors'
+                  })}
+                  rowClassName={(record) => {
+                    const filled = manualEdits[record.id];
+                    if (highlightBlankId === record.id) return 'bg-indigo-50';
+                    return filled ? 'bg-green-50/40' : '';
+                  }}
+                />
+              </div>
             </div>
 
-            <div className="p-3 xl:p-4 bg-white border-t border-gray-100 shrink-0 overflow-auto">
-              <div className="flex flex-col gap-2.5 xl:gap-3">
-                <div className="flex flex-wrap items-center gap-2.5 xl:gap-3">
-                  <span className="text-sm font-bold text-gray-700 shrink-0">投标主体：</span>
-                  <div className="flex min-w-[260px] flex-1 max-w-[380px] items-center shadow-sm rounded-lg overflow-hidden border border-indigo-200 bg-gray-50">
+            {/* 3. 底部操作栏：极简强制单行，横向滑动 */}
+            <div className="p-3 bg-white border-t border-gray-200 shrink-0 overflow-x-auto custom-scrollbar shadow-[0_-4px_10px_-2px_rgba(0,0,0,0.05)] z-10">
+              <div className="flex flex-nowrap items-center gap-3 min-w-max">
+                
+                {/* 投标主体 */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span className="text-xs font-bold text-gray-700">投标主体:</span>
+                  <div className="flex w-[240px] items-center shadow-sm rounded-md overflow-hidden border border-indigo-200 bg-gray-50">
                     <Input
                       placeholder="输入公司名称"
                       value={targetCompany}
-                       onChange={(e) => {
-                          setTargetCompany(e.target.value);
-                          setProductCompanyName(e.target.value);
-                        }}
-                      className="flex-1 border-none h-8 xl:h-9 bg-transparent font-medium text-sm"
+                      onChange={(e) => {
+                        setTargetCompany(e.target.value);
+                        setProductCompanyName(e.target.value);
+                      }}
+                      className="flex-1 border-none h-8 bg-transparent font-medium text-xs px-2"
                     />
                     <Button
                       type="text"
-                      icon={<Database size={14} />}
+                      icon={<Database size={12} />}
                       onClick={fetchCompanyList}
-                      className="bg-indigo-100 text-indigo-700 h-8 xl:h-9 px-2.5 xl:px-3 rounded-none border-l border-indigo-200 font-medium text-xs shrink-0"
+                      className="bg-indigo-100 text-indigo-700 h-8 px-2 rounded-none border-l border-indigo-200 font-medium text-xs"
                     >
-                      从库中选
+                      选库
                     </Button>
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2.5 xl:gap-3">
-                  <Button 
-                    type={tenderContext ? "primary" : "default"}
-                    ghost={!!tenderContext}
-                    icon={<FileText size={16} />} 
-                    onClick={() => setIsContextModalVisible(true)}
-                    className={`h-8 xl:h-9 px-3 xl:px-4 rounded-lg font-medium transition-colors shrink-0 text-xs xl:text-sm ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400 hover:text-indigo-500'}`}
-                  >
-                    {tenderContext ? '已补充招标上下文' : '📎 贴入招标原文 (推荐)'}
-                  </Button>
+                {/* 招标原文 */}
+                <Button 
+                  type={tenderContext ? "primary" : "default"}
+                  ghost={!!tenderContext}
+                  icon={<FileText size={14} />} 
+                  onClick={() => setIsContextModalVisible(true)}
+                  className={`h-8 px-3 rounded-md font-medium shrink-0 text-xs ${tenderContext ? 'border-indigo-500 text-indigo-600' : 'text-gray-600 border-gray-300 hover:border-indigo-400'}`}
+                >
+                  {tenderContext ? '已补原文' : '📎 贴入招标项目信息'}
+                </Button>
 
-                  <div className="flex min-w-[220px] flex-1 max-w-[320px] items-center shrink-0">
-                    <Package size={14} className="text-gray-500 mr-1" />
-                    <TreeSelect
-                      treeData={productTreeData}
-                       value={[...selectedProductIds, ...selectedServiceManualIds]}
-                       onChange={handleTreeSelectChange}
-                      treeCheckable={true}
-                      showCheckedStrategy={TreeSelect.SHOW_CHILD}
-                      placeholder="关联产品资质"
-                      loading={loadingProducts}
-                      disabled={!productCompanyName.trim() || loadingProducts}
-                      className="w-full min-w-0"
-                      dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
-                      allowClear
-                      treeDefaultExpandAll
-                    />
-                  </div>
-
-                  {Object.keys(matchedTemplateSlots).length > 0 && (
-                    <Tag color="purple" className="h-8 leading-7 px-3 rounded-lg">
-                      已匹配历史整理内容 {Object.keys(matchedTemplateSlots).length} 项
-                    </Tag>
-                  )}
-
-                  <div className="ml-auto shrink-0">
-                    {!isReviewed ? (
-                      <Button
-                        type="primary"
-                        size="large"
-                        onClick={handleAutoFill}
-                        loading={isFilling}
-                        className="bg-indigo-600 hover:bg-indigo-700 rounded-xl h-9 xl:h-11 font-bold border-0 px-5 xl:px-8 shadow-md shrink-0 text-xs xl:text-sm"
-                      >
-                        AI 自动填写
-                      </Button>
-                    ) : (
-                      <Button
-                        onClick={handleAutoFill}
-                        loading={isFilling}
-                        className="rounded-xl h-9 xl:h-11 font-bold px-4 xl:px-6 border-gray-300 text-gray-700 shrink-0 text-xs xl:text-sm"
-                      >
-                        重新 AI 填写
-                      </Button>
-                    )}
-                  </div>
+                {/* 产品资质 */}
+                <div className="flex w-[240px] items-center shrink-0">
+                  <Package size={14} className="text-gray-500 mr-1" />
+                  <TreeSelect
+                    treeData={productTreeData}
+                    value={[...selectedProductIds, ...selectedServiceManualIds]}
+                    onChange={handleTreeSelectChange}
+                    treeCheckable={true}
+                    showCheckedStrategy={TreeSelect.SHOW_CHILD}
+                    placeholder="关联产品"
+                    loading={loadingProducts}
+                    disabled={!productCompanyName.trim() || loadingProducts}
+                    className="w-full text-xs"
+                    size="small"
+                    dropdownStyle={{ maxHeight: 400, overflow: 'auto' }}
+                    allowClear
+                    treeDefaultExpandAll
+                  />
                 </div>
+
+                {Object.keys(matchedTemplateSlots).length > 0 && (
+                  <Tag color="purple" className="shrink-0 m-0 text-xs h-7 leading-6">
+                    匹配库内容 {Object.keys(matchedTemplateSlots).length} 项
+                  </Tag>
+                )}
+
+                {/* AI 按钮 */}
+                <div className="shrink-0 pl-2 ml-auto">
+                  <Button
+                    type={!isReviewed ? "primary" : "default"}
+                    onClick={handleAutoFill}
+                    loading={isFilling}
+                    className={`h-8 font-bold px-6 shrink-0 text-xs rounded-md shadow-sm ${!isReviewed ? 'bg-indigo-600 hover:bg-indigo-700 border-0 text-white' : 'border-gray-300 text-gray-700'}`}
+                  >
+                    {!isReviewed ? '✨ AI 自动填写' : '重新 AI 填写'}
+                  </Button>
+                </div>
+
               </div>
             </div>
           </div>
