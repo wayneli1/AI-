@@ -407,6 +407,43 @@ function isChainedFieldParagraph(text = '') {
   return hitCount >= 2;
 }
 
+function scanChainedFieldBlanks(text, currentParaIndex, currentBlankCounter, blanks) {
+  if (!isChainedFieldParagraph(text)) {
+    return currentBlankCounter;
+  }
+
+  const fieldPattern = /(姓名|性别|年龄|职务|身份证号码|联系电话)[：:]([_＿－—─﹣-]{2,}|\s{2,}|\u3000{1,}|_{2,})/g;
+  let match;
+
+  while ((match = fieldPattern.exec(text)) !== null) {
+    const fieldLabel = normalizeFieldHintAlias(match[1]);
+    const placeholderText = match[2];
+    const placeholderIndex = match.index + match[1].length + 1;
+    const alreadyExists = blanks.some(
+      (b) => b.paraIndex === currentParaIndex && (b.textStart ?? b.index ?? -1) === placeholderIndex
+    );
+    if (alreadyExists) {
+      continue;
+    }
+
+    blanks.push({
+      id: `blank_${++currentBlankCounter}`,
+      context: text,
+      matchText: placeholderText,
+      index: placeholderIndex,
+      textStart: placeholderIndex,
+      textEnd: placeholderIndex + placeholderText.length,
+      type: /[_＿]/.test(placeholderText) ? 'underscore' : 'keyword_space',
+      confidence: 'high',
+      paraIndex: currentParaIndex,
+      fill_role: determineFillRole(text),
+      fieldHint: fieldLabel
+    });
+  }
+
+  return currentBlankCounter;
+}
+
 function isLikelyInlineFieldLabel(text = '') {
   const label = normalizeInlineFieldLabel(text);
   if (!label || label.length < 2 || label.length > 120) return false;
@@ -642,6 +679,8 @@ export function scanBlanksFromXml(xmlString) {
     if (text.trim().length > 0) {
       let m;
 
+      blankCounter = scanChainedFieldBlanks(text, currentParaIndex, blankCounter, blanks);
+
       // 识别纯文字贴图提示
       const imagePlaceholderPattern1 = /贴.*(?:复印件|扫描件|照片|图片)处/;
       const imagePlaceholderPattern2 = /(?:复印件|扫描件|证明文件)粘贴处/;
@@ -675,7 +714,10 @@ export function scanBlanksFromXml(xmlString) {
 
       const underscorePattern = /_{3,}/g;
       while ((m = underscorePattern.exec(text)) !== null) {
-        if (m[0].length >= 2) {
+        const alreadyExists = blanks.some(
+          (b) => b.paraIndex === currentParaIndex && (b.textStart ?? b.index ?? -1) === m.index
+        );
+        if (m[0].length >= 2 && !alreadyExists) {
           blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: m[0], index: m.index, textStart: m.index, textEnd: m.index + m[0].length, type: 'underscore', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, m[0]) });
         }
       }
@@ -728,7 +770,12 @@ export function scanBlanksFromXml(xmlString) {
         const colonStr = m[1];
         const spaceStr = m[2];
         const spaceIndex = m.index + colonStr.length; 
-        blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: spaceStr, index: spaceIndex, textStart: spaceIndex, textEnd: spaceIndex + spaceStr.length, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, spaceStr) });
+        const alreadyExists = blanks.some(
+          (b) => b.paraIndex === currentParaIndex && (b.textStart ?? b.index ?? -1) === spaceIndex
+        );
+        if (!alreadyExists) {
+          blanks.push({ id: `blank_${++blankCounter}`, context: text, matchText: spaceStr, index: spaceIndex, textStart: spaceIndex, textEnd: spaceIndex + spaceStr.length, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text), fieldHint: inferFieldHint(text, spaceStr) });
+        }
       }
 
       // 无冒号但字段名后直接跟随空格的场景，例如：承诺人      、投标人      

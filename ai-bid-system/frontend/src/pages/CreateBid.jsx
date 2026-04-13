@@ -1222,7 +1222,15 @@ export default function CreateBid() {
           processedResult[blankId] = standardContent;
         }
       });
-      
+
+      scannedBlanks.forEach((blank) => {
+        if (processedResult[blank.id]) return;
+        const structuredValue = getStructuredFieldValue(blank, selectedCompany);
+        if (structuredValue) {
+          processedResult[blank.id] = structuredValue;
+        }
+      });
+       
       console.log('🔍 processedResult 最终结果:', processedResult);
       console.log('🔍 processedResult 键:', Object.keys(processedResult));
 
@@ -1539,6 +1547,66 @@ export default function CreateBid() {
       }
     }
     return text;
+  };
+
+  const getStructuredFieldValue = (blank, company) => {
+    if (!blank || !company) return '';
+    const hint = String(blank.fieldHint || '').trim();
+    const localContext = String(blank.localContext || '');
+
+    if (/投标人名称|单位名称|公司名称/.test(hint)) {
+      return company.company_name || '';
+    }
+
+    if (blank.type === 'brackets') {
+      if (/报价人单位名称|投标人名称|单位名称|公司名称|供应商名称/.test(localContext)) {
+        return company.company_name || '';
+      }
+      if (/法定代表人姓名|法人代表|法定代表人/.test(localContext)) {
+        return company.legal_rep_name || '';
+      }
+      if (/被授权人姓名|委托代理人|授权代表|被授权人/.test(localContext)) {
+        return company.legal_rep_name || '';
+      }
+      return '';
+    }
+
+    if (/法定代表人信息|法定代表人姓名|法人代表|法定代表人|姓名/.test(hint)) {
+      return company.legal_rep_name || '';
+    }
+    if (/被授权人信息|委托代理人|授权代表/.test(hint)) {
+      return company.legal_rep_name || '';
+    }
+
+    if (/性别/.test(hint)) {
+      return company.gender || '';
+    }
+
+    if (/年龄/.test(hint)) {
+      return '';
+    }
+
+    if (/职务/.test(hint)) {
+      return company.position || '';
+    }
+
+    if (/身份证号码|身份证号/.test(hint)) {
+      return company.id_number || '';
+    }
+
+    if (/电话|联系电话|联系方式/.test(hint)) {
+      return company.phone || '';
+    }
+
+    if (/地址|联系地址|通讯地址/.test(hint)) {
+      return company.address || '';
+    }
+
+    if (/统一社会信用代码|信用代码/.test(hint)) {
+      return company.uscc || '';
+    }
+
+    return '';
   };
 
   const blankColumns = [
