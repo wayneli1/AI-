@@ -778,6 +778,21 @@ export default function CreateBid() {
     return (text || '').replace(/\s+/g, ' ').trim();
   }, []);
 
+  const collectPreviewCandidates = useCallback((container) => {
+    const selector = 'span, p, td, th, div, li';
+    const rawCandidates = Array.from(container.querySelectorAll(selector))
+      .map((node, index) => ({ node, text: normalizePreviewText(node.textContent), index }))
+      .filter(({ text }) => text && text.length <= 400);
+
+    return rawCandidates.filter(({ node, text }) => {
+      const duplicateDescendant = Array.from(node.querySelectorAll(selector)).some((child) => {
+        if (child === node) return false;
+        return normalizePreviewText(child.textContent) === text;
+      });
+      return !duplicateDescendant;
+    });
+  }, [normalizePreviewText]);
+
   const getPreviewAnchorTokens = useCallback((blank) => {
     if (!blank) return [];
 
@@ -935,30 +950,49 @@ export default function CreateBid() {
     clearPreviewAnchors();
     if (scannedBlanks.length === 0) return;
 
-    const candidates = Array.from(container.querySelectorAll('span, p, td, th, div, li'))
-      .map((node) => ({ node, text: normalizePreviewText(node.textContent) }))
-      .filter(({ text }) => text && text.length <= 400);
+    const candidates = collectPreviewCandidates(container);
+    const assignedOccurrenceCounts = new Map();
 
     scannedBlanks.forEach((blank) => {
       const tokens = getPreviewAnchorTokens(blank);
       if (tokens.length === 0) return;
 
-      let bestNode = null;
-      let bestScore = Number.NEGATIVE_INFINITY;
+      const sortedTokens = [...tokens].sort((a, b) => b.length - a.length);
+      const primaryToken = normalizePreviewText(sortedTokens[0]);
+      const blankKey = normalizePreviewText(getBlankDisplayName(blank) || primaryToken);
+      const blankOccurrence = assignedOccurrenceCounts.get(blankKey) || 0;
+
+      const matchedCandidates = [];
 
       tokens.forEach((token, tokenIndex) => {
-        candidates.forEach(({ node, text }) => {
+        candidates.forEach(({ node, text, index }) => {
           if (!text.includes(token)) return;
 
-          const score = token.length * 100 - text.length - tokenIndex * 10;
-          if (score > bestScore) {
-            bestNode = node;
-            bestScore = score;
-          }
+          matchedCandidates.push({
+            node,
+            text,
+            index,
+            token,
+            score: token.length * 100 - text.length - tokenIndex * 10
+          });
         });
       });
 
+      const exactPrimaryCandidates = matchedCandidates
+        .filter(({ text }) => text === primaryToken)
+        .sort((a, b) => b.score - a.score || a.index - b.index);
+
+      let bestNode = exactPrimaryCandidates[blankOccurrence]?.node || null;
+
+      if (!bestNode) {
+        const rankedCandidates = matchedCandidates.sort((a, b) => b.score - a.score || a.index - b.index);
+        bestNode = rankedCandidates.find(({ node }) => !node.hasAttribute('data-preview-blank-ids'))?.node
+          || rankedCandidates[0]?.node
+          || null;
+      }
+
       if (!bestNode) return;
+      assignedOccurrenceCounts.set(blankKey, blankOccurrence + 1);
 
       const existingIds = (bestNode.getAttribute('data-preview-blank-ids') || '')
         .split(',')
@@ -1003,7 +1037,7 @@ export default function CreateBid() {
       };
     });
     applyPreviewAnchorStyles();
-  }, [applyPreviewAnchorStyles, clearPreviewAnchors, getBlankDisplayName, getPreviewAnchorTokens, normalizePreviewText, resolvePreviewBlankId, scannedBlanks, scrollToTable]);
+  }, [applyPreviewAnchorStyles, clearPreviewAnchors, collectPreviewCandidates, getBlankDisplayName, getPreviewAnchorTokens, normalizePreviewText, resolvePreviewBlankId, scannedBlanks, scrollToTable]);
 
   // 💡 【右侧表格】点击后：滚动【左侧原文】
   const scrollToBlank = useCallback((blankId) => {

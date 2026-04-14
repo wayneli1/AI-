@@ -156,7 +156,7 @@ function countParagraphsBefore(xmlString, globalOffset) {
 
 // 获取表格同行左侧相邻单元格的文本
 const getAdjacentCellLabel = (currentCellInfo, allCellInfos) => {
-  if (!currentCellInfo || typeof currentCellInfo.rowIndex !== 'number' || typeof currentCellInfo.cellIndex !== 'number') {
+  if (!currentCellInfo || typeof currentCellInfo.rowIndex !== 'number' || typeof currentCellInfo.colIndex !== 'number') {
     return null;
   }
   const prevCell = allCellInfos.find(c => 
