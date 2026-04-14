@@ -50,8 +50,40 @@ const slugify = (value = '') =>
     .replace(/[^\w\u4e00-\u9fa5-]/g, '')
     .toLowerCase();
 
+const stripLeadingTitle = (text = '', candidates = []) => {
+  let result = String(text || '').trimStart();
+
+  candidates.forEach((candidate) => {
+    const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    result = result.replace(new RegExp(`^(?:#\s*)?${escaped}\s*\n+`, 'i'), '');
+    result = result.replace(new RegExp(`^${escaped}\s*\n+`, 'i'), '');
+  });
+
+  return result;
+};
+
+const cleanAiMarkdown = (value = '', variant = 'report') => {
+  let text = String(value || '').replace(/\\n/g, '\n').replace(/<br\s*\/?>/gi, '\n');
+
+  if (variant === 'report') {
+    text = stripLeadingTitle(text, ['招标文件解读报告']);
+  }
+
+  if (variant === 'framework') {
+    text = stripLeadingTitle(text, ['投标文件完整框架', '投标文件完整框架（草稿）']);
+    text = text.replace(/^编写说明[:：].*$/gim, '').trim();
+  }
+
+  if (variant === 'checklist') {
+    text = stripLeadingTitle(text, ['商务资料清单', '资料清单']);
+  }
+
+  text = text.replace(/\n{3,}/g, '\n\n');
+  return text.trim();
+};
+
 const normalizeMarkdown = (value = '') => {
-  const text = String(value || '').replace(/\\n/g, '\n');
+  const text = String(value || '');
   const normalized = text.replace(/\r\n/g, '\n').trim();
   const lines = normalized.split('\n');
   const fixed = [];
@@ -538,12 +570,18 @@ const BidDetail = () => {
   }, [originalFileExt, pdfSourceNavigation, sourceNavigation]);
   const reportMetaItems = useMemo(() => buildReportMetaItems(project, effectiveSourceNavigation), [project, effectiveSourceNavigation]);
 
-  const reportMarkdown = useMemo(() => normalizeMarkdown(project?.analysis_report || ''), [project?.analysis_report]);
+  const reportMarkdown = useMemo(
+    () => normalizeMarkdown(cleanAiMarkdown(project?.analysis_report || '', 'report')),
+    [project?.analysis_report]
+  );
   const frameworkMarkdown = useMemo(
-    () => buildFrameworkMarkdown(project?.framework_content || '', sourceMarkdown),
+    () => buildFrameworkMarkdown(cleanAiMarkdown(project?.framework_content || '', 'framework'), sourceMarkdown),
     [project?.framework_content, sourceMarkdown]
   );
-  const checklistMarkdown = useMemo(() => buildChecklistMarkdown(project?.checklist_content || ''), [project?.checklist_content]);
+  const checklistMarkdown = useMemo(
+    () => buildChecklistMarkdown(cleanAiMarkdown(project?.checklist_content || '', 'checklist')),
+    [project?.checklist_content]
+  );
 
   const currentMarkdown = useMemo(() => {
     if (activeTab === 'framework') return frameworkMarkdown || '暂无投标文件完整框架内容';
