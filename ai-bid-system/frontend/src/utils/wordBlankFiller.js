@@ -70,11 +70,14 @@ function getVisibleTextFromXml(xml) {
   cleanXml = cleanXml.replace(/<w:del[\s\S]*?<\/w:del>/g, '');
 
   const textParts = [];
-  const NODE_REGEX = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab(?:\s[^>]*)?\/>/g;
+  // 💡 增加对 <w:br/> (软回车) 的识别
+  const NODE_REGEX = /<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>|<w:tab(?:\s[^>]*)?\/>|<w:br(?:\s[^>]*)?\/>/g;
   let m;
   while ((m = NODE_REGEX.exec(cleanXml)) !== null) {
     if (m[0].startsWith('<w:tab')) {
       textParts.push('    ');
+    } else if (m[0].startsWith('<w:br')) {
+      textParts.push('\n'); // 将软回车转为物理换行符
     } else {
       textParts.push(m[1]);
     }
@@ -353,7 +356,7 @@ export function scanBlanksFromXml(xmlString) {
         });
       }
 
-      const colonEndPattern = /^\s*((?:\d+(?:\.\d+)*[.、]\s*)?[^：:\n]{2,120})([：:])\s*$/;
+      const colonEndPattern = /([^：:\n]{2,120})([：:])\s*$/;
       const colonEndMatch = text.match(colonEndPattern);
       if (colonEndMatch && !isDateLikeLabel(text)) {
         const colonIndex = text.lastIndexOf(colonEndMatch[2]);
@@ -553,7 +556,8 @@ export function scanBlanksFromXml(xmlString) {
 }
 
 function buildTextNodeMap(paragraphXml) {
-  const NODE_REGEX = /(<w:t(?:\s[^>]*)?>)([^<]*)(<\/w:t>)|(<w:tab(?:\s[^>]*)?\/>)/g;
+  // 💡 增加第五个捕获组，用于捕获 <w:br/>
+  const NODE_REGEX = /(<w:t(?:\s[^>]*)?>)([^<]*)(<\/w:t>)|(<w:tab(?:\s[^>]*)?\/>)|(<w:br(?:\s[^>]*)?\/>)/g;
   const nodes = [];
   let offset = 0;
   let m;
@@ -563,8 +567,12 @@ function buildTextNodeMap(paragraphXml) {
       const text = '    ';
       nodes.push({ fullMatch: m[0], openTag: '', text, closeTag: '', matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: true });
       offset += text.length;
+    } else if (m[5]) {
+      const text = '\n'; // 处理软回车节点
+      nodes.push({ fullMatch: m[0], openTag: '', text, closeTag: '', matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false, isBr: true });
+      offset += text.length;
     } else {
-      const text = m[2]; // ✅ 改为 m[2]（真正的文本内容）
+      const text = m[2]; 
       nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[3], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
       offset += text.length;
     }
@@ -589,7 +597,7 @@ function rebuildParagraphXml(paragraphXml, nodes) {
       const oldEnd = oldStart + node.fullMatch.length;
       result = result.substring(0, oldStart) + newFull + result.substring(oldEnd);
       delta += newFull.length - node.fullMatch.length;
-    }
+    }else if (node.isBr) { newFull = node._newText ? '<w:t>' + node._newText + '</w:t>' : ''; }
   }
   return result;
 }

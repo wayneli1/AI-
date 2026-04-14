@@ -88,6 +88,45 @@ const uniqueByKey = (items = []) => {
   });
 };
 
+const uniqueByTitle = (items = []) => {
+  const seen = new Set();
+  return items.filter((item) => {
+    const normalizedTitle = String(item?.title || '').replace(/\s+/g, '').trim();
+    if (!normalizedTitle || seen.has(normalizedTitle)) return false;
+    seen.add(normalizedTitle);
+    return true;
+  });
+};
+
+const normalizePdfHeadingText = (value = '') => String(value).replace(/\s+/g, '').replace(/[：:]/g, '').trim();
+
+const isChapterHeading = (title = '') => {
+  const text = normalizePdfHeadingText(title);
+  if (!text) return false;
+
+  return (
+    /^第[一二三四五六七八九十百0-9]+[章节编部分].{0,30}$/.test(text) ||
+    /^附件[一二三四五六七八九十0-9]+/.test(text) ||
+    /^附表[一二三四五六七八九十0-9]+/.test(text)
+  );
+};
+
+const isTocLine = (title = '') => {
+  const text = String(title).trim();
+  return (
+    /^第[一二三四五六七八九十百0-9]+[章节编部分].*\d+$/.test(text) ||
+    /^附件[一二三四五六七八九十0-9]+.*\d+$/.test(text) ||
+    /^附表[一二三四五六七八九十0-9]+.*\d+$/.test(text)
+  );
+};
+
+const isPdfTocPage = (lines = []) => {
+  const titles = lines.map((line) => String(line.text || '').trim()).filter(Boolean);
+  const hasCatalogWord = titles.some((title) => title === '目录');
+  const tocLineCount = titles.filter((title) => isTocLine(title)).length;
+  return hasCatalogWord && tocLineCount >= 3;
+};
+
 const parseMarkdownSections = (markdown = '') => {
   const normalized = normalizeMarkdown(markdown);
   if (!normalized) return [];
@@ -321,23 +360,26 @@ const buildPdfLines = (items = [], viewport) => {
 
 const extractPdfHeadings = (lines = [], pageNumber) => {
   if (!lines.length) return [];
+  if (isPdfTocPage(lines)) return [];
+
   const fontSizes = lines.map((line) => line.fontSize);
   const maxSize = Math.max(...fontSizes);
   const avgSize = fontSizes.reduce((sum, value) => sum + value, 0) / fontSizes.length;
 
   return lines
     .filter((line) => {
-      const title = line.text.trim();
-      return (
-        line.fontSize >= avgSize + (maxSize - avgSize) * 0.18 ||
-        SOURCE_SECTION_KEYWORDS.some((keyword) => title.includes(keyword)) ||
-        /^第[一二三四五六七八九十百]+[章节编部分]/.test(title)
-      );
+      const title = String(line.text || '').trim();
+      const compactTitle = normalizePdfHeadingText(title);
+      if (!compactTitle || compactTitle.length > 40) return false;
+      if (isTocLine(title)) return false;
+
+      return isChapterHeading(title) && line.fontSize >= avgSize + (maxSize - avgSize) * 0.08;
     })
-    .slice(0, 6)
+    .slice(0, 4)
     .map((line, index) => ({
       key: `${slugify(line.text)}-${pageNumber}-${index}`,
       title: line.text.trim(),
+      level: 1,
       pageNumber,
       top: line.top
     }));
@@ -367,6 +409,23 @@ const inferFileExtension = (url = '', contentType = '', projectName = '') => {
   return '';
 };
 
+const resolveStoredFileMeta = (project = {}, blobType = '') => {
+  const explicitFileType = String(project?.file_type || '').toLowerCase();
+  const explicitName = String(project?.original_file_name || '').trim();
+  const detectedType = ['pdf', 'docx'].includes(explicitFileType)
+    ? explicitFileType
+    : inferFileExtension(project?.file_url || '', project?.mime_type || blobType || '', explicitName || project?.project_name || '');
+
+  const fallbackBaseName = String(project?.project_name || 'bid').trim() || 'bid';
+  const fileName = explicitName || `${fallbackBaseName}${detectedType ? `.${detectedType}` : ''}`;
+
+  return {
+    fileType: detectedType,
+    fileName,
+    mimeType: String(project?.mime_type || blobType || '').trim()
+  };
+};
+
 const BidDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -381,10 +440,14 @@ const BidDetail = () => {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const [fileDebugInfo, setFileDebugInfo] = useState('');
+  const [previewStage, setPreviewStage] = useState('idle');
+  const [usePdfFallback, setUsePdfFallback] = useState(false);
   const [pdfPages, setPdfPages] = useState([]);
+  const [pdfSourceNavigation, setPdfSourceNavigation] = useState([]);
   const [activeSourceId, setActiveSourceId] = useState('');
   const [activeTocId, setActiveTocId] = useState('');
   const [isTocExpanded, setIsTocExpanded] = useState(false);
+  const [isSourceTocExpanded, setIsSourceTocExpanded] = useState(false);
 
   const scrollContainerRef = useRef(null);
   const previewScrollRef = useRef(null);
@@ -420,7 +483,10 @@ const BidDetail = () => {
       try {
         setPreviewLoading(true);
         setPreviewError('');
+        setPreviewStage('loading');
+        setUsePdfFallback(false);
         setPdfPages([]);
+        setPdfSourceNavigation([]);
         pdfCanvasRefs.current = {};
         pdfPageProxyRef.current = {};
         sourceAnchorRefs.current = {};
@@ -429,14 +495,14 @@ const BidDetail = () => {
         const blob = await response.blob();
         if (cancelled) return;
 
-        const fileExt = inferFileExtension(project.file_url, blob.type, project.project_name || '');
-        const fallbackName = `${project.project_name || 'bid'}${fileExt ? `.${fileExt}` : ''}`;
-        const fileNameFromUrl = decodeURIComponent(project.file_url.split('/').pop()?.split('?')[0] || fallbackName);
-        const finalName = fileNameFromUrl.includes('.') ? fileNameFromUrl : fallbackName;
-        const file = new File([blob], finalName, { type: blob.type || 'application/octet-stream' });
+        const { fileType, fileName, mimeType } = resolveStoredFileMeta(project, blob.type);
+        const finalName = fileName.includes('.') || !fileType ? fileName : `${fileName}.${fileType}`;
+        const finalMimeType = mimeType || blob.type || 'application/octet-stream';
+        const file = new File([blob], finalName, { type: finalMimeType });
         setOriginalFile(file);
-        setOriginalFileExt(fileExt || finalName.split('.').pop()?.toLowerCase() || '');
-        setFileDebugInfo(`type=${blob.type || 'unknown'}; ext=${fileExt || 'unknown'}; name=${finalName}`);
+        setOriginalFileExt(fileType || finalName.split('.').pop()?.toLowerCase() || '');
+        setFileDebugInfo(`storedType=${project?.file_type || 'null'}; blobType=${blob.type || 'unknown'}; ext=${fileType || 'unknown'}; name=${finalName}`);
+        setPreviewStage('preview-ready');
 
         try {
           const markdown = await convertToMarkdown(file);
@@ -449,6 +515,7 @@ const BidDetail = () => {
         if (!cancelled) {
           console.error('原文恢复失败:', error);
           setPreviewError('原文文件加载失败，请稍后重试');
+          setPreviewStage('load-error');
           setFileDebugInfo(String(error?.message || error));
         }
       } finally {
@@ -463,7 +530,13 @@ const BidDetail = () => {
   }, [project?.file_url, project?.project_name]);
 
   const sourceNavigation = useMemo(() => extractSourceNavigation(sourceMarkdown), [sourceMarkdown]);
-  const reportMetaItems = useMemo(() => buildReportMetaItems(project, sourceNavigation), [project, sourceNavigation]);
+  const effectiveSourceNavigation = useMemo(() => {
+    if (originalFileExt === 'pdf' && pdfSourceNavigation.length > 0) {
+      return pdfSourceNavigation;
+    }
+    return sourceNavigation;
+  }, [originalFileExt, pdfSourceNavigation, sourceNavigation]);
+  const reportMetaItems = useMemo(() => buildReportMetaItems(project, effectiveSourceNavigation), [project, effectiveSourceNavigation]);
 
   const reportMarkdown = useMemo(() => normalizeMarkdown(project?.analysis_report || ''), [project?.analysis_report]);
   const frameworkMarkdown = useMemo(
@@ -497,6 +570,7 @@ const BidDetail = () => {
       try {
         setPreviewLoading(true);
         setPreviewError('');
+        setPreviewStage('rendering-docx');
         container.innerHTML = '';
         const arrayBuffer = await file.arrayBuffer();
         if (cancelled) return;
@@ -526,10 +600,12 @@ const BidDetail = () => {
           }
         });
         sourceAnchorRefs.current = anchors;
+        setPreviewStage('docx-ready');
       } catch (error) {
         if (!cancelled) {
           console.error('DOCX 预览渲染失败:', error);
           setPreviewError('DOCX 原文预览渲染失败');
+          setPreviewStage('docx-error');
           setFileDebugInfo(`docx render failed: ${String(error?.message || error)}`);
         }
       } finally {
@@ -553,15 +629,20 @@ const BidDetail = () => {
       try {
         setPreviewLoading(true);
         setPreviewError('');
+        setPreviewStage('rendering-pdf');
 
         const arrayBuffer = await file.arrayBuffer();
         const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
         const pages = [];
         const fallbackNavigation = [];
+        const availableWidth = Math.max((previewScrollRef.current?.clientWidth || 768) - 48, 320);
 
         for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
           const page = await pdf.getPage(pageNumber);
-          const viewport = page.getViewport({ scale: 1.35 });
+          const baseViewport = page.getViewport({ scale: 1 });
+          const fitScale = availableWidth / baseViewport.width;
+          const scale = Math.min(Math.max(fitScale, 0.72), 1.05);
+          const viewport = page.getViewport({ scale });
           const textContent = await page.getTextContent();
           const lines = buildPdfLines(textContent.items, viewport);
           const headings = extractPdfHeadings(lines, pageNumber);
@@ -580,47 +661,46 @@ const BidDetail = () => {
 
         if (cancelled) return;
 
-        const navForMatch = sourceNavigation.length
-          ? sourceNavigation
-          : uniqueByKey(
-              fallbackNavigation.map((item) => ({
-                key: slugify(item.title),
-                title: item.title,
-                level: 1,
-                type: 'source'
-              }))
-            );
+        const navForMatch = uniqueByTitle(uniqueByKey(
+          fallbackNavigation.map((item) => ({
+            key: item.key,
+            title: item.title,
+            level: item.level || 1,
+            type: 'source',
+            pageNumber: item.pageNumber,
+            top: item.top
+          }))
+        ));
 
         const nextPages = pages.map((page) => {
           const anchors = navForMatch
-            .map((nav) => {
-              const targetLine = page.lines.find((line) => matchTitle(line.text, nav.title));
-              if (!targetLine) return null;
-              return {
-                key: nav.key,
-                title: nav.title,
-                top: targetLine.top,
-                height: targetLine.height
-              };
-            })
-            .filter(Boolean);
+            .filter((nav) => nav.pageNumber === page.pageNumber)
+            .map((nav) => ({
+              key: nav.key,
+              title: nav.title,
+              top: nav.top,
+              height: 24
+            }));
 
           return { ...page, anchors };
         });
 
         const anchorRegistry = {};
-        nextPages.forEach((page) => {
-          page.anchors.forEach((anchor) => {
-            anchorRegistry[anchor.key] = { pageNumber: page.pageNumber, top: anchor.top };
-          });
+        navForMatch.forEach((nav) => {
+          anchorRegistry[nav.key] = { pageNumber: nav.pageNumber, top: nav.top };
         });
 
         sourceAnchorRefs.current = anchorRegistry;
         setPdfPages(nextPages);
+        setPdfSourceNavigation(navForMatch);
+        setUsePdfFallback(false);
+        setPreviewStage('pdf-ready');
       } catch (error) {
         if (!cancelled) {
           console.error('PDF 原文预览渲染失败:', error);
-          setPreviewError('PDF 原文预览渲染失败');
+          setUsePdfFallback(true);
+          setPreviewError('PDF 高保真预览失败，已切换为原文件预览');
+          setPreviewStage('pdf-fallback');
           setFileDebugInfo(`pdf render failed: ${String(error?.message || error)}`);
         }
       } finally {
@@ -635,7 +715,7 @@ const BidDetail = () => {
   }, [originalFile, originalFileExt, sourceNavigation]);
 
   useEffect(() => {
-    if (!pdfPages.length) return undefined;
+    if (!pdfPages.length || isPreviewCollapsed) return undefined;
 
     let cancelled = false;
     const renderCanvases = async () => {
@@ -656,7 +736,7 @@ const BidDetail = () => {
     return () => {
       cancelled = true;
     };
-  }, [pdfPages]);
+  }, [pdfPages, isPreviewCollapsed]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -687,10 +767,10 @@ const BidDetail = () => {
 
   useEffect(() => {
     const container = previewScrollRef.current;
-    if (!container || sourceNavigation.length === 0) return undefined;
+    if (!container || effectiveSourceNavigation.length === 0) return undefined;
 
     const handlePreviewScroll = () => {
-      const entries = sourceNavigation
+      const entries = effectiveSourceNavigation
         .map((item) => {
           const ref = sourceAnchorRefs.current[item.key];
           if (!ref) return null;
@@ -718,7 +798,7 @@ const BidDetail = () => {
     container.addEventListener('scroll', handlePreviewScroll);
     handlePreviewScroll();
     return () => container.removeEventListener('scroll', handlePreviewScroll);
-  }, [sourceNavigation, pdfPages]);
+  }, [effectiveSourceNavigation, pdfPages]);
 
   const jumpToSourceSection = (item) => {
     const container = previewScrollRef.current;
@@ -737,6 +817,7 @@ const BidDetail = () => {
     const pageTop = pageElement.offsetTop + (target.top || 0) - 24;
     container.scrollTo({ top: pageTop, behavior: 'smooth' });
     setActiveSourceId(item.key);
+    setIsSourceTocExpanded(false);
   };
 
   const jumpToToc = (item) => {
@@ -885,9 +966,10 @@ const BidDetail = () => {
                   </div>
                 )}
 
-                {!previewLoading && previewError && (
+                {!previewLoading && previewError && !usePdfFallback && (
                   <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-3xl border border-red-100 bg-[#f8fafc] px-6 text-center">
                     <p className="text-sm text-red-500">{previewError}</p>
+                    <p className="mt-2 text-xs text-gray-400">阶段：{previewStage}</p>
                     {!!fileDebugInfo && <p className="mt-2 max-w-md break-all text-xs text-gray-400">{fileDebugInfo}</p>}
                     {project?.file_url && (
                       <a
@@ -911,7 +993,7 @@ const BidDetail = () => {
                   </div>
                 )}
 
-                {!previewLoading && !previewError && originalFileExt === 'pdf' && (
+                {!previewLoading && !previewError && originalFileExt === 'pdf' && !usePdfFallback && (
                   <div className="space-y-6">
                     {pdfPages.map((page) => (
                       <div
@@ -936,6 +1018,19 @@ const BidDetail = () => {
                     ))}
                   </div>
                 )}
+                {!previewLoading && originalFileExt === 'pdf' && usePdfFallback && (
+                  <div className="rounded-[28px] border border-[#d7dee9] bg-[#fdfefe] p-3 shadow-[0_24px_50px_rgba(15,23,42,0.06)]">
+                    <div className="mb-3 flex items-center justify-between rounded-[18px] border border-[#e2e8f0] bg-[#f8fafc] px-4 py-3 text-xs text-gray-500">
+                      <span>PDF 已切换为原文件预览模式</span>
+                      <span className="truncate pl-4">{fileDebugInfo}</span>
+                    </div>
+                    <iframe
+                      src={project?.file_url}
+                      title="PDF 原文件预览"
+                      className="h-[calc(100vh-280px)] w-full rounded-[20px] border-0 bg-white"
+                    />
+                  </div>
+                )}
                 {!previewLoading && !previewError && !originalFileExt && (
                   <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-3xl border border-[#d7dee9] bg-[#f8fafc] px-6 text-center">
                     <p className="text-sm text-gray-500">当前文件类型暂不支持内嵌预览</p>
@@ -951,6 +1046,57 @@ const BidDetail = () => {
                     )}
                   </div>
                 )}
+              </div>
+            )}
+
+            {!isPreviewCollapsed && effectiveSourceNavigation.length > 0 && (
+              <div
+                className="pointer-events-auto absolute right-6 top-20 z-20 hidden md:block"
+                onMouseEnter={() => setIsSourceTocExpanded(true)}
+                onMouseLeave={() => setIsSourceTocExpanded(false)}
+              >
+                <div
+                  className={`overflow-hidden rounded-2xl border border-sky-200 bg-[rgba(239,246,255,0.96)] text-slate-700 shadow-[0_20px_45px_rgba(59,130,246,0.16)] backdrop-blur-sm transition-all duration-200 ${
+                    isSourceTocExpanded ? 'w-60' : 'w-[108px]'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className={`flex w-full items-center gap-2 px-4 py-3 text-sm font-semibold text-sky-900 ${
+                      isSourceTocExpanded ? 'border-b border-sky-100' : ''
+                    }`}
+                    onClick={() => setIsSourceTocExpanded((value) => !value)}
+                  >
+                    <List size={15} />
+                    <span>原文目录</span>
+                  </button>
+
+                  <div
+                    className={`overflow-y-auto p-2 transition-all duration-200 ${
+                      isSourceTocExpanded ? 'max-h-[420px] opacity-100' : 'max-h-0 opacity-0'
+                    }`}
+                  >
+                    <div className="space-y-1.5">
+                      {effectiveSourceNavigation.map((item) => {
+                        const active = activeSourceId === item.key;
+                        return (
+                          <button
+                            key={item.key}
+                            type="button"
+                            onClick={() => jumpToSourceSection(item)}
+                            className={`block w-full rounded-xl px-3 py-2 text-left text-sm transition ${
+                              active
+                                ? 'bg-white text-sky-700 shadow-sm'
+                                : 'text-slate-500 hover:bg-white/70 hover:text-sky-800'
+                            } ${item.level >= 3 ? 'pl-6 text-[13px]' : ''}`}
+                          >
+                            {item.title}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 

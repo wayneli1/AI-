@@ -14,6 +14,43 @@ const BidAnalysis = () => {
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
+  const detectFileType = (file) => {
+    const fileName = String(file?.name || '').toLowerCase();
+    const mimeType = String(file?.type || '').toLowerCase();
+
+    if (mimeType.includes('pdf') || fileName.endsWith('.pdf')) return 'pdf';
+    if (mimeType.includes('wordprocessingml') || fileName.endsWith('.docx')) return 'docx';
+    return null;
+  };
+
+  const insertBiddingProject = async ({ userId, selectedFile, fileUrl }) => {
+    const detectedFileType = detectFileType(selectedFile);
+    const basePayload = {
+      user_id: userId,
+      project_name: selectedFile.name.replace(/\.[^/.]+$/, ''),
+      file_url: fileUrl,
+      status: 'processing'
+    };
+
+    const extendedPayload = {
+      ...basePayload,
+      original_file_name: selectedFile.name,
+      file_type: detectedFileType,
+      mime_type: selectedFile.type || null
+    };
+
+    let query = await supabase.from('bidding_projects').insert(extendedPayload).select().single();
+
+    if (
+      query.error &&
+      /schema cache|column .* does not exist|Could not find the .* column/i.test(query.error.message || '')
+    ) {
+      query = await supabase.from('bidding_projects').insert(basePayload).select().single();
+    }
+
+    return query;
+  };
+
   // 文件验证逻辑
   const handleFileSelect = async (file) => {
     const validation = validateBidFile(file);
@@ -61,16 +98,11 @@ const BidAnalysis = () => {
       setUploadProgress(30);
 
       // 2. 数据库建档
-      const { data: projectData, error: insertError } = await supabase
-        .from('bidding_projects')
-        .insert({
-          user_id: user.id,
-          project_name: selectedFile.name.replace(/\.[^/.]+$/, ''),
-          file_url: fileUrl,
-          status: 'processing'
-        })
-        .select()
-        .single();
+      const { data: projectData, error: insertError } = await insertBiddingProject({
+        userId: user.id,
+        selectedFile,
+        fileUrl
+      });
 
       if (insertError) throw insertError;
       setUploadProgress(40);
