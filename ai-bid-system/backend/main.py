@@ -1,11 +1,11 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from routes import parse_bid
+from routes import parse_bid, merge_docs
 
 app = FastAPI(
     title="AI Bid Parser API",
-    description="标书解析服务 - 表格识别 + 空白扫描",
-    version="1.0.0"
+    description="标书解析服务 - 表格识别 + 空白扫描 + 文档合并",
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -17,8 +17,9 @@ app.add_middleware(
 )
 
 app.include_router(parse_bid.router, prefix="/api", tags=["parser"])
+app.include_router(merge_docs.router, prefix="/api", tags=["merge"])
 
 
 @app.get("/health")
 async def health_check():
-    return {"status": "ok", "service": "bid-parser"}
+    return {"status": "ok", "service": "bid-parser", "version": "2.0.0"}

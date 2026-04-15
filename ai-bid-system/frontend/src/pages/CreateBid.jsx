@@ -12,11 +12,8 @@ import { extractTextFromDocument } from '../utils/documentParser';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import {
-  scanBlanksFromXml,
   extractDocumentXml,
   generateFilledDocx,
-  extractIndexedParagraphs,
-  mergeBlanks,
   filterIgnoredBlanks
 } from '../utils/wordBlankFiller';
 import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
@@ -258,7 +255,6 @@ export default function CreateBid() {
   const [manualTables, setManualTables] = useState([]);
   const [tableStructures, setTableStructures] = useState([]);
   const [parseMeta, setParseMeta] = useState(null);
-  const [indexedParagraphs, setIndexedParagraphs] = useState([]);
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -438,8 +434,16 @@ export default function CreateBid() {
         }
 
         if (data.framework_content) {
-          const blanks = filterIgnoredBlanks(JSON.parse(data.framework_content));
-          setScannedBlanks(blanks);
+          const parsed = JSON.parse(data.framework_content);
+          if (Array.isArray(parsed)) {
+            const blanks = filterIgnoredBlanks(parsed);
+            setScannedBlanks(blanks);
+          } else {
+            setScannedBlanks(parsed.normalBlanks || []);
+            setDynamicTables(parsed.dynamicTables || []);
+            setManualTables(parsed.manualTables || []);
+            setParseMeta(parsed.meta || null);
+          }
         }
 
         if (data.analysis_report) {
@@ -1121,21 +1125,11 @@ export default function CreateBid() {
       setTableStructures(backendTableStructures);
       setParseMeta(backendMeta);
 
-      // 构建段落索引（用于AI扫描）
-      const paragraphsForAI = backendNormalBlanks.map(b => ({
-        paraIndex: b.paraIndex,
-        text: b.context
-      })).filter((p, idx, arr) => 
-        arr.findIndex(x => x.paraIndex === p.paraIndex) === idx
-      ).sort((a, b) => a.paraIndex - b.paraIndex);
-      setIndexedParagraphs(paragraphsForAI);
-
-      // 获取XML用于后续导出（保持兼容性）
+      // 获取XML用于后续导出
       const { xmlString, zip } = await extractDocumentXml(file);
       setOriginalXml(xmlString);
       setOriginalZip(zip);
 
-      // 直接使用后端结果，不再调用AI补充扫描
       const mergedBlanks = backendNormalBlanks;
 
       if (mergedBlanks.length === 0 && backendDynamicTables.length === 0 && backendManualTables.length === 0) {
@@ -1729,7 +1723,9 @@ export default function CreateBid() {
 
       // ===== 调用后端合并接口 =====
       console.log('📡 检测到服务手册映射，开始调用后端合并接口...');
-      console.log('📡 请求目标: POST /api/merge-docs (代理 → http://localhost:8003)');
+      console.log('📡 请求目标: POST /api/merge-docs');
+
+      const BACKEND_API_BASE = import.meta.env.VITE_BACKEND_API_BASE || 'http://localhost:8000';
 
       const formData = new FormData();
       formData.append('file', filledBlob, `filled_${originalFile.name}`);
@@ -1739,7 +1735,7 @@ export default function CreateBid() {
       console.log('  - file:', filledBlob.name, filledBlob.size, 'bytes');
       console.log('  - mapping keys:', Object.keys(dynamicManualUrlMap));
 
-      const response = await fetch('http://192.168.169.107:8003/api/merge-docs', {
+      const response = await fetch(`${BACKEND_API_BASE}/api/merge-docs`, {
         method: 'POST',
         body: formData,
       });
@@ -1763,7 +1759,7 @@ export default function CreateBid() {
       console.error('❌ 错误堆栈:', err.stack);
       if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError'))) {
         message.error({
-          content: '网络错误：请确认后端服务已启动在 http://localhost:8003',
+          content: '网络错误：请确认后端服务已启动',
           key: 'export',
           duration: 8,
         });
