@@ -256,6 +256,7 @@ export default function CreateBid() {
   const [tableStructures, setTableStructures] = useState([]);
   const [parseMeta, setParseMeta] = useState(null);
   const [dynamicTableEdits, setDynamicTableEdits] = useState({});
+  const [isTableModalVisible, setIsTableModalVisible] = useState(false);
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -2331,92 +2332,36 @@ export default function CreateBid() {
               )}
             </div>
 
-            {/* 2. 复杂表格专区（动态表格） */}
+            {/* 2. 复杂表格入口按钮 */}
             {dynamicTables.length > 0 && (
-              <div className="shrink-0 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
-                <div className="px-3 py-2 border-b border-blue-100 bg-white/60">
-                  <h4 className="font-bold text-gray-800 text-sm flex items-center">
-                    <Package size={14} className="mr-2 text-blue-500" />
-                    复杂表格专区
-                    <Tag color="blue" className="ml-2">{dynamicTables.length} 个</Tag>
-                    <span className="ml-2 text-xs text-gray-400 font-normal">选择人员后，数据将自动填入对应表格</span>
-                  </h4>
+              <div className="shrink-0 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-3 py-2 flex items-center justify-between">
+                <div className="flex items-center">
+                  <Package size={14} className="mr-2 text-blue-500" />
+                  <span className="text-sm font-bold text-gray-800">复杂表格</span>
+                  <Tag color="blue" className="ml-2">{dynamicTables.length} 个</Tag>
+                  {Object.keys(dynamicTableEdits).filter(id => dynamicTableEdits[id]?.length > 0).length > 0 && (
+                    <Tag color="green" className="ml-1">
+                      已填 {Object.values(dynamicTableEdits).reduce((s, r) => s + (r?.length || 0), 0)} 行
+                    </Tag>
+                  )}
                 </div>
-                <div className="px-3 py-2 space-y-2 max-h-[240px] overflow-auto custom-scrollbar">
-                  {dynamicTables.map(dt => (
-                    <div key={dt.tableId} className="bg-white rounded-lg border border-blue-200 shadow-sm p-2.5">
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="min-w-0">
-                          <div className="text-xs font-bold text-gray-800 truncate">
-                            📋 {dt.anchorContext || `表格 ${dt.tableId + 1}`}
-                          </div>
-                          <div className="text-[10px] text-gray-400 mt-0.5">
-                            表头: {dt.headers.join(' | ')}
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0 ml-3">
-                          <Select
-                            placeholder="选择人员..."
-                            size="small"
-                            style={{ minWidth: 140 }}
-                            value={dynamicTableEdits[dt.tableId]?.[0]?._personName || undefined}
-                            onChange={(value) => {
-                              const fakeHeaders = dt.headers;
-                              const fakeRow = {};
-                              fakeHeaders.forEach(h => {
-                                fakeRow[h] = h === '姓名' ? value : `${value}的${h}`;
-                              });
-                              fakeRow._personName = value;
-                              setDynamicTableEdits(prev => ({
-                                ...prev,
-                                [dt.tableId]: [fakeRow]
-                              }));
-                              message.success(`已为表格 ${dt.tableId + 1} 选择: ${value}`);
-                            }}
-                            options={[
-                              { value: '张三', label: '张三' },
-                              { value: '李四', label: '李四' },
-                              { value: '王五', label: '王五' },
-                            ]}
-                          />
-                          {dynamicTableEdits[dt.tableId] && (
-                            <Tag color="green" className="text-[10px]">
-                              {dynamicTableEdits[dt.tableId].length} 行
-                            </Tag>
-                          )}
-                        </div>
-                      </div>
-                      {dynamicTableEdits[dt.tableId] && (
-                        <div className="mt-1.5 text-[10px] text-gray-500 bg-gray-50 rounded p-1.5 max-h-[80px] overflow-auto">
-                          <pre className="whitespace-pre-wrap">{JSON.stringify(dynamicTableEdits[dt.tableId].map(r => { const { _personName, ...rest } = r; return rest; }), null, 2)}</pre>
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<Edit3 size={12} />}
+                  onClick={() => setIsTableModalVisible(true)}
+                  className="bg-blue-600 hover:bg-blue-700 border-0 rounded-md text-xs"
+                >
+                  填写复杂表格 ({dynamicTables.length})
+                </Button>
               </div>
             )}
 
-            {/* 3. 高危表格专区（仅展示） */}
+            {/* 3. 高危表格提示 */}
             {manualTables.length > 0 && (
-              <div className="shrink-0 border-b border-gray-200 bg-gradient-to-r from-red-50 to-orange-50">
-                <div className="px-3 py-2 border-b border-red-100 bg-white/60">
-                  <h4 className="font-bold text-gray-800 text-sm flex items-center">
-                    <TriangleAlert size={14} className="mr-2 text-red-500" />
-                    高危表格（禁止AI触碰）
-                    <Tag color="red" className="ml-2">{manualTables.length} 个</Tag>
-                  </h4>
-                </div>
-                <div className="px-3 py-2 space-y-1.5">
-                  {manualTables.map(mt => (
-                    <div key={mt.tableId} className="flex items-center gap-2 text-xs text-gray-600 bg-white/60 rounded px-2 py-1.5 border border-red-100">
-                      <Tag color="red" className="text-[10px] shrink-0">{mt.type}</Tag>
-                      <span className="truncate">{mt.anchorContext || `表格 ${mt.tableId + 1}`}</span>
-                      <span className="text-gray-300 shrink-0">|</span>
-                      <span className="text-[10px] text-gray-400 shrink-0">{mt.headers.join(', ')}</span>
-                    </div>
-                  ))}
-                </div>
+              <div className="shrink-0 border-b border-gray-100 px-3 py-1.5 flex items-center gap-2 bg-amber-50/50 text-xs text-amber-700">
+                <TriangleAlert size={12} className="shrink-0" />
+                <span>检测到 {manualTables.length} 个高危表格（报价/偏离表），AI 禁止触碰，请手动填写</span>
               </div>
             )}
 
@@ -2706,6 +2651,146 @@ export default function CreateBid() {
               style={{ resize: 'vertical', minHeight: '420px' }}
               autoSize={{ minRows: 18, maxRows: 35 }}
             />
+          </div>
+        </Modal>
+
+        {/* ===== 复杂表格填写弹窗 ===== */}
+        <Modal
+          title={
+            <div className="flex items-center gap-2">
+              <Package size={16} className="text-blue-500" />
+              <span>填写复杂表格</span>
+              <Tag color="blue">{dynamicTables.length} 个表格</Tag>
+            </div>
+          }
+          open={isTableModalVisible}
+          onCancel={() => setIsTableModalVisible(false)}
+          width={860}
+          footer={[
+            <Button key="close" onClick={() => setIsTableModalVisible(false)}>
+              关闭
+            </Button>,
+            <Button
+              key="confirm"
+              type="primary"
+              className="bg-blue-600 hover:bg-blue-700 border-0"
+              onClick={() => {
+                const filledCount = Object.values(dynamicTableEdits).filter(r => r?.length > 0).length;
+                setIsTableModalVisible(false);
+                if (filledCount > 0) {
+                  message.success(`已配置 ${filledCount} 个表格数据，导出时将自动填入`);
+                }
+              }}
+            >
+              确认
+            </Button>,
+          ]}
+        >
+          <div className="space-y-4 max-h-[60vh] overflow-auto custom-scrollbar pr-1">
+            {dynamicTables.map(dt => {
+              const currentRows = dynamicTableEdits[dt.tableId] || [];
+              const selectedNames = currentRows.map(r => r._personName).filter(Boolean);
+
+              const previewColumns = dt.headers.map(h => ({
+                title: h,
+                dataIndex: h,
+                key: h,
+                ellipsis: true,
+                width: 120,
+              }));
+
+              return (
+                <div key={dt.tableId} className="border border-blue-200 rounded-lg overflow-hidden">
+                  <div className="bg-blue-50 px-4 py-2.5 border-b border-blue-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="text-sm font-bold text-gray-800">
+                          📋 {dt.anchorContext || `表格 ${dt.tableId + 1}`}
+                        </div>
+                        <div className="text-[11px] text-gray-400 mt-0.5">
+                          表头: {dt.headers.join(' | ')} · 原始 {dt.rowCount} 行
+                        </div>
+                      </div>
+                      <Tag color={selectedNames.length > 0 ? 'green' : 'default'}>
+                        {selectedNames.length > 0 ? `${currentRows.length} 行数据` : '未填写'}
+                      </Tag>
+                    </div>
+                  </div>
+
+                  <div className="px-4 py-3">
+                    <div className="flex items-center gap-3 mb-3">
+                      <span className="text-xs font-medium text-gray-600 shrink-0">选择人员:</span>
+                      <Select
+                        mode="multiple"
+                        placeholder="可多选人员..."
+                        style={{ minWidth: 320 }}
+                        value={selectedNames}
+                        onChange={(selectedValues) => {
+                          if (selectedValues.length === 0) {
+                            setDynamicTableEdits(prev => ({
+                              ...prev,
+                              [dt.tableId]: []
+                            }));
+                            return;
+                          }
+                          const mockData = selectedValues.map(name => {
+                            const row = {};
+                            dt.headers.forEach(header => {
+                              if (header.includes('姓名') || header.includes('名字')) {
+                                row[header] = name;
+                              } else if (header.includes('年龄')) {
+                                row[header] = String(25 + selectedValues.indexOf(name) * 3);
+                              } else if (header.includes('学历')) {
+                                row[header] = '本科';
+                              } else if (header.includes('职务') || header.includes('职称') || header.includes('岗位')) {
+                                row[header] = '项目经理';
+                              } else if (header.includes('电话') || header.includes('联系方式')) {
+                                row[header] = '138' + String(10000000 + selectedValues.indexOf(name) * 11111111).slice(0, 8);
+                              } else if (header.includes('专业')) {
+                                row[header] = '计算机科学与技术';
+                              } else if (header.includes('时间') || header.includes('日期')) {
+                                row[header] = '2020.01 - 2023.06';
+                              } else if (header.includes('项目') || header.includes('名称')) {
+                                row[header] = `${name}负责的测试项目`;
+                              } else if (header.includes('备注') || header.includes('说明')) {
+                                row[header] = '';
+                              } else {
+                                row[header] = `测试数据-${name}`;
+                              }
+                            });
+                            row._personName = name;
+                            return row;
+                          });
+                          setDynamicTableEdits(prev => ({
+                            ...prev,
+                            [dt.tableId]: mockData
+                          }));
+                        }}
+                        options={[
+                          { value: '张三', label: '张三' },
+                          { value: '李四', label: '李四' },
+                          { value: '王五', label: '王五' },
+                          { value: '赵六', label: '赵六' },
+                          { value: '钱七', label: '钱七' },
+                        ]}
+                      />
+                    </div>
+
+                    {currentRows.length > 0 && (
+                      <Table
+                        dataSource={currentRows.map((r, i) => ({ ...r, _key: i }))}
+                        columns={previewColumns}
+                        rowKey="_key"
+                        pagination={false}
+                        size="small"
+                        scroll={{ x: previewColumns.length * 120 }}
+                        className="border border-gray-100 rounded"
+                      />
+                    )}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </Modal>
 

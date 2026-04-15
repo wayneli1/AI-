@@ -173,6 +173,14 @@ def find_and_replace_insert_codes(main_doc, url_mapping):
 
 # ===== 动态表格行克隆引擎 =====
 
+def get_tc_gridspan(tc_element):
+    grid_span_elem = tc_element.find(qn('w:gridSpan'))
+    if grid_span_elem is not None:
+        val = grid_span_elem.get(qn('w:val'))
+        return int(val) if val else 1
+    return 1
+
+
 def set_cell_text(tc_element, text):
     for p in tc_element.findall(qn('w:p')):
         for r in p.findall(qn('w:r')):
@@ -204,6 +212,16 @@ def get_cell_text_from_element(tc_element):
         if t.text:
             texts.append(t.text)
     return ''.join(texts).strip()
+
+
+def build_header_texts_with_span(header_row_element):
+    header_texts = []
+    for tc in header_row_element.findall(qn('w:tc')):
+        text = get_cell_text_from_element(tc).strip()
+        span = get_tc_gridspan(tc)
+        for _ in range(span):
+            header_texts.append(text)
+    return header_texts
 
 
 def find_template_row_index(table):
@@ -241,9 +259,10 @@ def fill_dynamic_tables(doc, dynamic_tables):
 
         table = doc.tables[table_id]
 
-        header_texts = []
-        for cell in table.rows[0].cells:
-            header_texts.append(cell.text.strip())
+        # GridSpan 感知的表头提取
+        header_row_element = table.rows[0]._element
+        header_texts = build_header_texts_with_span(header_row_element)
+        print(f"   📊 表格 {table_id} 表头(含跨列): {header_texts}")
 
         template_idx = find_template_row_index(table)
         template_row = table.rows[template_idx]
@@ -259,21 +278,22 @@ def fill_dynamic_tables(doc, dynamic_tables):
 
             cells = new_row.findall(qn('w:tc'))
 
-            for j, tc in enumerate(cells):
-                if j < len(header_texts):
-                    header = header_texts[j]
-                else:
-                    header = ""
-
+            # GridSpan 感知的游标填入法
+            logical_col = 0
+            for tc in cells:
+                span = get_tc_gridspan(tc)
+                header = header_texts[logical_col] if logical_col < len(header_texts) else ""
                 value = row_data.get(header, "")
 
                 if value:
                     set_cell_text(tc, str(value))
 
+                logical_col += span
+
             parent.insert(template_index_in_parent + i, new_row)
 
         total_filled += len(rows_data)
-        print(f"   ✅ 表格 {table_id} 克隆填充 {len(rows_data)} 行")
+        print(f"   ✅ 表格 {table_id} 克隆填充 {len(rows_data)} 行 (游标法, 最终列位={logical_col})")
 
     return total_filled
 
