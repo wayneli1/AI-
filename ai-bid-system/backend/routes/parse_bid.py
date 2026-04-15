@@ -15,19 +15,28 @@ router = APIRouter()
 
 @router.post("/parse-bid-docx", response_model=ParseResponse)
 async def parse_bid_docx(file: UploadFile = File(...)):
+    print(f"\n{'='*60}")
+    print(f"📥 [后端] 收到解析请求")
+    print(f"📥 [后端] 文件名: {file.filename}")
+    print(f"{'='*60}")
+
     if not file.filename.lower().endswith(".docx"):
         raise HTTPException(status_code=400, detail="仅支持 .docx 格式文件")
 
     try:
         contents = await file.read()
+        print(f"📥 [后端] 文件大小: {len(contents)} bytes")
         doc = Document(BytesIO(contents))
     except Exception as e:
+        print(f"❌ [后端] 文件解析失败: {e}")
         raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
 
     paragraphs = list(doc.paragraphs)
+    print(f"📄 [后端] 段落数: {len(paragraphs)}, 表格数: {len(doc.tables)}")
 
     normal_blanks_raw = scan_normal_blanks(paragraphs)
     normal_blanks = [NormalBlank(**b) for b in normal_blanks_raw]
+    print(f"📊 [后端] 空白扫描完成: {len(normal_blanks)} 个普通填空")
 
     table_structures = []
     dynamic_tables = []
@@ -40,6 +49,9 @@ async def parse_bid_docx(file: UploadFile = File(...)):
         anchor = table_info["anchorContext"]
         table_type = classify_table(anchor, headers)
         type_label = get_table_type_label(anchor, headers)
+        print(f"📊 [后端] 表格 {idx}: type={table_type}, label={type_label}, rows={table_info['rowCount']}, anchor=\"{anchor[:40]}\"")
+        print(f"📊 [后端] 表格 {idx} headers: {headers}")
+        print(f"📊 [后端] 表格 {idx} blankCells: {len(table_info['blankCells'])}")
 
         table_structure = TableStructure(
             tableId=idx,
@@ -77,6 +89,13 @@ async def parse_bid_docx(file: UploadFile = File(...)):
         "totalDynamicTables": len(dynamic_tables),
         "totalManualTables": len(manual_tables),
     }
+
+    print(f"\n{'='*60}")
+    print(f"✅ [后端] 解析完成!")
+    print(f"   普通填空: {meta['totalNormalBlanks']}")
+    print(f"   动态表格: {meta['totalDynamicTables']}")
+    print(f"   高危表格: {meta['totalManualTables']}")
+    print(f"{'='*60}\n")
 
     return ParseResponse(
         success=True,

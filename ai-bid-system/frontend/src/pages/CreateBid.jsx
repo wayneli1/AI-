@@ -1104,7 +1104,13 @@ export default function CreateBid() {
       message.loading({ content: '正在调用后端解析标书...', key: 'scan', duration: 0 });
 
       // 调用后端API解析
+      console.log('🔵 [前端] 开始调用后端 parseBidDocx...');
       const parseResult = await parseBidDocx(file);
+      console.log('🔵 [前端] 后端返回成功:', parseResult.success);
+      console.log('🔵 [前端] normalBlanks:', parseResult.normalBlanks?.length);
+      console.log('🔵 [前端] dynamicTables:', parseResult.dynamicTables?.length);
+      console.log('🔵 [前端] manualTables:', parseResult.manualTables?.length);
+      console.log('🔵 [前端] meta:', JSON.stringify(parseResult.meta));
       
       if (!parseResult.success) {
         throw new Error(parseResult.message || '解析失败');
@@ -1124,6 +1130,7 @@ export default function CreateBid() {
       setManualTables(backendManualTables);
       setTableStructures(backendTableStructures);
       setParseMeta(backendMeta);
+      console.log('🔵 [前端] 三桶数据已设置完毕');
 
       // 获取XML用于后续导出
       const { xmlString, zip } = await extractDocumentXml(file);
