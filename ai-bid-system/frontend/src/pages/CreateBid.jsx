@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Alert, Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect } from 'antd';
+import { Alert, Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect, Select } from 'antd';
 import {
   UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package, ShieldCheck, TriangleAlert
 } from 'lucide-react';
@@ -255,6 +255,7 @@ export default function CreateBid() {
   const [manualTables, setManualTables] = useState([]);
   const [tableStructures, setTableStructures] = useState([]);
   const [parseMeta, setParseMeta] = useState(null);
+  const [dynamicTableEdits, setDynamicTableEdits] = useState({});
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -1641,10 +1642,52 @@ export default function CreateBid() {
 
       console.log('🔍 从 manualEdits 中提取到的暗号:', Array.from(codesToResolve.keys()));
 
-      if (codesToResolve.size === 0) {
-        console.log('🔍 没有服务手册需要合并，直接下载');
+      // 提取动态表格数据
+      const dynamicTableDataList = Object.keys(dynamicTableEdits || {})
+        .map(tableId => ({
+          table_id: parseInt(tableId),
+          rows: (dynamicTableEdits[tableId] || []).map(row => {
+            const { _personName, ...rest } = row;
+            return rest;
+          })
+        }))
+        .filter(item => item.rows && item.rows.length > 0);
+
+      console.log('🔍 动态表格数据:', dynamicTableDataList.length, '个表格');
+
+      // 既没有服务手册，又没有动态表格 → 直接下载
+      if (codesToResolve.size === 0 && dynamicTableDataList.length === 0) {
+        console.log('🔍 没有服务手册和动态表格，直接下载');
         saveAs(filledBlob, `已填报_${originalFile.name}`);
         message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
+        return;
+      }
+
+      // 只有动态表格，没有服务手册 → 直接发后端
+      if (codesToResolve.size === 0 && dynamicTableDataList.length > 0) {
+        console.log('📡 仅有动态表格数据，直接发送后端处理');
+        const BACKEND_API_BASE = import.meta.env.VITE_BACKEND_API_BASE || 'http://localhost:8000';
+        const formData = new FormData();
+        formData.append('file', filledBlob, `filled_${originalFile.name}`);
+        formData.append('mapping', JSON.stringify({}));
+        formData.append('dynamic_tables', JSON.stringify(dynamicTableDataList));
+
+        try {
+          const response = await fetch(`${BACKEND_API_BASE}/api/merge-docs`, {
+            method: 'POST',
+            body: formData,
+          });
+          if (!response.ok) {
+            const errorText = await response.text();
+            throw new Error(`后端处理失败: HTTP ${response.status} - ${errorText}`);
+          }
+          const mergedBlob = await response.blob();
+          saveAs(mergedBlob, `已填报_${originalFile.name}`);
+          message.success({ content: '导出成功！动态表格已填入。', key: 'export' });
+        } catch (err) {
+          console.error('❌ 动态表格处理失败:', err);
+          message.error({ content: `导出失败: ${err.message}`, key: 'export' });
+        }
         return;
       }
 
@@ -1721,15 +1764,15 @@ export default function CreateBid() {
 
       console.log('📡 动态构建的 mapping:', dynamicManualUrlMap);
 
-      if (Object.keys(dynamicManualUrlMap).length === 0) {
-        console.log('⚠️ 未能解析任何服务手册URL，将直接下载（暗号将保留为文本）');
+      if (Object.keys(dynamicManualUrlMap).length === 0 && dynamicTableDataList.length === 0) {
+        console.log('⚠️ 未能解析任何服务手册URL，也无动态表格，将直接下载');
         saveAs(filledBlob, `已填报_${originalFile.name}`);
         message.warning({ content: '导出成功，但未能找到对应的服务手册文件，暗号将保留为文本', key: 'export', duration: 5 });
         return;
       }
 
       // ===== 调用后端合并接口 =====
-      console.log('📡 检测到服务手册映射，开始调用后端合并接口...');
+      console.log('📡 调用后端合并接口...');
       console.log('📡 请求目标: POST /api/merge-docs');
 
       const BACKEND_API_BASE = import.meta.env.VITE_BACKEND_API_BASE || 'http://localhost:8000';
@@ -1738,9 +1781,14 @@ export default function CreateBid() {
       formData.append('file', filledBlob, `filled_${originalFile.name}`);
       formData.append('mapping', JSON.stringify(dynamicManualUrlMap));
 
+      if (dynamicTableDataList.length > 0) {
+        formData.append('dynamic_tables', JSON.stringify(dynamicTableDataList));
+      }
+
       console.log('📡 FormData 构造完成:');
       console.log('  - file:', filledBlob.name, filledBlob.size, 'bytes');
       console.log('  - mapping keys:', Object.keys(dynamicManualUrlMap));
+      console.log('  - dynamic_tables:', dynamicTableDataList.length, '个表格');
 
       const response = await fetch(`${BACKEND_API_BASE}/api/merge-docs`, {
         method: 'POST',
@@ -2283,7 +2331,96 @@ export default function CreateBid() {
               )}
             </div>
 
-            {/* 2. 表格区域：移除 overflow-auto，让 Table 接管滚动 */}
+            {/* 2. 复杂表格专区（动态表格） */}
+            {dynamicTables.length > 0 && (
+              <div className="shrink-0 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
+                <div className="px-3 py-2 border-b border-blue-100 bg-white/60">
+                  <h4 className="font-bold text-gray-800 text-sm flex items-center">
+                    <Package size={14} className="mr-2 text-blue-500" />
+                    复杂表格专区
+                    <Tag color="blue" className="ml-2">{dynamicTables.length} 个</Tag>
+                    <span className="ml-2 text-xs text-gray-400 font-normal">选择人员后，数据将自动填入对应表格</span>
+                  </h4>
+                </div>
+                <div className="px-3 py-2 space-y-2 max-h-[240px] overflow-auto custom-scrollbar">
+                  {dynamicTables.map(dt => (
+                    <div key={dt.tableId} className="bg-white rounded-lg border border-blue-200 shadow-sm p-2.5">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-gray-800 truncate">
+                            📋 {dt.anchorContext || `表格 ${dt.tableId + 1}`}
+                          </div>
+                          <div className="text-[10px] text-gray-400 mt-0.5">
+                            表头: {dt.headers.join(' | ')}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0 ml-3">
+                          <Select
+                            placeholder="选择人员..."
+                            size="small"
+                            style={{ minWidth: 140 }}
+                            value={dynamicTableEdits[dt.tableId]?.[0]?._personName || undefined}
+                            onChange={(value) => {
+                              const fakeHeaders = dt.headers;
+                              const fakeRow = {};
+                              fakeHeaders.forEach(h => {
+                                fakeRow[h] = h === '姓名' ? value : `${value}的${h}`;
+                              });
+                              fakeRow._personName = value;
+                              setDynamicTableEdits(prev => ({
+                                ...prev,
+                                [dt.tableId]: [fakeRow]
+                              }));
+                              message.success(`已为表格 ${dt.tableId + 1} 选择: ${value}`);
+                            }}
+                            options={[
+                              { value: '张三', label: '张三' },
+                              { value: '李四', label: '李四' },
+                              { value: '王五', label: '王五' },
+                            ]}
+                          />
+                          {dynamicTableEdits[dt.tableId] && (
+                            <Tag color="green" className="text-[10px]">
+                              {dynamicTableEdits[dt.tableId].length} 行
+                            </Tag>
+                          )}
+                        </div>
+                      </div>
+                      {dynamicTableEdits[dt.tableId] && (
+                        <div className="mt-1.5 text-[10px] text-gray-500 bg-gray-50 rounded p-1.5 max-h-[80px] overflow-auto">
+                          <pre className="whitespace-pre-wrap">{JSON.stringify(dynamicTableEdits[dt.tableId].map(r => { const { _personName, ...rest } = r; return rest; }), null, 2)}</pre>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 3. 高危表格专区（仅展示） */}
+            {manualTables.length > 0 && (
+              <div className="shrink-0 border-b border-gray-200 bg-gradient-to-r from-red-50 to-orange-50">
+                <div className="px-3 py-2 border-b border-red-100 bg-white/60">
+                  <h4 className="font-bold text-gray-800 text-sm flex items-center">
+                    <TriangleAlert size={14} className="mr-2 text-red-500" />
+                    高危表格（禁止AI触碰）
+                    <Tag color="red" className="ml-2">{manualTables.length} 个</Tag>
+                  </h4>
+                </div>
+                <div className="px-3 py-2 space-y-1.5">
+                  {manualTables.map(mt => (
+                    <div key={mt.tableId} className="flex items-center gap-2 text-xs text-gray-600 bg-white/60 rounded px-2 py-1.5 border border-red-100">
+                      <Tag color="red" className="text-[10px] shrink-0">{mt.type}</Tag>
+                      <span className="truncate">{mt.anchorContext || `表格 ${mt.tableId + 1}`}</span>
+                      <span className="text-gray-300 shrink-0">|</span>
+                      <span className="text-[10px] text-gray-400 shrink-0">{mt.headers.join(', ')}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 4. 普通填空表格 */}
             <div className="flex-1 min-w-0 p-0 relative bg-white">
               <div className="absolute inset-0">
                 <Table
