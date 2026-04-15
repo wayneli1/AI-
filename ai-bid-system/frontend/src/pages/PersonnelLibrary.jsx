@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Button, Table, message, Modal, Drawer, Form, Input, Select, DatePicker, Upload, Divider, Tag, Popconfirm, Space } from 'antd';
-import { PlusOutlined, EditOutlined, DeleteOutlined, UploadOutlined, UserOutlined, ProjectOutlined, PaperClipOutlined, MinusCircleOutlined } from '@ant-design/icons';
+import { Button, Table, message, Drawer, Form, Input, Select, DatePicker, Upload, Divider, Tag, Popconfirm, Space } from 'antd';
+import { PlusOutlined, EditOutlined, DeleteOutlined, UploadOutlined, UserOutlined, ProjectOutlined, PaperClipOutlined, MinusCircleOutlined, SearchOutlined } from '@ant-design/icons';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import dayjs from 'dayjs';
@@ -23,37 +23,57 @@ const EDUCATION_OPTIONS = [
   { label: '其他', value: '其他' },
 ];
 
-const ATTACHMENT_TYPE_MAP = {
-  id_card: { label: '身份证', accept: 'image/*' },
-  degree_certificate: { label: '学位证书', accept: 'image/*,.pdf' },
-  qualification_certificate: { label: '资质证书', accept: 'image/*,.pdf' },
+const ATTACHMENT_SECTIONS = [
+  { key: 'id_card_front', label: '身份证（正面）', accept: 'image/*', maxCount: 1 },
+  { key: 'id_card_back', label: '身份证（反面）', accept: 'image/*', maxCount: 1 },
+  { key: 'degree_certificate', label: '学位证书', accept: 'image/*,.pdf', maxCount: 4 },
+  { key: 'qualification_certificate', label: '资质证书', accept: 'image/*,.pdf', maxCount: 4 },
+];
+
+const emptyAttachments = () => {
+  const o = {};
+  ATTACHMENT_SECTIONS.forEach(s => o[s.key] = []);
+  return o;
 };
 
 export default function PersonnelLibrary() {
   const { user } = useAuth();
   const [personnel, setPersonnel] = useState([]);
+  const [filtered, setFiltered] = useState([]);
   const [loading, setLoading] = useState(false);
   const [drawerVisible, setDrawerVisible] = useState(false);
   const [editingRecord, setEditingRecord] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [selectedRowKeys, setSelectedRowKeys] = useState([]);
+  const [searchText, setSearchText] = useState('');
   const [form] = Form.useForm();
-
-  const [attachmentUrls, setAttachmentUrls] = useState({
-    id_card: [],
-    degree_certificate: [],
-    qualification_certificate: [],
-  });
+  const [attachmentUrls, setAttachmentUrls] = useState(emptyAttachments());
 
   useEffect(() => {
     if (user) fetchPersonnel();
   }, [user]);
+
+  useEffect(() => {
+    if (!searchText.trim()) {
+      setFiltered(personnel);
+      return;
+    }
+    const kw = searchText.toLowerCase();
+    setFiltered(personnel.filter(p =>
+      (p.name || '').toLowerCase().includes(kw) ||
+      (p.phone || '').includes(kw) ||
+      (p.education || '').includes(kw) ||
+      (p.title || '').toLowerCase().includes(kw) ||
+      (p.school || '').toLowerCase().includes(kw)
+    ));
+  }, [searchText, personnel]);
 
   const fetchPersonnel = async () => {
     setLoading(true);
     try {
       const { data, error } = await supabase
         .from('personnel_profiles')
-        .select('*, company_profiles:company_profile_id(company_name)')
+        .select('*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false });
       if (error) throw error;
@@ -68,14 +88,14 @@ export default function PersonnelLibrary() {
   const handleAdd = () => {
     setEditingRecord(null);
     form.resetFields();
-    setAttachmentUrls({ id_card: [], degree_certificate: [], qualification_certificate: [] });
+    setAttachmentUrls(emptyAttachments());
     setDrawerVisible(true);
   };
 
   const handleEdit = async (record) => {
     setEditingRecord(record);
-    const customFields = record.custom_fields || {};
-    const projectExperiences = customFields.project_experiences || [];
+    const cf = record.custom_fields || {};
+    const pe = cf.project_experiences || [];
 
     form.setFieldsValue({
       name: record.name,
@@ -86,11 +106,11 @@ export default function PersonnelLibrary() {
       id_number: record.id_number,
       school: record.school,
       major: record.major,
-      project_experiences: projectExperiences.map(pe => ({
-        project_name: pe.project_name || '',
-        time_range: pe.time_range ? [dayjs(pe.time_range[0]), dayjs(pe.time_range[1])] : undefined,
-        role: pe.role || '',
-        description: pe.description || '',
+      project_experiences: pe.map(p => ({
+        project_name: p.project_name || '',
+        time_range: p.time_range ? [dayjs(p.time_range[0]), dayjs(p.time_range[1])] : undefined,
+        role: p.role || '',
+        description: p.description || '',
       })),
     });
 
@@ -102,9 +122,9 @@ export default function PersonnelLibrary() {
         .eq('enabled', true);
       if (error) throw error;
 
-      const urls = { id_card: [], degree_certificate: [], qualification_certificate: [] };
+      const urls = emptyAttachments();
       (attachments || []).forEach(att => {
-        if (urls[att.attachment_type]) {
+        if (urls[att.attachment_type] !== undefined) {
           urls[att.attachment_type].push({
             uid: att.id,
             name: att.attachment_name,
@@ -117,7 +137,7 @@ export default function PersonnelLibrary() {
       setAttachmentUrls(urls);
     } catch (err) {
       console.error('加载附件失败:', err);
-      setAttachmentUrls({ id_card: [], degree_certificate: [], qualification_certificate: [] });
+      setAttachmentUrls(emptyAttachments());
     }
 
     setDrawerVisible(true);
@@ -125,25 +145,8 @@ export default function PersonnelLibrary() {
 
   const handleDelete = async (record) => {
     try {
-      const { data: attachments } = await supabase
-        .from('personnel_attachments')
-        .select('file_url')
-        .eq('personnel_profile_id', record.id);
-
-      if (attachments && attachments.length > 0) {
-        const paths = attachments.map(a => {
-          const url = new URL(a.file_url);
-          return decodeURIComponent(url.pathname.split('/personnel-attachments/')[1] || '');
-        }).filter(Boolean);
-        if (paths.length > 0) {
-          await supabase.storage.from('personnel-attachments').remove(paths);
-        }
-      }
-
-      const { error } = await supabase
-        .from('personnel_profiles')
-        .delete()
-        .eq('id', record.id);
+      await deletePersonnelAttachments([record.id]);
+      const { error } = await supabase.from('personnel_profiles').delete().eq('id', record.id);
       if (error) throw error;
       message.success('删除成功');
       fetchPersonnel();
@@ -152,7 +155,44 @@ export default function PersonnelLibrary() {
     }
   };
 
-  const uploadFile = async (file, attachmentType) => {
+  const handleBatchDelete = async () => {
+    if (selectedRowKeys.length === 0) return;
+    try {
+      for (const id of selectedRowKeys) {
+        await deletePersonnelAttachments([id]);
+      }
+      const { error } = await supabase.from('personnel_profiles').delete().in('id', selectedRowKeys);
+      if (error) throw error;
+      message.success(`已删除 ${selectedRowKeys.length} 条记录`);
+      setSelectedRowKeys([]);
+      fetchPersonnel();
+    } catch (err) {
+      message.error('批量删除失败: ' + err.message);
+    }
+  };
+
+  const deletePersonnelAttachments = async (profileIds) => {
+    const { data: attachments } = await supabase
+      .from('personnel_attachments')
+      .select('id, file_url')
+      .in('personnel_profile_id', profileIds);
+
+    if (attachments && attachments.length > 0) {
+      const paths = attachments.map(a => {
+        try {
+          const url = new URL(a.file_url);
+          return decodeURIComponent(url.pathname.split('/personnel-attachments/')[1] || '');
+        } catch { return ''; }
+      }).filter(Boolean);
+      if (paths.length > 0) {
+        await supabase.storage.from('personnel-attachments').remove(paths);
+      }
+      const ids = attachments.map(a => a.id);
+      await supabase.from('personnel_attachments').delete().in('id', ids);
+    }
+  };
+
+  const uploadFile = async (file) => {
     const ext = file.name.split('.').pop();
     const safeName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}.${ext}`;
     const filePath = `${user.id}/${safeName}`;
@@ -239,7 +279,7 @@ export default function PersonnelLibrary() {
         for (const f of files) {
           if (f._dbId) continue;
           if (f.originFileObj) {
-            const uploaded = await uploadFile(f.originFileObj, attachType);
+            const uploaded = await uploadFile(f.originFileObj);
             newAttachments.push({
               user_id: user.id,
               personnel_profile_id: profileId,
@@ -291,78 +331,22 @@ export default function PersonnelLibrary() {
     }));
   };
 
-  const columns = [
-    {
-      title: '姓名',
-      dataIndex: 'name',
-      key: 'name',
-      width: 100,
-      render: (text) => <span className="font-medium">{text}</span>,
-    },
-    { title: '性别', dataIndex: 'gender', key: 'gender', width: 60 },
-    { title: '学历', dataIndex: 'education', key: 'education', width: 80 },
-    { title: '职称', dataIndex: 'title', key: 'title', width: 120, ellipsis: true },
-    { title: '电话', dataIndex: 'phone', key: 'phone', width: 130 },
-    {
-      title: '项目经历',
-      key: 'projects',
-      width: 120,
-      render: (_, record) => {
-        const exps = record.custom_fields?.project_experiences || [];
-        if (exps.length === 0) return <span className="text-gray-400">无</span>;
-        return <Tag color="blue">{exps.length} 个项目</Tag>;
-      },
-    },
-    {
-      title: '附件',
-      key: 'attachments',
-      width: 100,
-      render: (_, record) => {
-        const attachTags = [];
-        if (record.attachments && Array.isArray(record.attachments)) {
-          const types = new Set(record.attachments.map(a => a.attachment_type || a.type));
-          types.forEach(t => {
-            const info = ATTACHMENT_TYPE_MAP[t];
-            if (info) attachTags.push(info.label);
-          });
-        }
-        if (attachTags.length === 0) return <span className="text-gray-400">无</span>;
-        return attachTags.map(t => <Tag key={t}>{t}</Tag>);
-      },
-    },
-    {
-      title: '操作',
-      key: 'action',
-      width: 120,
-      render: (_, record) => (
-        <Space>
-          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)}>
-            编辑
-          </Button>
-          <Popconfirm title="确定删除该人员？" onConfirm={() => handleDelete(record)}>
-            <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
-          </Popconfirm>
-        </Space>
-      ),
-    },
-  ];
-
-  const makeUploadProps = (attachType) => ({
+  const makeUploadProps = (section) => ({
     listType: 'picture-card',
-    fileList: attachmentUrls[attachType],
-    accept: ATTACHMENT_TYPE_MAP[attachType].accept,
-    maxCount: 4,
+    fileList: attachmentUrls[section.key],
+    accept: section.accept,
+    maxCount: section.maxCount,
     beforeUpload: () => false,
     onChange: ({ fileList }) => {
-      setAttachmentUrls(prev => ({ ...prev, [attachType]: fileList }));
+      setAttachmentUrls(prev => ({ ...prev, [section.key]: fileList }));
     },
-    onRemove: (file) => handleRemoveAttachment(file, attachType),
+    onRemove: (file) => handleRemoveAttachment(file, section.key),
     customRequest: async ({ file, onSuccess, onError }) => {
       try {
-        const result = await uploadFile(file, attachType);
+        const result = await uploadFile(file);
         setAttachmentUrls(prev => ({
           ...prev,
-          [attachType]: prev[attachType].map(f =>
+          [section.key]: prev[section.key].map(f =>
             f.uid === file.uid ? { ...f, status: 'done', url: result.file_url } : f
           ),
         }));
@@ -374,125 +358,283 @@ export default function PersonnelLibrary() {
     },
   });
 
+  const columns = [
+    {
+      title: '姓名',
+      dataIndex: 'name',
+      key: 'name',
+      width: 100,
+      render: (t) => <span className="font-semibold text-gray-800">{t}</span>,
+    },
+    {
+      title: '性别',
+      dataIndex: 'gender',
+      key: 'gender',
+      width: 60,
+      align: 'center',
+    },
+    {
+      title: '学历',
+      dataIndex: 'education',
+      key: 'education',
+      width: 80,
+      align: 'center',
+      render: (t) => t ? <Tag>{t}</Tag> : <span className="text-gray-300">-</span>,
+    },
+    {
+      title: '职称',
+      dataIndex: 'title',
+      key: 'title',
+      width: 130,
+      ellipsis: true,
+    },
+    {
+      title: '电话',
+      dataIndex: 'phone',
+      key: 'phone',
+      width: 130,
+    },
+    {
+      title: '项目经历',
+      key: 'projects',
+      width: 100,
+      align: 'center',
+      render: (_, r) => {
+        const n = (r.custom_fields?.project_experiences || []).length;
+        if (n === 0) return <span className="text-gray-300 text-xs">无</span>;
+        return <Tag color="blue">{n} 个</Tag>;
+      },
+    },
+    {
+      title: '证件',
+      key: 'attachments',
+      width: 160,
+      render: (_, r) => {
+        const tags = [];
+        if (r.attachments && Array.isArray(r.attachments)) {
+          const types = new Set(r.attachments.map(a => a.attachment_type || a.type));
+          const labelMap = { id_card_front: '身份证', id_card_back: '身份证', degree_certificate: '学位证', qualification_certificate: '资质证' };
+          types.forEach(t => { if (labelMap[t]) tags.push(labelMap[t]); });
+        }
+        const unique = [...new Set(tags)];
+        if (unique.length === 0) return <span className="text-gray-300 text-xs">无</span>;
+        return unique.map(t => <Tag key={t} className="text-xs">{t}</Tag>);
+      },
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 120,
+      fixed: 'right',
+      render: (_, record) => (
+        <Space size="small">
+          <Button type="link" size="small" icon={<EditOutlined />} onClick={() => handleEdit(record)}>编辑</Button>
+          <Popconfirm title="确定删除该人员？" onConfirm={() => handleDelete(record)}>
+            <Button type="link" size="small" danger icon={<DeleteOutlined />}>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
   return (
-    <div>
-      <div className="flex justify-between items-center mb-4">
-        <span className="text-gray-500 text-sm">共 {personnel.length} 条记录</span>
-        <Button type="primary" icon={<PlusOutlined />} onClick={handleAdd}>
-          新增人员
-        </Button>
+    <div className="space-y-4">
+      {/* 顶部操作栏 */}
+      <div className="flex items-center justify-between bg-white rounded-xl px-5 py-3 shadow-sm border border-gray-100">
+        <div className="flex items-center gap-3">
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={handleAdd}
+            className="rounded-lg shadow-sm"
+          >
+            新增人员
+          </Button>
+
+          <Popconfirm
+            title={`确定删除选中的 ${selectedRowKeys.length} 条记录？`}
+            onConfirm={handleBatchDelete}
+            disabled={selectedRowKeys.length === 0}
+          >
+            <Button
+              danger={selectedRowKeys.length > 0}
+              disabled={selectedRowKeys.length === 0}
+              icon={<DeleteOutlined />}
+              className="rounded-lg"
+            >
+              批量删除 {selectedRowKeys.length > 0 && `(${selectedRowKeys.length})`}
+            </Button>
+          </Popconfirm>
+
+          <span className="text-xs text-gray-400 ml-1">
+            共 {personnel.length} 条 · 已筛选 {filtered.length} 条
+          </span>
+        </div>
+
+        <Input
+          placeholder="搜索姓名 / 电话 / 学历 / 职称..."
+          prefix={<SearchOutlined className="text-gray-300" />}
+          allowClear
+          value={searchText}
+          onChange={e => setSearchText(e.target.value)}
+          className="w-72 rounded-lg"
+        />
       </div>
 
-      <Table
-        dataSource={personnel}
-        columns={columns}
-        rowKey="id"
-        loading={loading}
-        pagination={{ pageSize: 20 }}
-        size="middle"
-      />
+      {/* 表格 */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+        <Table
+          dataSource={filtered}
+          columns={columns}
+          rowKey="id"
+          loading={loading}
+          pagination={{ pageSize: 20, showSizeChanger: false, showTotal: t => `共 ${t} 条` }}
+          size="middle"
+          rowSelection={{
+            selectedRowKeys,
+            onChange: setSelectedRowKeys,
+          }}
+          scroll={{ x: 880 }}
+          className="[&_.ant-table-thead>tr>th]:bg-gray-50/80 [&_.ant-table-thead>tr>th]:font-semibold [&_.ant-table-thead>tr>th]:text-xs"
+          locale={{ emptyText: (
+            <div className="py-8 text-center">
+              <UserOutlined className="text-3xl text-gray-200 mb-2 block" />
+              <p className="text-gray-400 text-sm">暂无人员数据</p>
+              <p className="text-gray-300 text-xs mt-1">点击"新增人员"开始录入</p>
+            </div>
+          )}}
+        />
+      </div>
 
+      {/* 新增/编辑 Drawer */}
       <Drawer
-        title={editingRecord ? '编辑人员' : '新增人员'}
+        title={
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center">
+              <UserOutlined className="text-indigo-500" />
+            </div>
+            <div>
+              <div className="font-bold text-base">{editingRecord ? '编辑人员' : '新增人员'}</div>
+              <div className="text-xs text-gray-400 font-normal">填写基础信息和项目经历</div>
+            </div>
+          </div>
+        }
         open={drawerVisible}
         onClose={() => setDrawerVisible(false)}
-        width={680}
+        width={700}
+        styles={{ body: { padding: '0 24px 24px' } }}
         extra={
           <Space>
             <Button onClick={() => setDrawerVisible(false)}>取消</Button>
-            <Button type="primary" loading={saving} onClick={handleSave}>保存</Button>
+            <Button type="primary" loading={saving} onClick={handleSave} className="rounded-lg">
+              保存
+            </Button>
           </Space>
         }
       >
-        <Form form={form} layout="vertical">
-          <Divider orientation="left" orientationMargin={0}>
-            <UserOutlined className="mr-1" /> 基础信息
-          </Divider>
+        <Form form={form} layout="vertical" className="mt-4">
+          {/* 区块 A：基础信息 */}
+          <div className="mb-2">
+            <div className="flex items-center gap-2 mb-4">
+              <div className="w-1 h-4 bg-indigo-500 rounded-full" />
+              <span className="font-bold text-sm text-gray-700">基础信息</span>
+            </div>
 
-          <div className="grid grid-cols-2 gap-x-4">
-            <Form.Item label="姓名" name="name" rules={[{ required: true, message: '请输入姓名' }]}>
-              <Input placeholder="请输入姓名" />
-            </Form.Item>
-            <Form.Item label="性别" name="gender">
-              <Select placeholder="请选择" allowClear options={GENDER_OPTIONS} />
-            </Form.Item>
-            <Form.Item label="学历" name="education">
-              <Select placeholder="请选择" allowClear options={EDUCATION_OPTIONS} />
-            </Form.Item>
-            <Form.Item label="职称" name="title">
-              <Input placeholder="如：高级工程师" />
-            </Form.Item>
-            <Form.Item label="电话" name="phone">
-              <Input placeholder="联系电话" />
-            </Form.Item>
-            <Form.Item label="身份证号" name="id_number">
-              <Input placeholder="身份证号码" />
-            </Form.Item>
-            <Form.Item label="毕业院校" name="school">
-              <Input placeholder="毕业院校" />
-            </Form.Item>
-            <Form.Item label="专业" name="major">
-              <Input placeholder="所学专业" />
-            </Form.Item>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              <Form.Item label="姓名" name="name" rules={[{ required: true, message: '请输入姓名' }]}>
+                <Input placeholder="请输入姓名" />
+              </Form.Item>
+              <Form.Item label="性别" name="gender">
+                <Select placeholder="请选择" allowClear options={GENDER_OPTIONS} />
+              </Form.Item>
+              <Form.Item label="学历" name="education">
+                <Select placeholder="请选择" allowClear options={EDUCATION_OPTIONS} />
+              </Form.Item>
+              <Form.Item label="职称" name="title">
+                <Input placeholder="如：高级工程师" />
+              </Form.Item>
+              <Form.Item label="电话" name="phone">
+                <Input placeholder="联系电话" />
+              </Form.Item>
+              <Form.Item label="身份证号" name="id_number">
+                <Input placeholder="身份证号码" />
+              </Form.Item>
+              <Form.Item label="毕业院校" name="school">
+                <Input placeholder="毕业院校" />
+              </Form.Item>
+              <Form.Item label="专业" name="major">
+                <Input placeholder="所学专业" />
+              </Form.Item>
+            </div>
           </div>
 
-          <Divider orientation="left" orientationMargin={0}>
-            <ProjectOutlined className="mr-1" /> 项目经历
-          </Divider>
-
-          <Form.List name="project_experiences">
-            {(fields, { add, remove }) => (
-              <>
-                {fields.map(({ key, name, ...restField }) => (
-                  <div key={key} className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200 relative">
-                    <div className="grid grid-cols-2 gap-x-4">
-                      <Form.Item {...restField} name={[name, 'project_name']} label="项目名称" className="mb-2">
-                        <Input placeholder="项目名称" />
-                      </Form.Item>
-                      <Form.Item {...restField} name={[name, 'role']} label="担任角色" className="mb-2">
-                        <Input placeholder="如：项目经理" />
-                      </Form.Item>
-                    </div>
-                    <Form.Item {...restField} name={[name, 'time_range']} label="起止时间" className="mb-2">
-                      <RangePicker className="w-full" />
-                    </Form.Item>
-                    <Form.Item {...restField} name={[name, 'description']} label="工作内容" className="mb-0">
-                      <TextArea rows={2} placeholder="描述工作内容" />
-                    </Form.Item>
-                    <Button
-                      type="text"
-                      danger
-                      size="small"
-                      icon={<MinusCircleOutlined />}
-                      onClick={() => remove(name)}
-                      className="absolute top-2 right-2"
-                    />
-                  </div>
-                ))}
-                <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />}>
-                  添加项目经历
-                </Button>
-              </>
-            )}
-          </Form.List>
-
-          <Divider orientation="left" orientationMargin={0}>
-            <PaperClipOutlined className="mr-1" /> 证件附件
-          </Divider>
-
-          {Object.entries(ATTACHMENT_TYPE_MAP).map(([type, info]) => (
-            <div key={type} className="mb-4">
-              <div className="text-sm font-medium text-gray-700 mb-2">{info.label}</div>
-              <Upload {...makeUploadProps(type)}>
-                {attachmentUrls[type].length >= 4 ? null : (
-                  <div>
-                    <UploadOutlined />
-                    <div className="text-xs mt-1">上传{info.label}</div>
-                  </div>
-                )}
-              </Upload>
+          {/* 区块 B：项目经历 */}
+          <div className="mb-2">
+            <div className="flex items-center gap-2 mb-4 mt-2">
+              <div className="w-1 h-4 bg-emerald-500 rounded-full" />
+              <span className="font-bold text-sm text-gray-700">项目经历</span>
             </div>
-          ))}
+
+            <Form.List name="project_experiences">
+              {(fields, { add, remove }) => (
+                <>
+                  {fields.map(({ key, name, ...restField }) => (
+                    <div key={key} className="mb-3 p-3 bg-gray-50/80 rounded-lg border border-gray-100 relative group hover:border-indigo-200 transition-colors">
+                      <div className="grid grid-cols-2 gap-x-4">
+                        <Form.Item {...restField} name={[name, 'project_name']} label="项目名称" className="mb-2">
+                          <Input placeholder="项目名称" />
+                        </Form.Item>
+                        <Form.Item {...restField} name={[name, 'role']} label="担任角色" className="mb-2">
+                          <Input placeholder="如：项目经理" />
+                        </Form.Item>
+                      </div>
+                      <Form.Item {...restField} name={[name, 'time_range']} label="起止时间" className="mb-2">
+                        <RangePicker className="w-full" />
+                      </Form.Item>
+                      <Form.Item {...restField} name={[name, 'description']} label="工作内容" className="mb-0">
+                        <TextArea rows={2} placeholder="描述工作内容" />
+                      </Form.Item>
+                      <Button
+                        type="text"
+                        danger
+                        size="small"
+                        icon={<MinusCircleOutlined />}
+                        onClick={() => remove(name)}
+                        className="!absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
+                      />
+                    </div>
+                  ))}
+                  <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />} className="rounded-lg">
+                    添加项目经历
+                  </Button>
+                </>
+              )}
+            </Form.List>
+          </div>
+
+          {/* 区块 C：证件附件 */}
+          <div className="mb-2">
+            <div className="flex items-center gap-2 mb-4 mt-2">
+              <div className="w-1 h-4 bg-amber-500 rounded-full" />
+              <span className="font-bold text-sm text-gray-700">证件附件</span>
+            </div>
+
+            <div className="space-y-5">
+              {ATTACHMENT_SECTIONS.map(section => (
+                <div key={section.key}>
+                  <div className="text-sm font-medium text-gray-600 mb-2">{section.label}</div>
+                  <Upload {...makeUploadProps(section)}>
+                    {attachmentUrls[section.key].length >= section.maxCount ? null : (
+                      <div className="w-[104px] h-[104px] rounded-lg border-2 border-dashed border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/30 transition-all flex flex-col items-center justify-center cursor-pointer">
+                        <UploadOutlined className="text-lg text-gray-300" />
+                        <div className="text-[11px] text-gray-400 mt-1">点击上传</div>
+                      </div>
+                    )}
+                  </Upload>
+                </div>
+              ))}
+            </div>
+          </div>
         </Form>
       </Drawer>
     </div>
