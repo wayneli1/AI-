@@ -2,7 +2,7 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   FilePlus, FileText, Compass, 
-  Image, BookOpen, LogOut, User, Building2, Package, Book
+  Image, BookOpen, LogOut, User, Building2, Package, Book, Users
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { Dropdown, Tooltip, message } from 'antd';
@@ -20,6 +20,7 @@ const Sidebar = ({ collapsed = false }) => {
 
   const libraryNav = [
     { name: '公司信息库', icon: <Building2 size={18} />, path: '/company-profiles' },
+    { name: '人员专家库', icon: <Users size={18} />, path: '/personnel-library' },
     { name: '产品资产库', icon: <Package size={18} />, path: '/product-library' },
     { name: '图片库', icon: <Image size={18} />, path: '/image-library' },
     { name: '知识库', icon: <BookOpen size={18} />, path: '/knowledge-base' },

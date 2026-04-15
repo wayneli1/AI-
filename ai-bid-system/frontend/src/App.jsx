@@ -16,6 +16,7 @@ import BidDetail from './pages/BidDetail';
 import CompanyProfile from './pages/CompanyProfile';
 import ProductLibrary from './pages/ProductLibrary';
 import LearnBid from './pages/LearnBid';
+import PersonnelLibrary from './pages/PersonnelLibrary';
 
 const App = () => {
   return (
@@ -43,6 +44,7 @@ const App = () => {
             <Route path="company-profiles" element={<CompanyProfile />} />
             <Route path="product-library" element={<ProductLibrary />} />
             <Route path="learn-bid" element={<LearnBid />} />
+            <Route path="personnel-library" element={<PersonnelLibrary />} />
             <Route path="profile" element={<Profile />} />
           </Route>
           

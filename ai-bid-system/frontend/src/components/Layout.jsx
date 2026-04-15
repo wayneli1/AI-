@@ -13,6 +13,7 @@ const pageTitles = {
   '/product-library': '产品库',
   '/knowledge-base': '知识库',
   '/company-profiles': '投标主体库',
+  '/personnel-library': '人员专家库',
   '/learn-bid': '历史标书整理',
 };
 
@@ -78,6 +79,7 @@ function getPageSubtitle(path) {
     '/product-library': '管理产品信息、价格和库存',
     '/knowledge-base': '标书相关知识和文档库',
     '/company-profiles': '管理多个投标公司主体，AI填报时自动注入',
+    '/personnel-library': '管理项目人员档案，支持动态表格自动填入',
     '/learn-bid': '从历史标书中整理可长期复用的固定字段、正文内容和附件',
   };
   return subtitles[path] || 'AI标书系统';
