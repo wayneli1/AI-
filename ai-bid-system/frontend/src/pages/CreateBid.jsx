@@ -7,7 +7,7 @@ import { saveAs } from 'file-saver';
 import { useSearchParams } from 'react-router-dom';
 import { renderAsync } from 'docx-preview';
 
-import { fillDocumentBlanks, reviewFilledBlanksWithAI, scanBlanksWithAI } from '../utils/difyWorkflow';
+import { fillDocumentBlanks, reviewFilledBlanksWithAI } from '../utils/difyWorkflow';
 import { extractTextFromDocument } from '../utils/documentParser';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
@@ -20,6 +20,7 @@ import {
   filterIgnoredBlanks
 } from '../utils/wordBlankFiller';
 import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
+import { parseBidDocx } from '../utils/backendApi';
 
 const DESKTOP_BREAKPOINT = 1280;
 const MIN_PREVIEW_PANEL_WIDTH = 360;
@@ -250,6 +251,14 @@ export default function CreateBid() {
   const [currentProjectId, setCurrentProjectId] = useState(null);
   const [imageUrlMap, setImageUrlMap] = useState({}); // 保存占位符到URL的映射
   const [auditResults, setAuditResults] = useState([]);
+
+  // 后端解析结果 - 三桶数据
+  const [normalBlanks, setNormalBlanks] = useState([]);
+  const [dynamicTables, setDynamicTables] = useState([]);
+  const [manualTables, setManualTables] = useState([]);
+  const [tableStructures, setTableStructures] = useState([]);
+  const [parseMeta, setParseMeta] = useState(null);
+  const [indexedParagraphs, setIndexedParagraphs] = useState([]);
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -1088,32 +1097,48 @@ export default function CreateBid() {
     setAuditResults([]);
 
     try {
-      message.loading({ content: '正在扫描投标文件中的空白位置...', key: 'scan', duration: 0 });
+      message.loading({ content: '正在调用后端解析标书...', key: 'scan', duration: 0 });
 
+      // 调用后端API解析
+      const parseResult = await parseBidDocx(file);
+      
+      if (!parseResult.success) {
+        throw new Error(parseResult.message || '解析失败');
+      }
+
+      const {
+        normalBlanks: backendNormalBlanks,
+        dynamicTables: backendDynamicTables,
+        manualTables: backendManualTables,
+        tableStructures: backendTableStructures,
+        meta: backendMeta
+      } = parseResult;
+
+      // 设置三桶数据
+      setNormalBlanks(backendNormalBlanks);
+      setDynamicTables(backendDynamicTables);
+      setManualTables(backendManualTables);
+      setTableStructures(backendTableStructures);
+      setParseMeta(backendMeta);
+
+      // 构建段落索引（用于AI扫描）
+      const paragraphsForAI = backendNormalBlanks.map(b => ({
+        paraIndex: b.paraIndex,
+        text: b.context
+      })).filter((p, idx, arr) => 
+        arr.findIndex(x => x.paraIndex === p.paraIndex) === idx
+      ).sort((a, b) => a.paraIndex - b.paraIndex);
+      setIndexedParagraphs(paragraphsForAI);
+
+      // 获取XML用于后续导出（保持兼容性）
       const { xmlString, zip } = await extractDocumentXml(file);
       setOriginalXml(xmlString);
       setOriginalZip(zip);
 
-      const [regexBlanks, indexedParagraphs] = await Promise.all([
-        Promise.resolve(scanBlanksFromXml(xmlString)),
-        Promise.resolve(extractIndexedParagraphs(xmlString))
-      ]);
+      // 直接使用后端结果，不再调用AI补充扫描
+      const mergedBlanks = backendNormalBlanks;
 
-      let aiBlanks = [];
-      try {
-        const nonEmptyParagraphs = indexedParagraphs.filter(p => p.text.length > 0);
-        if (nonEmptyParagraphs.length > 0) {
-          message.loading({ content: '正则扫描完成，正在调用 AI 进行智能识别...', key: 'scan', duration: 0 });
-          aiBlanks = await scanBlanksWithAI(nonEmptyParagraphs);
-        }
-      } catch (aiError) {
-        console.warn('AI 扫描失败，继续使用正则结果:', aiError);
-        message.warning({ content: 'AI 扫描失败，仅使用正则识别结果', key: 'scan', duration: 3 });
-      }
-
-      const mergedBlanks = filterIgnoredBlanks(mergeBlanks(regexBlanks, aiBlanks));
-
-      if (mergedBlanks.length === 0) {
+      if (mergedBlanks.length === 0 && backendDynamicTables.length === 0 && backendManualTables.length === 0) {
         message.warning({ content: '未扫描到空白位置，该文件可能不需要填报，或空白格式未被识别。', key: 'scan', duration: 5 });
         setStep('upload');
         setIsScanning(false);
@@ -1126,17 +1151,25 @@ export default function CreateBid() {
       setManualEdits(initialEdits);
       setAuditResults([]);
 
+      // 上传到Supabase
       const fileExtension = '.' + ext;
       const safeFileName = `${Date.now()}_${Math.random().toString(36).substring(2, 8)}${fileExtension}`;
       const filePath = `${user.id}/${safeFileName}`;
       await supabase.storage.from('documents').upload(filePath, file);
       const uploadedFileUrl = `${supabase.supabaseUrl}/storage/v1/object/documents/${filePath}`;
 
+      const frameworkContent = {
+        normalBlanks: mergedBlanks,
+        dynamicTables: backendDynamicTables,
+        manualTables: backendManualTables,
+        meta: backendMeta
+      };
+
       const { data: project, error } = await supabase.from('bidding_projects').insert({
         user_id: user.id,
         project_name: file.name.replace(/\.[^/.]+$/, ''),
         file_url: uploadedFileUrl,
-        framework_content: JSON.stringify(mergedBlanks),
+        framework_content: JSON.stringify(frameworkContent),
         status: 'processing'
       }).select().single();
 
@@ -1145,12 +1178,16 @@ export default function CreateBid() {
         window.history.replaceState(null, '', `/create-bid?id=${project.id}`);
       }
 
-      const scanSummary = `扫描完成，共发现 ${mergedBlanks.length} 处待填写位置！`;
-      if (aiBlanks.length > 0) {
-        message.success({ content: `${scanSummary} (正则: ${regexBlanks.length}, AI: ${aiBlanks.length})`, key: 'scan' });
-      } else {
-        message.success({ content: scanSummary, key: 'scan' });
-      }
+      const totalBlanks = mergedBlanks.length;
+      const totalDynTables = backendDynamicTables.length;
+      const totalManTables = backendManualTables.length;
+      
+      let scanSummary = `解析完成！`;
+      if (totalBlanks > 0) scanSummary += `普通填空 ${totalBlanks} 处`;
+      if (totalDynTables > 0) scanSummary += `，动态表格 ${totalDynTables} 个`;
+      if (totalManTables > 0) scanSummary += `，高危表格 ${totalManTables} 个`;
+      
+      message.success({ content: scanSummary, key: 'scan' });
       setStep('scan');
     } catch (err) {
       console.error('扫描失败:', err);

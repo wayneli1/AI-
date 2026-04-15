@@ -3,7 +3,6 @@
 // 全局环境变量读取
 const DIFY_API_BASE = import.meta.env.VITE_DIFY_API_BASE || 'https://api.dify.ai/v1';
 const FILL_BLANK_API_KEY = import.meta.env.VITE_DIFY_FILL_BLANK_API_KEY;
-const SCAN_BLANK_API_KEY = import.meta.env.VITE_DIFY_SCAN_BLANK_API_KEY;
 const AUDIT_API_KEY = import.meta.env.VITE_DIFY_AUDIT_API_KEY;
 
 const parseDifyJsonOutput = (result = {}) => {
@@ -57,76 +56,6 @@ const buildFocusHint = (blank = {}) => {
   };
 
   return `${hint}。${fieldSpecific[hint] || '当前只填写这个字段本身，不要把同一句里的其他字段内容填进来。'}`;
-};
-
-export const scanBlanksWithAI = async (paragraphs) => {
-  if (!SCAN_BLANK_API_KEY || !DIFY_API_BASE) {
-    throw new Error("未配置空白扫描 API Key (VITE_DIFY_SCAN_BLANK_API_KEY)");
-  }
-
-  const lightParagraphs = paragraphs.map(p => ({
-    paraIndex: p.paraIndex,
-    text: p.text
-  }));
-
-  const CHUNK_SIZE = 40;
-  const chunks = [];
-  for (let i = 0; i < lightParagraphs.length; i += CHUNK_SIZE) {
-    chunks.push(lightParagraphs.slice(i, i + CHUNK_SIZE));
-  }
-
-  const promises = chunks.map(async (chunk) => {
-    try {
-      const paragraphsText = JSON.stringify(chunk);
-
-      const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${SCAN_BLANK_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          inputs: { paragraphs_text: paragraphsText },
-          response_mode: "blocking",
-          user: "frontend-scan-blank-user"
-        })
-      });
-
-      if (!response.ok) return [];
-
-      const result = await response.json();
-      if (result.data?.error) return [];
-
-      const outputStr = result.data?.outputs?.text || result.data?.outputs?.result;
-      if (!outputStr) return [];
-
-      let cleanStr = outputStr;
-      cleanStr = cleanStr.replace(/<think[\s\S]*?<\/think>/gi, '').trim();
-      cleanStr = cleanStr.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-
-      try {
-        const parsed = JSON.parse(cleanStr);
-        if (Array.isArray(parsed)) return parsed;
-      } catch (e) {
-        const jsonMatch = cleanStr.match(/\[\s*\{[\s\S]*\}\s*\]/);
-        if (jsonMatch) {
-          try {
-            const recovered = JSON.parse(jsonMatch[0]);
-            if (Array.isArray(recovered)) return recovered;
-          } catch (e2) { /* fall through */ }
-        }
-      }
-
-      return [];
-    } catch (error) {
-      return [];
-    }
-  });
-
-  const chunkResults = await Promise.all(promises);
-  const allAiBlanks = chunkResults.flat();
-
-  return allAiBlanks;
 };
 
 export const fillDocumentBlanks = async (blankContexts, companyName, tenderContext = '') => {
