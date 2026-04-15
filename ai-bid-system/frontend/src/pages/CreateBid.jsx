@@ -257,7 +257,8 @@ export default function CreateBid() {
   const [parseMeta, setParseMeta] = useState(null);
   const [dynamicTableEdits, setDynamicTableEdits] = useState({});
   const [isTableModalVisible, setIsTableModalVisible] = useState(false);
-  const [dynamicTableImages, setDynamicTableImages] = useState({}); // { [tableId]: ['url1', 'url2'] }
+  const [dynamicTableImages, setDynamicTableImages] = useState({});
+  const [personnelProfiles, setPersonnelProfiles] = useState([]);
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -321,6 +322,19 @@ export default function CreateBid() {
       loadExistingProject(urlProjectId);
     }
   }, [urlProjectId, user]);
+
+  useEffect(() => {
+    if (!user) return;
+    const fetchPersonnel = async () => {
+      try {
+        const { data } = await supabase.from('personnel_profiles').select('*').eq('user_id', user.id);
+        if (data) setPersonnelProfiles(data);
+      } catch (err) {
+        console.error('拉取人员库失败:', err);
+      }
+    };
+    fetchPersonnel();
+  }, [user]);
 
   useEffect(() => {
     const handleWindowResize = () => {
@@ -2738,19 +2752,12 @@ export default function CreateBid() {
                           const allImages = [];
                           for (const personName of selectedValues) {
                             try {
-                              const { data: profiles } = await supabase
-                                .from('personnel_profiles')
-                                .select('id')
-                                .eq('user_id', user.id)
-                                .eq('name', personName)
-                                .limit(1);
-
-                              if (profiles && profiles.length > 0) {
-                                const profileId = profiles[0].id;
+                              const profile = personnelProfiles.find(p => p.name === personName);
+                              if (profile) {
                                 const { data: attachments } = await supabase
                                   .from('personnel_attachments')
                                   .select('file_url, attachment_type')
-                                  .eq('personnel_profile_id', profileId)
+                                  .eq('personnel_profile_id', profile.id)
                                   .eq('enabled', true);
 
                                 if (attachments) {
@@ -2769,44 +2776,55 @@ export default function CreateBid() {
 
                           setDynamicTableImages(prev => ({ ...prev, [dt.tableId]: allImages }));
 
-                          // 生成假数据
-                          const mockData = selectedValues.map(name => {
-                            const row = {};
-                            dt.headers.forEach(header => {
-                              if (header.includes('姓名') || header.includes('名字')) {
-                                row[header] = name;
-                              } else if (header.includes('年龄')) {
-                                row[header] = String(25 + selectedValues.indexOf(name) * 3);
-                              } else if (header.includes('学历')) {
-                                row[header] = '本科';
-                              } else if (header.includes('职务') || header.includes('职称') || header.includes('岗位')) {
-                                row[header] = '项目经理';
-                              } else if (header.includes('电话') || header.includes('联系方式')) {
-                                row[header] = '138' + String(10000000 + selectedValues.indexOf(name) * 11111111).slice(0, 8);
-                              } else if (header.includes('专业')) {
-                                row[header] = '计算机科学与技术';
-                              } else if (header.includes('时间') || header.includes('日期')) {
-                                row[header] = '2020.01 - 2023.06';
-                              } else if (header.includes('项目') || header.includes('名称')) {
-                                row[header] = `${name}负责的测试项目`;
-                              } else if (header.includes('备注') || header.includes('说明')) {
-                                row[header] = '';
-                              } else {
-                                row[header] = `测试数据-${name}`;
-                              }
-                            });
-                            row._personName = name;
-                            return row;
-                          });
-                          setDynamicTableEdits(prev => ({ ...prev, [dt.tableId]: mockData }));
+                          // 真实数据映射
+                          const realTableData = [];
+                          for (const personName of selectedValues) {
+                            const profile = personnelProfiles.find(p => p.name === personName);
+                            if (!profile) continue;
+
+                            const isResumeTable = dt.headers.some(h => /项目|业绩|时间|年月/.test(h));
+                            const experiences = profile.custom_fields?.project_experiences || [];
+
+                            if (isResumeTable && experiences.length > 0) {
+                              experiences.forEach(exp => {
+                                const row = { _personName: personName };
+                                dt.headers.forEach(header => {
+                                  if (/姓名|名字/.test(header)) row[header] = profile.name || '';
+                                  else if (/学历|学位/.test(header)) row[header] = profile.education || '';
+                                  else if (/职务|职称|资格|岗位/.test(header)) row[header] = profile.title || '';
+                                  else if (/性别/.test(header)) row[header] = profile.gender || '';
+                                  else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
+                                  else if (/专业/.test(header)) row[header] = profile.major || '';
+                                  else if (/院校|学校/.test(header)) row[header] = profile.school || '';
+                                  else if (/身份证/.test(header)) row[header] = profile.id_number || '';
+                                  else if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
+                                  else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
+                                  else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
+                                  else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
+                                  else row[header] = '';
+                                });
+                                realTableData.push(row);
+                              });
+                            } else {
+                              const row = { _personName: personName };
+                              dt.headers.forEach(header => {
+                                if (/姓名|名字/.test(header)) row[header] = profile.name || '';
+                                else if (/学历|学位/.test(header)) row[header] = profile.education || '';
+                                else if (/职务|职称|资格|岗位/.test(header)) row[header] = profile.title || '';
+                                else if (/性别/.test(header)) row[header] = profile.gender || '';
+                                else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
+                                else if (/专业/.test(header)) row[header] = profile.major || '';
+                                else if (/院校|学校/.test(header)) row[header] = profile.school || '';
+                                else if (/身份证/.test(header)) row[header] = profile.id_number || '';
+                                else row[header] = '';
+                              });
+                              realTableData.push(row);
+                            }
+                          }
+
+                          setDynamicTableEdits(prev => ({ ...prev, [dt.tableId]: realTableData }));
                         }}
-                        options={[
-                          { value: '张三', label: '张三' },
-                          { value: '李四', label: '李四' },
-                          { value: '王五', label: '王五' },
-                          { value: '赵六', label: '赵六' },
-                          { value: '钱七', label: '钱七' },
-                        ]}
+                        options={personnelProfiles.map(p => ({ value: p.name, label: p.name }))}
                       />
                     </div>
 
