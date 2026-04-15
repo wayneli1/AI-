@@ -8,6 +8,8 @@ import urllib3
 from docx import Document
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from docx.text.paragraph import Paragraph
+from docx.shared import Cm
 from fastapi import APIRouter, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 
@@ -249,6 +251,7 @@ def fill_dynamic_tables(doc, dynamic_tables):
     for table_info in dynamic_tables:
         table_id = table_info.get("table_id")
         rows_data = table_info.get("rows", [])
+        append_images = table_info.get("append_images", [])
 
         if table_id is None or table_id >= len(doc.tables):
             print(f"   ⚠️ table_id {table_id} 超出范围，跳过")
@@ -293,7 +296,31 @@ def fill_dynamic_tables(doc, dynamic_tables):
             parent.insert(template_index_in_parent + i, new_row)
 
         total_filled += len(rows_data)
-        print(f"   ✅ 表格 {table_id} 克隆填充 {len(rows_data)} 行 (游标法, 最终列位={logical_col})")
+        print(f"   ✅ 表格 {table_id} 克隆填充 {len(rows_data)} 行")
+
+        # ===== 在表格下方追加图片 =====
+        if append_images and table_id < len(doc.tables):
+            table_element = doc.tables[table_id]._element
+            current = table_element
+
+            for idx, img_url in enumerate(append_images):
+                try:
+                    resp = requests.get(img_url, verify=False, timeout=15)
+                    resp.raise_for_status()
+                    img_stream = io.BytesIO(resp.content)
+
+                    p_elem = OxmlElement('w:p')
+                    current.addnext(p_elem)
+
+                    p = Paragraph(p_elem, doc.element.body)
+                    run = p.add_run()
+                    run.add_picture(img_stream, width=Cm(14.0))
+
+                    current = p_elem
+                    print(f"   🖼️ 表格 {table_id} 追加图片 {idx + 1}/{len(append_images)}: {img_url[:60]}")
+
+                except Exception as e:
+                    print(f"   ⚠️ 下载图片失败 [{img_url[:60]}]: {e}")
 
     return total_filled
 

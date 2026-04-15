@@ -257,6 +257,7 @@ export default function CreateBid() {
   const [parseMeta, setParseMeta] = useState(null);
   const [dynamicTableEdits, setDynamicTableEdits] = useState({});
   const [isTableModalVisible, setIsTableModalVisible] = useState(false);
+  const [dynamicTableImages, setDynamicTableImages] = useState({}); // { [tableId]: ['url1', 'url2'] }
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -1650,7 +1651,8 @@ export default function CreateBid() {
           rows: (dynamicTableEdits[tableId] || []).map(row => {
             const { _personName, ...rest } = row;
             return rest;
-          })
+          }),
+          append_images: dynamicTableImages[tableId] || [],
         }))
         .filter(item => item.rows && item.rows.length > 0);
 
@@ -2725,14 +2727,49 @@ export default function CreateBid() {
                         placeholder="可多选人员..."
                         style={{ minWidth: 320 }}
                         value={selectedNames}
-                        onChange={(selectedValues) => {
+                        onChange={async (selectedValues) => {
                           if (selectedValues.length === 0) {
-                            setDynamicTableEdits(prev => ({
-                              ...prev,
-                              [dt.tableId]: []
-                            }));
+                            setDynamicTableEdits(prev => ({ ...prev, [dt.tableId]: [] }));
+                            setDynamicTableImages(prev => ({ ...prev, [dt.tableId]: [] }));
                             return;
                           }
+
+                          // 查询选中人员的附件图片
+                          const allImages = [];
+                          for (const personName of selectedValues) {
+                            try {
+                              const { data: profiles } = await supabase
+                                .from('personnel_profiles')
+                                .select('id')
+                                .eq('user_id', user.id)
+                                .eq('name', personName)
+                                .limit(1);
+
+                              if (profiles && profiles.length > 0) {
+                                const profileId = profiles[0].id;
+                                const { data: attachments } = await supabase
+                                  .from('personnel_attachments')
+                                  .select('file_url, attachment_type')
+                                  .eq('personnel_profile_id', profileId)
+                                  .eq('enabled', true);
+
+                                if (attachments) {
+                                  const imageTypes = ['id_card_front', 'id_card_back', 'degree_certificate', 'qualification_certificate'];
+                                  attachments.forEach(att => {
+                                    if (imageTypes.includes(att.attachment_type) && att.file_url) {
+                                      allImages.push(att.file_url);
+                                    }
+                                  });
+                                }
+                              }
+                            } catch (err) {
+                              console.warn(`查询人员 ${personName} 附件失败:`, err);
+                            }
+                          }
+
+                          setDynamicTableImages(prev => ({ ...prev, [dt.tableId]: allImages }));
+
+                          // 生成假数据
                           const mockData = selectedValues.map(name => {
                             const row = {};
                             dt.headers.forEach(header => {
@@ -2761,10 +2798,7 @@ export default function CreateBid() {
                             row._personName = name;
                             return row;
                           });
-                          setDynamicTableEdits(prev => ({
-                            ...prev,
-                            [dt.tableId]: mockData
-                          }));
+                          setDynamicTableEdits(prev => ({ ...prev, [dt.tableId]: mockData }));
                         }}
                         options={[
                           { value: '张三', label: '张三' },
