@@ -281,19 +281,30 @@ def fill_dynamic_tables(doc, dynamic_tables):
 
             cells = new_row.findall(qn('w:tc'))
 
-            # GridSpan 感知的游标填入法
+            # 🆕 智能填充：只填充有值的单元格，保留空白单元格的原始内容
             logical_col = 0
+            filled_count = 0
             for tc in cells:
                 span = get_tc_gridspan(tc)
                 header = header_texts[logical_col] if logical_col < len(header_texts) else ""
                 value = row_data.get(header, "")
 
-                if value:
+                # 只有当值非空时才填充（这样可以保留模板中的固定内容）
+                if value and str(value).strip():
+                    original_text = get_cell_text_from_element(tc)
                     set_cell_text(tc, str(value))
+                    filled_count += 1
+                    print(f"      ✓ [{template_idx + i},{logical_col}] {header}: '{original_text}' → '{value}'")
+                else:
+                    # 保留原始内容（可能是固定文本或空白）
+                    original_text = get_cell_text_from_element(tc)
+                    if original_text:
+                        print(f"      ⏭️ [{template_idx + i},{logical_col}] {header}: 保留原值 '{original_text}'")
 
                 logical_col += span
 
             parent.insert(template_index_in_parent + i, new_row)
+            print(f"   ✅ 表格 {table_id} 第 {i+1} 行: 填充 {filled_count}/{len(cells)} 个单元格")
 
         total_filled += len(rows_data)
         print(f"   ✅ 表格 {table_id} 克隆填充 {len(rows_data)} 行")

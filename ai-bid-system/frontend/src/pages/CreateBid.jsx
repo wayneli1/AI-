@@ -18,6 +18,12 @@ import {
 } from '../utils/wordBlankFiller';
 import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
 import { parseBidDocx } from '../utils/backendApi';
+import { 
+  buildCellMapping, 
+  fillPersonDataToRow, 
+  getBlankCellsMappingInfo,
+  getMappingStats 
+} from '../utils/tableFieldMapper';
 
 const DESKTOP_BREAKPOINT = 1280;
 const MIN_PREVIEW_PANEL_WIDTH = 360;
@@ -261,6 +267,7 @@ export default function CreateBid() {
   const [personnelProfiles, setPersonnelProfiles] = useState([]);
   const [selectedPersonRoles, setSelectedPersonRoles] = useState({}); // { [tableId]: { personName: positionName } }
   const [tempPersonSelection, setTempPersonSelection] = useState({}); // { [tableId]: personName }
+  const [tableCellMappings, setTableCellMappings] = useState({}); // { [tableId]: cellMap } 存储每个表格的单元格映射
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -461,6 +468,7 @@ export default function CreateBid() {
             setScannedBlanks(parsed.normalBlanks || []);
             setDynamicTables(parsed.dynamicTables || []);
             setManualTables(parsed.manualTables || []);
+            setTableStructures(parsed.tableStructures || []);
             setParseMeta(parsed.meta || null);
           }
         }
@@ -1151,6 +1159,27 @@ export default function CreateBid() {
       setParseMeta(backendMeta);
       console.log('🔵 [前端] 三桶数据已设置完毕');
 
+      // 🆕 构建单元格映射（智能识别空白单元格）
+      const cellMappings = {};
+      backendDynamicTables.forEach(dt => {
+        const ts = backendTableStructures.find(s => s.tableId === dt.tableId);
+        if (ts) {
+          const cellMap = buildCellMapping(dt, ts);
+          cellMappings[dt.tableId] = cellMap;
+          
+          // 打印映射统计
+          const stats = getMappingStats(cellMap);
+          console.log(`📊 [智能映射] 表格 ${dt.tableId}: ${stats.totalBlanks} 个空白单元格, ${stats.mapped} 个已映射 (${stats.mappingRate}%)`);
+          
+          const mappingInfo = getBlankCellsMappingInfo(cellMap);
+          mappingInfo.forEach(info => {
+            console.log(`   ✓ [${info.row},${info.col}] ${info.label} → ${info.mappedField || '未映射'} (${info.confidence})`);
+          });
+        }
+      });
+      setTableCellMappings(cellMappings);
+      console.log('🔵 [前端] 单元格映射已构建完毕');
+
       // 获取XML用于后续导出
       const { xmlString, zip } = await extractDocumentXml(file);
       setOriginalXml(xmlString);
@@ -1182,6 +1211,7 @@ export default function CreateBid() {
         normalBlanks: mergedBlanks,
         dynamicTables: backendDynamicTables,
         manualTables: backendManualTables,
+        tableStructures: backendTableStructures,
         meta: backendMeta
       };
 
@@ -2747,6 +2777,17 @@ export default function CreateBid() {
             {dynamicTables.map(dt => {
               const currentRows = dynamicTableEdits[dt.tableId] || [];
               const selectedNames = currentRows.map(r => r._personName).filter(Boolean);
+              const ts = tableStructures.find(s => s.tableId === dt.tableId);
+              const cells2d = (() => {
+                if (!ts || !ts.cells) return null;
+                const rows = {};
+                ts.cells.forEach(c => {
+                  if (c.rowSpan === 0 || c.colSpan === 0) return;
+                  if (!rows[c.row]) rows[c.row] = [];
+                  rows[c.row].push(c);
+                });
+                return Object.keys(rows).sort((a, b) => a - b).map(k => rows[k].sort((a, b) => a.col - b.col));
+              })();
 
               // 处理单元格编辑
               const handleCellEdit = (rowIndex, header, value) => {
@@ -2839,13 +2880,30 @@ export default function CreateBid() {
                 <div key={dt.tableId} className="border border-blue-200 rounded-lg overflow-hidden">
                   <div className="bg-blue-50 px-4 py-2.5 border-b border-blue-200">
                     <div className="flex items-center justify-between">
-                      <div>
+                      <div className="flex-1">
                         <div className="text-sm font-bold text-gray-800">
                           📋 {dt.anchorContext || `表格 ${dt.tableId + 1}`}
                         </div>
                         <div className="text-[11px] text-gray-400 mt-0.5">
                           表头: {dt.headers.join(' | ')} · 原始 {dt.rowCount} 行
                         </div>
+                        {/* 🆕 智能映射统计 */}
+                        {(() => {
+                          const cellMap = tableCellMappings[dt.tableId];
+                          if (!cellMap) return null;
+                          const stats = getMappingStats(cellMap);
+                          if (stats.totalBlanks === 0) return null;
+                          return (
+                            <div className="text-[10px] text-gray-500 mt-1 flex items-center gap-2">
+                              <span>🎯 智能识别: {stats.totalBlanks} 个空白单元格</span>
+                              <span className="text-green-600">已映射 {stats.mapped}</span>
+                              {stats.unmapped > 0 && (
+                                <span className="text-orange-600">未映射 {stats.unmapped}</span>
+                              )}
+                              <span className="text-gray-400">({stats.mappingRate}%)</span>
+                            </div>
+                          );
+                        })()}
                       </div>
                       <Tag color={selectedNames.length > 0 ? 'green' : 'default'}>
                         {selectedNames.length > 0 ? `${currentRows.length} 行数据` : '未填写'}
@@ -2854,6 +2912,169 @@ export default function CreateBid() {
                   </div>
 
                   <div className="px-4 py-3">
+                    {/* 原始表格预览 */}
+                    <div className="mb-4 p-3 bg-gray-50 rounded border border-gray-200">
+                      <div className="text-xs font-medium text-gray-700 mb-2 flex items-center gap-2">
+                        <span>📄 原始表格样式</span>
+                        <span className="text-gray-400">（来自Word文档）</span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full border-collapse border border-gray-300 text-xs">
+                          <tbody>
+                            {cells2d ? cells2d.map((row, rowIndex) => (
+                              <tr key={rowIndex}>
+                                {row.map((cell, cellIndex) => {
+                                  // 🆕 检查该单元格是否为空白单元格
+                                  const cellKey = `${cell.row}-${cell.col}`;
+                                  const cellMap = tableCellMappings[dt.tableId];
+                                  const cellInfo = cellMap?.[cellKey];
+                                  const isBlank = cellInfo?.isBlank || false;
+                                  
+                                  return (
+                                    <td
+                                      key={cellIndex}
+                                      rowSpan={cell.rowSpan || 1}
+                                      colSpan={cell.colSpan || 1}
+                                      className={`border border-gray-300 px-2 py-1.5 ${
+                                        isBlank 
+                                          ? 'bg-yellow-50 border-yellow-400' 
+                                          : 'bg-white'
+                                      }`}
+                                      style={{
+                                        minWidth: '80px',
+                                        verticalAlign: 'middle',
+                                        textAlign: 'center'
+                                      }}
+                                    >
+                                      {isBlank ? (
+                                        <div className="flex flex-col items-center gap-1">
+                                          <span className="text-xs text-yellow-700 font-medium">
+                                            📝 {cellInfo.label}
+                                          </span>
+                                          {cellInfo.mappedField && (
+                                            <span className="text-[10px] text-gray-500 bg-white px-1.5 py-0.5 rounded">
+                                              → {cellInfo.mappedField}
+                                            </span>
+                                          )}
+                                          {cellInfo.confidence && (
+                                            <span className={`text-[9px] ${
+                                              cellInfo.confidence === 'high' ? 'text-green-600' :
+                                              cellInfo.confidence === 'medium' ? 'text-orange-600' :
+                                              'text-red-600'
+                                            }`}>
+                                              {cellInfo.confidence === 'high' ? '●●●' :
+                                               cellInfo.confidence === 'medium' ? '●●○' : '●○○'}
+                                            </span>
+                                          )}
+                                        </div>
+                                      ) : (
+                                        cell.text || ''
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            )) : (
+                              <tr>
+                                <td className="border border-gray-300 px-3 py-2 text-gray-400 text-center" colSpan={dt.headers.length || 3}>
+                                  原始表格数据不可用（旧版本保存的数据，请重新解析文档以获取表格预览）
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div className="flex items-center justify-between mt-2">
+                        <div className="text-[10px] text-gray-400">
+                          提示：黄色背景为空白单元格，系统将自动填充这些位置
+                        </div>
+                        {/* 🆕 查看映射详情按钮 */}
+                        {(() => {
+                          const cellMap = tableCellMappings[dt.tableId];
+                          if (!cellMap) return null;
+                          const stats = getMappingStats(cellMap);
+                          if (stats.totalBlanks === 0) return null;
+                          return (
+                            <Button
+                              size="small"
+                              type="link"
+                              onClick={() => {
+                                const mappingInfo = getBlankCellsMappingInfo(cellMap);
+                                Modal.info({
+                                  title: `📊 表格字段映射详情`,
+                                  width: 600,
+                                  content: (
+                                    <div className="space-y-3 mt-4">
+                                      <div className="text-sm text-gray-600">
+                                        该表格共识别 <span className="font-bold text-blue-600">{stats.totalBlanks}</span> 个空白单元格，
+                                        已自动映射 <span className="font-bold text-green-600">{stats.mapped}</span> 个
+                                        {stats.unmapped > 0 && (
+                                          <span>，<span className="font-bold text-orange-600">{stats.unmapped}</span> 个未映射</span>
+                                        )}
+                                      </div>
+                                      <div className="border border-gray-200 rounded overflow-hidden">
+                                        <table className="w-full text-xs">
+                                          <thead className="bg-gray-50">
+                                            <tr>
+                                              <th className="px-3 py-2 text-left border-b">位置</th>
+                                              <th className="px-3 py-2 text-left border-b">空白标签</th>
+                                              <th className="px-3 py-2 text-left border-b">映射字段</th>
+                                              <th className="px-3 py-2 text-center border-b">置信度</th>
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {mappingInfo.map((info, idx) => (
+                                              <tr key={idx} className="border-b last:border-b-0">
+                                                <td className="px-3 py-2 text-gray-500">
+                                                  [{info.row},{info.col}]
+                                                </td>
+                                                <td className="px-3 py-2 font-medium">
+                                                  {info.label}
+                                                </td>
+                                                <td className="px-3 py-2">
+                                                  {info.mappedField ? (
+                                                    <span className="text-blue-600 font-mono text-[11px]">
+                                                      {info.mappedField}
+                                                    </span>
+                                                  ) : (
+                                                    <span className="text-gray-400">未映射</span>
+                                                  )}
+                                                </td>
+                                                <td className="px-3 py-2 text-center">
+                                                  {info.confidence === 'high' && (
+                                                    <span className="text-green-600">●●●</span>
+                                                  )}
+                                                  {info.confidence === 'medium' && (
+                                                    <span className="text-orange-600">●●○</span>
+                                                  )}
+                                                  {info.confidence === 'low' && (
+                                                    <span className="text-red-600">●○○</span>
+                                                  )}
+                                                </td>
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                      <div className="text-[11px] text-gray-500 space-y-1">
+                                        <div>💡 <strong>置信度说明：</strong></div>
+                                        <div className="ml-4">● ●●● 高置信度：精确匹配</div>
+                                        <div className="ml-4">● ●●○ 中置信度：模糊匹配</div>
+                                        <div className="ml-4">● ●○○ 低置信度：未找到匹配</div>
+                                      </div>
+                                    </div>
+                                  ),
+                                  okText: '知道了'
+                                });
+                              }}
+                            >
+                              查看映射详情 ({stats.mapped}/{stats.totalBlanks})
+                            </Button>
+                          );
+                        })()}
+                      </div>
+                    </div>
+
                     {/* 两级联动选择器 */}
                     <div className="space-y-3 mb-3">
                       {/* 第一级：选择人员 */}
@@ -2920,11 +3141,53 @@ export default function CreateBid() {
                                 const experiences = getPositionExperiences(profile, positionName);
                                 const isResumeTable = dt.headers.some(h => /项目|业绩|时间|年月/.test(h));
 
-                                // 生成行数据
+                                // 🆕 使用智能映射填充数据
+                                const cellMap = tableCellMappings[dt.tableId];
                                 const newRows = [];
+                                
                                 if (isResumeTable && experiences.length > 0) {
+                                  // 有项目经历：为每个项目生成一行
                                   experiences.forEach(exp => {
-                                    const row = { _personName: personName, _positionName: positionName };
+                                    // 合并人员基本信息和项目经历
+                                    const enrichedProfile = { ...profile, work_experience: [exp] };
+                                    const row = cellMap 
+                                      ? fillPersonDataToRow(enrichedProfile, positionName, cellMap, dt.headers, 1)
+                                      : { _personName: personName, _positionName: positionName };
+                                    
+                                    // 如果没有映射，回退到旧逻辑
+                                    if (!cellMap) {
+                                      dt.headers.forEach(header => {
+                                        if (/姓名|名字/.test(header)) row[header] = profile.name || '';
+                                        else if (/性别/.test(header)) row[header] = profile.gender || '';
+                                        else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
+                                        else if (/学历/.test(header)) row[header] = profile.education || '';
+                                        else if (/学位/.test(header)) row[header] = profile.degree || '';
+                                        else if (/职务|职位/.test(header)) row[header] = positionName;
+                                        else if (/职称|资格/.test(header)) row[header] = profile.title || '';
+                                        else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
+                                        else if (/专业/.test(header)) row[header] = profile.major || '';
+                                        else if (/院校|学校/.test(header)) row[header] = profile.school || '';
+                                        else if (/身份证/.test(header)) row[header] = profile.id_number || '';
+                                        else if (/机构/.test(header)) row[header] = profile.organization || '';
+                                        else if (/部门/.test(header)) row[header] = profile.department || '';
+                                        else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
+                                        else if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
+                                        else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
+                                        else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
+                                        else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
+                                        else row[header] = '';
+                                      });
+                                    }
+                                    newRows.push(row);
+                                  });
+                                } else {
+                                  // 无项目经历：生成单行
+                                  const row = cellMap 
+                                    ? fillPersonDataToRow(profile, positionName, cellMap, dt.headers, 1)
+                                    : { _personName: personName, _positionName: positionName };
+                                  
+                                  // 如果没有映射，回退到旧逻辑
+                                  if (!cellMap) {
                                     dt.headers.forEach(header => {
                                       if (/姓名|名字/.test(header)) row[header] = profile.name || '';
                                       else if (/性别/.test(header)) row[header] = profile.gender || '';
@@ -2940,33 +3203,9 @@ export default function CreateBid() {
                                       else if (/机构/.test(header)) row[header] = profile.organization || '';
                                       else if (/部门/.test(header)) row[header] = profile.department || '';
                                       else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
-                                      else if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
-                                      else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
-                                      else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
-                                      else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
                                       else row[header] = '';
                                     });
-                                    newRows.push(row);
-                                  });
-                                } else {
-                                  const row = { _personName: personName, _positionName: positionName };
-                                  dt.headers.forEach(header => {
-                                    if (/姓名|名字/.test(header)) row[header] = profile.name || '';
-                                    else if (/性别/.test(header)) row[header] = profile.gender || '';
-                                    else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
-                                    else if (/学历/.test(header)) row[header] = profile.education || '';
-                                    else if (/学位/.test(header)) row[header] = profile.degree || '';
-                                    else if (/职务|职位/.test(header)) row[header] = positionName;
-                                    else if (/职称|资格/.test(header)) row[header] = profile.title || '';
-                                    else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
-                                    else if (/专业/.test(header)) row[header] = profile.major || '';
-                                    else if (/院校|学校/.test(header)) row[header] = profile.school || '';
-                                    else if (/身份证/.test(header)) row[header] = profile.id_number || '';
-                                    else if (/机构/.test(header)) row[header] = profile.organization || '';
-                                    else if (/部门/.test(header)) row[header] = profile.department || '';
-                                    else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
-                                    else row[header] = '';
-                                  });
+                                  }
                                   newRows.push(row);
                                 }
 
