@@ -77,12 +77,13 @@ const MyBids = () => {
     }
   };
 
-  // 🧠 智能路由分拣器：判断该去哪个页面 (💡 修复：去掉了状态判断，随时可进)
+  // 智能路由分拣器：判断该去哪个页面
   const handleProjectClick = (project) => {
     try {
       if (project.framework_content) {
         const parsed = JSON.parse(project.framework_content);
-        if (Array.isArray(parsed)) {
+        // 新版：对象格式（有 normalBlanks）或旧版：数组格式
+        if (parsed.normalBlanks || Array.isArray(parsed)) {
           navigate(`/create-bid?id=${project.id}`);
           return;
         }
@@ -98,7 +99,18 @@ const MyBids = () => {
     const matchesSearch = project.project_name?.toLowerCase().includes(searchText.toLowerCase());
     if (!matchesSearch) return false;
     if (activeTab === 'completed') return project.status === 'completed';
-    if (activeTab === 'uncompleted') return project.status !== 'completed';
+    if (activeTab === 'uncompleted') {
+      // 新流程：待填报空白（未完成）；旧流程：解读中（未完成）
+      if (project.framework_content) {
+        try {
+          const parsed = JSON.parse(project.framework_content);
+          if (parsed.normalBlanks || Array.isArray(parsed)) {
+            return project.status !== 'completed'; // 新流程
+          }
+        } catch (e) {}
+      }
+      return project.status !== 'completed'; // 旧流程
+    }
     return true;
   });
 
@@ -108,13 +120,13 @@ const MyBids = () => {
     try {
       if (project.framework_content) {
         const parsed = JSON.parse(project.framework_content);
-        // 新版的 scannedBlanks 也是一个数组
-        if (Array.isArray(parsed)) {
-          isNewGenerationFlow = true; 
+        // 新版：对象格式（有 normalBlanks）或旧版：数组格式
+        if (parsed.normalBlanks || Array.isArray(parsed)) {
+          isNewGenerationFlow = true;
         }
       }
     } catch (e) {
-      isNewGenerationFlow = false; 
+      isNewGenerationFlow = false;
     }
 
     if (isNewGenerationFlow) {

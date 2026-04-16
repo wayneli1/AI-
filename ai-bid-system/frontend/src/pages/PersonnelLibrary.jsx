@@ -23,6 +23,13 @@ const EDUCATION_OPTIONS = [
   { label: '其他', value: '其他' },
 ];
 
+const DEGREE_OPTIONS = [
+  { label: '博士', value: '博士' },
+  { label: '硕士', value: '硕士' },
+  { label: '学士', value: '学士' },
+  { label: '无学位', value: '无学位' },
+];
+
 const ATTACHMENT_SECTIONS = [
   { key: 'id_card_front', label: '身份证（正面）', accept: 'image/*', maxCount: 1 },
   { key: 'id_card_back', label: '身份证（反面）', accept: 'image/*', maxCount: 1 },
@@ -102,10 +109,16 @@ export default function PersonnelLibrary() {
       gender: record.gender,
       education: record.education,
       title: record.title || record.job_title,
+      job_title: record.job_title || record.title,
       phone: record.phone,
       id_number: record.id_number,
       school: record.school,
       major: record.major,
+      degree: record.degree,
+      birth_date: record.birth_date ? dayjs(record.birth_date) : null,
+      organization: record.organization,
+      department: record.department,
+      assigned_role: record.assigned_role,
       project_experiences: pe.map(p => ({
         project_name: p.project_name || '',
         time_range: p.time_range ? [dayjs(p.time_range[0]), dayjs(p.time_range[1])] : undefined,
@@ -234,12 +247,17 @@ export default function PersonnelLibrary() {
         name: values.name,
         gender: values.gender || null,
         education: values.education || null,
+        degree: values.degree || null,
         title: values.title || null,
-        job_title: values.title || null,
+        job_title: values.job_title || null,
         phone: values.phone || null,
         id_number: values.id_number || null,
         school: values.school || null,
         major: values.major || null,
+        birth_date: values.birth_date ? values.birth_date.format('YYYY-MM-DD') : null,
+        organization: values.organization || null,
+        department: values.department || null,
+        assigned_role: values.assigned_role || null,
         custom_fields: { project_experiences: projectExperiences },
       };
 
@@ -363,41 +381,81 @@ export default function PersonnelLibrary() {
       title: '姓名',
       dataIndex: 'name',
       key: 'name',
-      width: 100,
+      width: 90,
       render: (t) => <span className="font-semibold text-gray-800">{t}</span>,
     },
     {
       title: '性别',
       dataIndex: 'gender',
       key: 'gender',
-      width: 60,
+      width: 50,
       align: 'center',
+    },
+    {
+      title: '出生日期',
+      dataIndex: 'birth_date',
+      key: 'birth_date',
+      width: 100,
+      render: (t) => t ? t.slice(0, 10) : <span className="text-gray-300">-</span>,
     },
     {
       title: '学历',
       dataIndex: 'education',
       key: 'education',
-      width: 80,
+      width: 70,
       align: 'center',
       render: (t) => t ? <Tag>{t}</Tag> : <span className="text-gray-300">-</span>,
     },
     {
-      title: '职称',
-      dataIndex: 'title',
-      key: 'title',
-      width: 130,
+      title: '学位',
+      dataIndex: 'degree',
+      key: 'degree',
+      width: 70,
+      align: 'center',
+      render: (t) => t ? <Tag color="green">{t}</Tag> : <span className="text-gray-300">-</span>,
+    },
+    {
+      title: '职称/职务',
+      key: 'title_job',
+      width: 120,
       ellipsis: true,
+      render: (_, r) => {
+        const parts = [];
+        if (r.title) parts.push(r.title);
+        if (r.job_title) parts.push(r.job_title);
+        return parts.length > 0 ? <span className="text-xs">{parts.join(' / ')}</span> : <span className="text-gray-300">-</span>;
+      },
+    },
+    {
+      title: '现所在机构/部门',
+      key: 'org',
+      width: 150,
+      ellipsis: true,
+      render: (_, r) => {
+        const parts = [];
+        if (r.organization) parts.push(r.organization);
+        if (r.department) parts.push(r.department);
+        return parts.length > 0 ? <span className="text-xs text-gray-600">{parts.join(' / ')}</span> : <span className="text-gray-300">-</span>;
+      },
+    },
+    {
+      title: '拟任本项目职务',
+      dataIndex: 'assigned_role',
+      key: 'assigned_role',
+      width: 120,
+      ellipsis: true,
+      render: (t) => t ? <Tag color="blue">{t}</Tag> : <span className="text-gray-300">-</span>,
     },
     {
       title: '电话',
       dataIndex: 'phone',
       key: 'phone',
-      width: 130,
+      width: 120,
     },
     {
       title: '项目经历',
       key: 'projects',
-      width: 100,
+      width: 90,
       align: 'center',
       render: (_, r) => {
         const n = (r.custom_fields?.project_experiences || []).length;
@@ -540,20 +598,29 @@ export default function PersonnelLibrary() {
               <span className="font-bold text-sm text-gray-700">基础信息</span>
             </div>
 
-            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+            <div className="grid grid-cols-3 gap-x-4 gap-y-1">
               <Form.Item label="姓名" name="name" rules={[{ required: true, message: '请输入姓名' }]}>
                 <Input placeholder="请输入姓名" />
               </Form.Item>
               <Form.Item label="性别" name="gender">
                 <Select placeholder="请选择" allowClear options={GENDER_OPTIONS} />
               </Form.Item>
+              <Form.Item label="出生日期" name="birth_date">
+                <DatePicker className="w-full" placeholder="选择日期" />
+              </Form.Item>
               <Form.Item label="学历" name="education">
                 <Select placeholder="请选择" allowClear options={EDUCATION_OPTIONS} />
+              </Form.Item>
+              <Form.Item label="学位" name="degree">
+                <Select placeholder="请选择" allowClear options={DEGREE_OPTIONS} />
               </Form.Item>
               <Form.Item label="职称" name="title">
                 <Input placeholder="如：高级工程师" />
               </Form.Item>
-              <Form.Item label="电话" name="phone">
+              <Form.Item label="职务" name="job_title">
+                <Input placeholder="现任职务" />
+              </Form.Item>
+              <Form.Item label="联系电话" name="phone">
                 <Input placeholder="联系电话" />
               </Form.Item>
               <Form.Item label="身份证号" name="id_number">
@@ -564,6 +631,15 @@ export default function PersonnelLibrary() {
               </Form.Item>
               <Form.Item label="专业" name="major">
                 <Input placeholder="所学专业" />
+              </Form.Item>
+              <Form.Item label="现所在机构" name="organization">
+                <Input placeholder="现所在机构名称" />
+              </Form.Item>
+              <Form.Item label="现所在部门" name="department">
+                <Input placeholder="部门/科室" />
+              </Form.Item>
+              <Form.Item label="拟在本项目担任职务" name="assigned_role">
+                <Input placeholder="如：项目经理、技术负责人" />
               </Form.Item>
             </div>
           </div>

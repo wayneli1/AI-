@@ -2790,13 +2790,19 @@ export default function CreateBid() {
                                 const row = { _personName: personName };
                                 dt.headers.forEach(header => {
                                   if (/姓名|名字/.test(header)) row[header] = profile.name || '';
-                                  else if (/学历|学位/.test(header)) row[header] = profile.education || '';
-                                  else if (/职务|职称|资格|岗位/.test(header)) row[header] = profile.title || '';
                                   else if (/性别/.test(header)) row[header] = profile.gender || '';
+                                  else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
+                                  else if (/学历/.test(header)) row[header] = profile.education || '';
+                                  else if (/学位/.test(header)) row[header] = profile.degree || '';
+                                  else if (/职务/.test(header)) row[header] = profile.job_title || profile.title || '';
+                                  else if (/职称|资格/.test(header)) row[header] = profile.title || '';
                                   else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
                                   else if (/专业/.test(header)) row[header] = profile.major || '';
                                   else if (/院校|学校/.test(header)) row[header] = profile.school || '';
                                   else if (/身份证/.test(header)) row[header] = profile.id_number || '';
+                                  else if (/机构/.test(header)) row[header] = profile.organization || '';
+                                  else if (/部门/.test(header)) row[header] = profile.department || '';
+                                  else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
                                   else if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
                                   else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
                                   else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
@@ -2809,13 +2815,20 @@ export default function CreateBid() {
                               const row = { _personName: personName };
                               dt.headers.forEach(header => {
                                 if (/姓名|名字/.test(header)) row[header] = profile.name || '';
-                                else if (/学历|学位/.test(header)) row[header] = profile.education || '';
-                                else if (/职务|职称|资格|岗位/.test(header)) row[header] = profile.title || '';
+                                else if (/性别/.test(header)) row[header] = profile.gender || '';
+                                else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
+                                else if (/学历/.test(header)) row[header] = profile.education || '';
+                                else if (/学位/.test(header)) row[header] = profile.degree || '';
+                                else if (/职务/.test(header)) row[header] = profile.job_title || profile.title || '';
+                                else if (/职称|资格/.test(header)) row[header] = profile.title || '';
                                 else if (/性别/.test(header)) row[header] = profile.gender || '';
                                 else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
                                 else if (/专业/.test(header)) row[header] = profile.major || '';
                                 else if (/院校|学校/.test(header)) row[header] = profile.school || '';
                                 else if (/身份证/.test(header)) row[header] = profile.id_number || '';
+                                else if (/机构/.test(header)) row[header] = profile.organization || '';
+                                else if (/部门/.test(header)) row[header] = profile.department || '';
+                                else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
                                 else row[header] = '';
                               });
                               realTableData.push(row);
