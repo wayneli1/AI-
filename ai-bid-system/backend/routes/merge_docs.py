@@ -312,7 +312,7 @@ def fill_dynamic_tables(doc, dynamic_tables):
                     p_elem = OxmlElement('w:p')
                     current.addnext(p_elem)
 
-                    p = Paragraph(p_elem, doc.element.body)
+                    p = Paragraph(p_elem, doc._body)
                     run = p.add_run()
                     run.add_picture(img_stream, width=Cm(14.0))
 
