@@ -95,6 +95,13 @@ export default function PersonnelLibrary() {
   const handleAdd = () => {
     setEditingRecord(null);
     form.resetFields();
+    // 为新增人员设置默认的空职位结构
+    form.setFieldsValue({
+      job_positions: [{
+        position_name: '',
+        project_experiences: []
+      }]
+    });
     setAttachmentUrls(emptyAttachments());
     setDrawerVisible(true);
   };
@@ -102,7 +109,19 @@ export default function PersonnelLibrary() {
   const handleEdit = async (record) => {
     setEditingRecord(record);
     const cf = record.custom_fields || {};
-    const pe = cf.project_experiences || [];
+    
+    // 兼容新旧数据格式
+    let jobPositions = [];
+    if (cf.job_positions && Array.isArray(cf.job_positions)) {
+      // 新格式：多职位
+      jobPositions = cf.job_positions;
+    } else if (cf.project_experiences && Array.isArray(cf.project_experiences)) {
+      // 旧格式：单职位，自动转换
+      jobPositions = [{
+        position_name: record.job_title || '未分类',
+        project_experiences: cf.project_experiences
+      }];
+    }
 
     form.setFieldsValue({
       name: record.name,
@@ -119,12 +138,15 @@ export default function PersonnelLibrary() {
       organization: record.organization,
       department: record.department,
       assigned_role: record.assigned_role,
-      project_experiences: pe.map(p => ({
-        project_name: p.project_name || '',
-        time_range: p.time_range ? [dayjs(p.time_range[0]), dayjs(p.time_range[1])] : undefined,
-        role: p.role || '',
-        description: p.description || '',
-      })),
+      job_positions: jobPositions.map(pos => ({
+        position_name: pos.position_name || '',
+        project_experiences: (pos.project_experiences || []).map(p => ({
+          project_name: p.project_name || '',
+          time_range: p.time_range ? [dayjs(p.time_range[0]), dayjs(p.time_range[1])] : undefined,
+          role: p.role || '',
+          description: p.description || '',
+        }))
+      }))
     });
 
     try {
@@ -233,13 +255,17 @@ export default function PersonnelLibrary() {
       const values = await form.validateFields();
       setSaving(true);
 
-      const projectExperiences = (values.project_experiences || []).map(pe => ({
-        project_name: pe.project_name || '',
-        time_range: pe.time_range
-          ? [pe.time_range[0].format('YYYY-MM-DD'), pe.time_range[1].format('YYYY-MM-DD')]
-          : null,
-        role: pe.role || '',
-        description: pe.description || '',
+      // 新格式：多职位结构
+      const jobPositions = (values.job_positions || []).map(pos => ({
+        position_name: pos.position_name || '',
+        project_experiences: (pos.project_experiences || []).map(pe => ({
+          project_name: pe.project_name || '',
+          time_range: pe.time_range
+            ? [pe.time_range[0].format('YYYY-MM-DD'), pe.time_range[1].format('YYYY-MM-DD')]
+            : null,
+          role: pe.role || '',
+          description: pe.description || '',
+        }))
       }));
 
       const profileData = {
@@ -258,7 +284,7 @@ export default function PersonnelLibrary() {
         organization: values.organization || null,
         department: values.department || null,
         assigned_role: values.assigned_role || null,
-        custom_fields: { project_experiences: projectExperiences },
+        custom_fields: { job_positions: jobPositions },
       };
 
       let profileId;
@@ -458,9 +484,19 @@ export default function PersonnelLibrary() {
       width: 90,
       align: 'center',
       render: (_, r) => {
-        const n = (r.custom_fields?.project_experiences || []).length;
-        if (n === 0) return <span className="text-gray-300 text-xs">无</span>;
-        return <Tag color="blue">{n} 个</Tag>;
+        const cf = r.custom_fields || {};
+        let totalProjects = 0;
+        
+        // 兼容新旧格式
+        if (cf.job_positions && Array.isArray(cf.job_positions)) {
+          totalProjects = cf.job_positions.reduce((sum, pos) => 
+            sum + (pos.project_experiences || []).length, 0);
+        } else if (cf.project_experiences && Array.isArray(cf.project_experiences)) {
+          totalProjects = cf.project_experiences.length;
+        }
+        
+        if (totalProjects === 0) return <span className="text-gray-300 text-xs">无</span>;
+        return <Tag color="blue">{totalProjects} 个</Tag>;
       },
     },
     {
@@ -644,44 +680,100 @@ export default function PersonnelLibrary() {
             </div>
           </div>
 
-          {/* 区块 B：项目经历 */}
+          {/* 区块 B：职位与项目经历 */}
           <div className="mb-2">
             <div className="flex items-center gap-2 mb-4 mt-2">
               <div className="w-1 h-4 bg-emerald-500 rounded-full" />
-              <span className="font-bold text-sm text-gray-700">项目经历</span>
+              <span className="font-bold text-sm text-gray-700">职位与项目经历</span>
             </div>
 
-            <Form.List name="project_experiences">
-              {(fields, { add, remove }) => (
+            <Form.List name="job_positions">
+              {(posFields, { add: addPos, remove: removePos }) => (
                 <>
-                  {fields.map(({ key, name, ...restField }) => (
-                    <div key={key} className="mb-3 p-3 bg-gray-50/80 rounded-lg border border-gray-100 relative group hover:border-indigo-200 transition-colors">
-                      <div className="grid grid-cols-2 gap-x-4">
-                        <Form.Item {...restField} name={[name, 'project_name']} label="项目名称" className="mb-2">
-                          <Input placeholder="项目名称" />
+                  {posFields.map(({ key: posKey, name: posName, ...posRestField }) => (
+                    <div key={posKey} className="mb-4 p-4 bg-gradient-to-br from-blue-50/50 to-indigo-50/30 rounded-xl border border-blue-100 relative group hover:border-indigo-300 transition-all">
+                      {/* 职位名称 */}
+                      <div className="flex items-center gap-3 mb-3">
+                        <Form.Item 
+                          {...posRestField} 
+                          name={[posName, 'position_name']} 
+                          label={<span className="text-sm font-semibold text-gray-700">职位名称</span>}
+                          className="mb-0 flex-1"
+                          rules={[{ required: true, message: '请输入职位名称' }]}
+                        >
+                          <Input placeholder="如：产品经理、研发工程师" className="font-medium" />
                         </Form.Item>
-                        <Form.Item {...restField} name={[name, 'role']} label="担任角色" className="mb-2">
-                          <Input placeholder="如：项目经理" />
-                        </Form.Item>
+                        <Button
+                          type="text"
+                          danger
+                          size="small"
+                          icon={<MinusCircleOutlined />}
+                          onClick={() => removePos(posName)}
+                          className="!mt-6 opacity-0 group-hover:opacity-100 transition-opacity"
+                        >
+                          删除职位
+                        </Button>
                       </div>
-                      <Form.Item {...restField} name={[name, 'time_range']} label="起止时间" className="mb-2">
-                        <RangePicker className="w-full" />
-                      </Form.Item>
-                      <Form.Item {...restField} name={[name, 'description']} label="工作内容" className="mb-0">
-                        <TextArea rows={2} placeholder="描述工作内容" />
-                      </Form.Item>
-                      <Button
-                        type="text"
-                        danger
-                        size="small"
-                        icon={<MinusCircleOutlined />}
-                        onClick={() => remove(name)}
-                        className="!absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity"
-                      />
+
+                      {/* 该职位下的项目经历 */}
+                      <div className="ml-2">
+                        <div className="text-xs font-medium text-gray-500 mb-2 flex items-center gap-1">
+                          <ProjectOutlined className="text-emerald-500" />
+                          项目经历
+                        </div>
+                        <Form.List name={[posName, 'project_experiences']}>
+                          {(projFields, { add: addProj, remove: removeProj }) => (
+                            <>
+                              {projFields.map(({ key: projKey, name: projName, ...projRestField }) => (
+                                <div key={projKey} className="mb-3 p-3 bg-white rounded-lg border border-gray-200 relative group/proj hover:border-emerald-300 transition-colors">
+                                  <div className="grid grid-cols-2 gap-x-4">
+                                    <Form.Item {...projRestField} name={[projName, 'project_name']} label="项目名称" className="mb-2">
+                                      <Input placeholder="项目名称" />
+                                    </Form.Item>
+                                    <Form.Item {...projRestField} name={[projName, 'role']} label="担任角色" className="mb-2">
+                                      <Input placeholder="如：项目经理" />
+                                    </Form.Item>
+                                  </div>
+                                  <Form.Item {...projRestField} name={[projName, 'time_range']} label="起止时间" className="mb-2">
+                                    <RangePicker className="w-full" />
+                                  </Form.Item>
+                                  <Form.Item {...projRestField} name={[projName, 'description']} label="工作内容" className="mb-0">
+                                    <TextArea rows={2} placeholder="描述工作内容" />
+                                  </Form.Item>
+                                  <Button
+                                    type="text"
+                                    danger
+                                    size="small"
+                                    icon={<MinusCircleOutlined />}
+                                    onClick={() => removeProj(projName)}
+                                    className="!absolute top-2 right-2 opacity-0 group-hover/proj:opacity-100 transition-opacity"
+                                  />
+                                </div>
+                              ))}
+                              <Button 
+                                type="dashed" 
+                                onClick={() => addProj()} 
+                                block 
+                                icon={<PlusOutlined />} 
+                                className="rounded-lg border-emerald-200 text-emerald-600 hover:border-emerald-400 hover:text-emerald-700"
+                                size="small"
+                              >
+                                添加项目经历
+                              </Button>
+                            </>
+                          )}
+                        </Form.List>
+                      </div>
                     </div>
                   ))}
-                  <Button type="dashed" onClick={() => add()} block icon={<PlusOutlined />} className="rounded-lg">
-                    添加项目经历
+                  <Button 
+                    type="dashed" 
+                    onClick={() => addPos({ position_name: '', project_experiences: [] })} 
+                    block 
+                    icon={<PlusOutlined />} 
+                    className="rounded-lg border-blue-200 text-blue-600 hover:border-blue-400 hover:text-blue-700"
+                  >
+                    添加职位
                   </Button>
                 </>
               )}

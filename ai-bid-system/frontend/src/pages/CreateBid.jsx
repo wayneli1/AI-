@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
-import { Alert, Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect, Select } from 'antd';
+import { Alert, Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect, Select, Popconfirm } from 'antd';
 import {
   UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package, ShieldCheck, TriangleAlert
 } from 'lucide-react';
@@ -259,6 +259,8 @@ export default function CreateBid() {
   const [isTableModalVisible, setIsTableModalVisible] = useState(false);
   const [dynamicTableImages, setDynamicTableImages] = useState({});
   const [personnelProfiles, setPersonnelProfiles] = useState([]);
+  const [selectedPersonRoles, setSelectedPersonRoles] = useState({}); // { [tableId]: { personName: positionName } }
+  const [tempPersonSelection, setTempPersonSelection] = useState({}); // { [tableId]: personName }
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -1919,6 +1921,45 @@ export default function CreateBid() {
     if (parts.length > 0) message.success(`已锁定 ${parts.join(' + ')}`);
   };
 
+  // 获取人员的职位列表（兼容新旧格式）
+  const getPersonPositions = (profile) => {
+    if (!profile) return [];
+    const jobPositions = profile.custom_fields?.job_positions;
+    if (Array.isArray(jobPositions) && jobPositions.length > 0) {
+      return jobPositions.map(jp => jp.position_name).filter(Boolean);
+    }
+    // 兼容旧格式：如果有project_experiences但没有job_positions，返回默认职位
+    const oldExperiences = profile.custom_fields?.project_experiences;
+    if (Array.isArray(oldExperiences) && oldExperiences.length > 0) {
+      return [profile.job_title || profile.title || '默认职位'];
+    }
+    return [];
+  };
+
+  // 获取指定职位的项目经历
+  const getPositionExperiences = (profile, positionName) => {
+    if (!profile) return [];
+    const jobPositions = profile.custom_fields?.job_positions;
+    if (Array.isArray(jobPositions)) {
+      const position = jobPositions.find(jp => jp.position_name === positionName);
+      return position?.project_experiences || [];
+    }
+    // 兼容旧格式
+    return profile.custom_fields?.project_experiences || [];
+  };
+
+  // 检查人员是否已被选择（任意职位）
+  const isPersonSelected = (tableId, personName) => {
+    const selections = selectedPersonRoles[tableId] || {};
+    return personName in selections;
+  };
+
+  // 获取已选人员列表
+  const getSelectedPersons = (tableId) => {
+    const selections = selectedPersonRoles[tableId] || {};
+    return Object.keys(selections);
+  };
+
   const buildStructuredProfile = (company) => {
     if (!company) return '';
     const labelMap = {
@@ -2707,13 +2748,92 @@ export default function CreateBid() {
               const currentRows = dynamicTableEdits[dt.tableId] || [];
               const selectedNames = currentRows.map(r => r._personName).filter(Boolean);
 
-              const previewColumns = dt.headers.map(h => ({
-                title: h,
-                dataIndex: h,
-                key: h,
-                ellipsis: true,
-                width: 120,
-              }));
+              // 处理单元格编辑
+              const handleCellEdit = (rowIndex, header, value) => {
+                setDynamicTableEdits(prev => {
+                  const rows = [...(prev[dt.tableId] || [])];
+                  if (rows[rowIndex]) {
+                    rows[rowIndex] = { ...rows[rowIndex], [header]: value };
+                  }
+                  return { ...prev, [dt.tableId]: rows };
+                });
+              };
+
+              // 处理行删除
+              const handleRowDelete = (rowIndex) => {
+                const row = currentRows[rowIndex];
+                const personName = row._personName;
+                const positionName = row._positionName;
+
+                // 删除该行
+                const newRows = currentRows.filter((_, i) => i !== rowIndex);
+                setDynamicTableEdits(prev => ({ ...prev, [dt.tableId]: newRows }));
+
+                // 检查该人员+职位是否还有其他行
+                const hasOtherRows = newRows.some(r => r._personName === personName && r._positionName === positionName);
+                
+                if (!hasOtherRows) {
+                  // 移除记录
+                  setSelectedPersonRoles(prev => {
+                    const newSelections = { ...(prev[dt.tableId] || {}) };
+                    delete newSelections[personName];
+                    return { ...prev, [dt.tableId]: newSelections };
+                  });
+                  message.success(`已删除 ${personName} - ${positionName} 的所有数据`);
+                } else {
+                  message.success('已删除该行');
+                }
+              };
+
+              const previewColumns = [
+                // 职位列（新增）
+                {
+                  title: '职位',
+                  dataIndex: '_positionName',
+                  key: '_positionName',
+                  width: 120,
+                  fixed: 'left',
+                  render: (text) => <span className="font-medium text-blue-600">{text}</span>
+                },
+                // 原有表头列（可编辑）
+                ...dt.headers.map(h => ({
+                  title: h,
+                  dataIndex: h,
+                  key: h,
+                  width: 150,
+                  render: (text, record, index) => (
+                    <Input.TextArea
+                      value={text || ''}
+                      onChange={(e) => handleCellEdit(index, h, e.target.value)}
+                      autoSize={{ minRows: 1, maxRows: 4 }}
+                      className="text-xs"
+                    />
+                  )
+                })),
+                // 操作列
+                {
+                  title: '操作',
+                  key: 'action',
+                  width: 80,
+                  fixed: 'right',
+                  render: (_, record, index) => (
+                    <Popconfirm
+                      title="确定删除该行？"
+                      description="删除后无法恢复"
+                      onConfirm={() => handleRowDelete(index)}
+                      okText="确定"
+                      cancelText="取消"
+                    >
+                      <Button
+                        type="text"
+                        danger
+                        size="small"
+                        icon={<Trash2 size={14} />}
+                      />
+                    </Popconfirm>
+                  )
+                }
+              ];
 
               return (
                 <div key={dt.tableId} className="border border-blue-200 rounded-lg overflow-hidden">
@@ -2734,111 +2854,188 @@ export default function CreateBid() {
                   </div>
 
                   <div className="px-4 py-3">
-                    <div className="flex items-center gap-3 mb-3">
-                      <span className="text-xs font-medium text-gray-600 shrink-0">选择人员:</span>
-                      <Select
-                        mode="multiple"
-                        placeholder="可多选人员..."
-                        style={{ minWidth: 320 }}
-                        value={selectedNames}
-                        onChange={async (selectedValues) => {
-                          if (selectedValues.length === 0) {
-                            setDynamicTableEdits(prev => ({ ...prev, [dt.tableId]: [] }));
-                            setDynamicTableImages(prev => ({ ...prev, [dt.tableId]: [] }));
-                            return;
-                          }
+                    {/* 两级联动选择器 */}
+                    <div className="space-y-3 mb-3">
+                      {/* 第一级：选择人员 */}
+                      <div className="flex items-start gap-3">
+                        <span className="text-xs font-medium text-gray-600 shrink-0 pt-1">选择人员:</span>
+                        <div className="flex-1">
+                          <Select
+                            placeholder="选择人员后，再选择职位..."
+                            style={{ width: '100%' }}
+                            value={tempPersonSelection[dt.tableId] || undefined}
+                            onChange={(personName) => {
+                              setTempPersonSelection(prev => ({ ...prev, [dt.tableId]: personName }));
+                            }}
+                            options={personnelProfiles
+                              .filter(p => !isPersonSelected(dt.tableId, p.name))
+                              .map(p => ({ value: p.name, label: p.name }))}
+                            disabled={personnelProfiles.every(p => isPersonSelected(dt.tableId, p.name))}
+                          />
+                        </div>
+                      </div>
 
-                          // 查询选中人员的附件图片
-                          const allImages = [];
-                          for (const personName of selectedValues) {
-                            try {
-                              const profile = personnelProfiles.find(p => p.name === personName);
-                              if (profile) {
-                                const { data: attachments } = await supabase
-                                  .from('personnel_attachments')
-                                  .select('file_url, attachment_type')
-                                  .eq('personnel_profile_id', profile.id)
-                                  .eq('enabled', true);
+                      {/* 第二级：选择职位 */}
+                      {tempPersonSelection[dt.tableId] && (
+                        <div className="flex items-start gap-3">
+                          <span className="text-xs font-medium text-gray-600 shrink-0 pt-1">选择职位:</span>
+                          <div className="flex-1">
+                            <Select
+                              placeholder="选择该人员的职位..."
+                              style={{ width: '100%' }}
+                              value={undefined}
+                              onChange={async (positionName) => {
+                                const personName = tempPersonSelection[dt.tableId];
+                                const profile = personnelProfiles.find(p => p.name === personName);
+                                if (!profile) return;
 
-                                if (attachments) {
-                                  const imageTypes = ['id_card_front', 'id_card_back', 'degree_certificate', 'qualification_certificate'];
-                                  attachments.forEach(att => {
-                                    if (imageTypes.includes(att.attachment_type) && att.file_url) {
-                                      allImages.push(att.file_url);
-                                    }
-                                  });
+                                // 查询该人员的附件图片
+                                const allImages = [];
+                                try {
+                                  const { data: attachments } = await supabase
+                                    .from('personnel_attachments')
+                                    .select('file_url, attachment_type')
+                                    .eq('personnel_profile_id', profile.id)
+                                    .eq('enabled', true);
+
+                                  if (attachments) {
+                                    const imageTypes = ['id_card_front', 'id_card_back', 'degree_certificate', 'qualification_certificate'];
+                                    attachments.forEach(att => {
+                                      if (imageTypes.includes(att.attachment_type) && att.file_url) {
+                                        allImages.push(att.file_url);
+                                      }
+                                    });
+                                  }
+                                } catch (err) {
+                                  console.warn(`查询人员 ${personName} 附件失败:`, err);
                                 }
-                              }
-                            } catch (err) {
-                              console.warn(`查询人员 ${personName} 附件失败:`, err);
-                            }
-                          }
 
-                          setDynamicTableImages(prev => ({ ...prev, [dt.tableId]: allImages }));
+                                // 更新图片列表
+                                setDynamicTableImages(prev => ({
+                                  ...prev,
+                                  [dt.tableId]: [...(prev[dt.tableId] || []), ...allImages]
+                                }));
 
-                          // 真实数据映射
-                          const realTableData = [];
-                          for (const personName of selectedValues) {
-                            const profile = personnelProfiles.find(p => p.name === personName);
-                            if (!profile) continue;
+                                // 获取该职位的项目经历
+                                const experiences = getPositionExperiences(profile, positionName);
+                                const isResumeTable = dt.headers.some(h => /项目|业绩|时间|年月/.test(h));
 
-                            const isResumeTable = dt.headers.some(h => /项目|业绩|时间|年月/.test(h));
-                            const experiences = profile.custom_fields?.project_experiences || [];
+                                // 生成行数据
+                                const newRows = [];
+                                if (isResumeTable && experiences.length > 0) {
+                                  experiences.forEach(exp => {
+                                    const row = { _personName: personName, _positionName: positionName };
+                                    dt.headers.forEach(header => {
+                                      if (/姓名|名字/.test(header)) row[header] = profile.name || '';
+                                      else if (/性别/.test(header)) row[header] = profile.gender || '';
+                                      else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
+                                      else if (/学历/.test(header)) row[header] = profile.education || '';
+                                      else if (/学位/.test(header)) row[header] = profile.degree || '';
+                                      else if (/职务|职位/.test(header)) row[header] = positionName;
+                                      else if (/职称|资格/.test(header)) row[header] = profile.title || '';
+                                      else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
+                                      else if (/专业/.test(header)) row[header] = profile.major || '';
+                                      else if (/院校|学校/.test(header)) row[header] = profile.school || '';
+                                      else if (/身份证/.test(header)) row[header] = profile.id_number || '';
+                                      else if (/机构/.test(header)) row[header] = profile.organization || '';
+                                      else if (/部门/.test(header)) row[header] = profile.department || '';
+                                      else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
+                                      else if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
+                                      else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
+                                      else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
+                                      else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
+                                      else row[header] = '';
+                                    });
+                                    newRows.push(row);
+                                  });
+                                } else {
+                                  const row = { _personName: personName, _positionName: positionName };
+                                  dt.headers.forEach(header => {
+                                    if (/姓名|名字/.test(header)) row[header] = profile.name || '';
+                                    else if (/性别/.test(header)) row[header] = profile.gender || '';
+                                    else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
+                                    else if (/学历/.test(header)) row[header] = profile.education || '';
+                                    else if (/学位/.test(header)) row[header] = profile.degree || '';
+                                    else if (/职务|职位/.test(header)) row[header] = positionName;
+                                    else if (/职称|资格/.test(header)) row[header] = profile.title || '';
+                                    else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
+                                    else if (/专业/.test(header)) row[header] = profile.major || '';
+                                    else if (/院校|学校/.test(header)) row[header] = profile.school || '';
+                                    else if (/身份证/.test(header)) row[header] = profile.id_number || '';
+                                    else if (/机构/.test(header)) row[header] = profile.organization || '';
+                                    else if (/部门/.test(header)) row[header] = profile.department || '';
+                                    else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
+                                    else row[header] = '';
+                                  });
+                                  newRows.push(row);
+                                }
 
-                            if (isResumeTable && experiences.length > 0) {
-                              experiences.forEach(exp => {
-                                const row = { _personName: personName };
-                                dt.headers.forEach(header => {
-                                  if (/姓名|名字/.test(header)) row[header] = profile.name || '';
-                                  else if (/性别/.test(header)) row[header] = profile.gender || '';
-                                  else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
-                                  else if (/学历/.test(header)) row[header] = profile.education || '';
-                                  else if (/学位/.test(header)) row[header] = profile.degree || '';
-                                  else if (/职务/.test(header)) row[header] = profile.job_title || profile.title || '';
-                                  else if (/职称|资格/.test(header)) row[header] = profile.title || '';
-                                  else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
-                                  else if (/专业/.test(header)) row[header] = profile.major || '';
-                                  else if (/院校|学校/.test(header)) row[header] = profile.school || '';
-                                  else if (/身份证/.test(header)) row[header] = profile.id_number || '';
-                                  else if (/机构/.test(header)) row[header] = profile.organization || '';
-                                  else if (/部门/.test(header)) row[header] = profile.department || '';
-                                  else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
-                                  else if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
-                                  else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
-                                  else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
-                                  else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
-                                  else row[header] = '';
-                                });
-                                realTableData.push(row);
-                              });
-                            } else {
-                              const row = { _personName: personName };
-                              dt.headers.forEach(header => {
-                                if (/姓名|名字/.test(header)) row[header] = profile.name || '';
-                                else if (/性别/.test(header)) row[header] = profile.gender || '';
-                                else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
-                                else if (/学历/.test(header)) row[header] = profile.education || '';
-                                else if (/学位/.test(header)) row[header] = profile.degree || '';
-                                else if (/职务/.test(header)) row[header] = profile.job_title || profile.title || '';
-                                else if (/职称|资格/.test(header)) row[header] = profile.title || '';
-                                else if (/性别/.test(header)) row[header] = profile.gender || '';
-                                else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
-                                else if (/专业/.test(header)) row[header] = profile.major || '';
-                                else if (/院校|学校/.test(header)) row[header] = profile.school || '';
-                                else if (/身份证/.test(header)) row[header] = profile.id_number || '';
-                                else if (/机构/.test(header)) row[header] = profile.organization || '';
-                                else if (/部门/.test(header)) row[header] = profile.department || '';
-                                else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || '';
-                                else row[header] = '';
-                              });
-                              realTableData.push(row);
-                            }
-                          }
+                                // 更新表格数据
+                                setDynamicTableEdits(prev => ({
+                                  ...prev,
+                                  [dt.tableId]: [...(prev[dt.tableId] || []), ...newRows]
+                                }));
 
-                          setDynamicTableEdits(prev => ({ ...prev, [dt.tableId]: realTableData }));
-                        }}
-                        options={personnelProfiles.map(p => ({ value: p.name, label: p.name }))}
-                      />
+                                // 记录已选人员+职位
+                                setSelectedPersonRoles(prev => ({
+                                  ...prev,
+                                  [dt.tableId]: {
+                                    ...(prev[dt.tableId] || {}),
+                                    [personName]: positionName
+                                  }
+                                }));
+
+                                // 清空临时选择
+                                setTempPersonSelection(prev => ({ ...prev, [dt.tableId]: undefined }));
+
+                                message.success(`已添加 ${personName} - ${positionName}`);
+                              }}
+                              options={(() => {
+                                const personName = tempPersonSelection[dt.tableId];
+                                const profile = personnelProfiles.find(p => p.name === personName);
+                                const positions = getPersonPositions(profile);
+                                return positions.map(pos => ({ value: pos, label: pos }));
+                              })()}
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* 已选人员+职位列表 */}
+                      {Object.keys(selectedPersonRoles[dt.tableId] || {}).length > 0 && (
+                        <div className="flex items-start gap-3">
+                          <span className="text-xs font-medium text-gray-600 shrink-0 pt-1">已选择:</span>
+                          <div className="flex-1 flex flex-wrap gap-2">
+                            {Object.entries(selectedPersonRoles[dt.tableId] || {}).map(([personName, positionName]) => (
+                              <Tag
+                                key={`${personName}-${positionName}`}
+                                closable
+                                onClose={() => {
+                                  // 移除该人员+职位的所有行
+                                  setDynamicTableEdits(prev => ({
+                                    ...prev,
+                                    [dt.tableId]: (prev[dt.tableId] || []).filter(
+                                      row => !(row._personName === personName && row._positionName === positionName)
+                                    )
+                                  }));
+
+                                  // 移除记录
+                                  setSelectedPersonRoles(prev => {
+                                    const newSelections = { ...(prev[dt.tableId] || {}) };
+                                    delete newSelections[personName];
+                                    return { ...prev, [dt.tableId]: newSelections };
+                                  });
+
+                                  message.success(`已移除 ${personName} - ${positionName}`);
+                                }}
+                                color="blue"
+                              >
+                                {personName} - {positionName}
+                              </Tag>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {currentRows.length > 0 && (
@@ -2848,7 +3045,8 @@ export default function CreateBid() {
                         rowKey="_key"
                         pagination={false}
                         size="small"
-                        scroll={{ x: previewColumns.length * 120 }}
+                        bordered
+                        scroll={{ x: 'max-content' }}
                         className="border border-gray-100 rounded"
                       />
                     )}
