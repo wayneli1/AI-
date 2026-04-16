@@ -24,6 +24,11 @@ import {
   getBlankCellsMappingInfo,
   getMappingStats 
 } from '../utils/tableFieldMapper';
+import { 
+  callIntelligentMapping, 
+  convertMappingToCellMap,
+  extractPersonFieldValue 
+} from '../utils/intelligentMapping';
 
 const DESKTOP_BREAKPOINT = 1280;
 const MIN_PREVIEW_PANEL_WIDTH = 360;
@@ -1159,24 +1164,54 @@ export default function CreateBid() {
       setParseMeta(backendMeta);
       console.log('🔵 [前端] 三桶数据已设置完毕');
 
-      // 🆕 构建单元格映射（智能识别空白单元格）
+      // 🆕 使用 Dify 智能映射（AI 驱动的字段映射）
       const cellMappings = {};
-      backendDynamicTables.forEach(dt => {
+      console.log('🤖 [智能映射] 开始调用 Dify 工作流进行字段映射...');
+      
+      for (const dt of backendDynamicTables) {
         const ts = backendTableStructures.find(s => s.tableId === dt.tableId);
-        if (ts) {
-          const cellMap = buildCellMapping(dt, ts);
+        if (!ts) continue;
+        
+        try {
+          // 准备空白单元格数据
+          const blankCells = (dt.blankCells || []).map(bc => ({
+            row: bc.row,
+            col: bc.col,
+            label: bc.label,
+            headerText: bc.headerText,
+            rowHeader: bc.rowHeader,
+            text: bc.text || ''
+          }));
+          
+          // 调用智能映射接口
+          const mappingResult = await callIntelligentMapping({
+            tableId: dt.tableId,
+            tableType: dt.type,
+            anchorContext: dt.anchorContext,
+            headers: dt.headers,
+            blankCells: blankCells
+          });
+          
+          // 转换为 cellMap 格式
+          const cellMap = convertMappingToCellMap(mappingResult, ts);
           cellMappings[dt.tableId] = cellMap;
           
           // 打印映射统计
           const stats = getMappingStats(cellMap);
-          console.log(`📊 [智能映射] 表格 ${dt.tableId}: ${stats.totalBlanks} 个空白单元格, ${stats.mapped} 个已映射 (${stats.mappingRate}%)`);
+          console.log(`✅ [智能映射] 表格 ${dt.tableId}: ${stats.totalBlanks} 个空白单元格, ${stats.mapped} 个已映射 (${stats.mappingRate}%)`);
           
           const mappingInfo = getBlankCellsMappingInfo(cellMap);
           mappingInfo.forEach(info => {
             console.log(`   ✓ [${info.row},${info.col}] ${info.label} → ${info.mappedField || '未映射'} (${info.confidence})`);
           });
+        } catch (error) {
+          console.warn(`⚠️ [智能映射] 表格 ${dt.tableId} 映射失败，回退到本地规则映射:`, error);
+          // 回退到本地规则映射
+          const cellMap = buildCellMapping(dt, ts);
+          cellMappings[dt.tableId] = cellMap;
         }
-      });
+      }
+      
       setTableCellMappings(cellMappings);
       console.log('🔵 [前端] 单元格映射已构建完毕');
 
@@ -3141,21 +3176,54 @@ export default function CreateBid() {
                                 const experiences = getPositionExperiences(profile, positionName);
                                 const isResumeTable = dt.headers.some(h => /项目|业绩|时间|年月/.test(h));
 
-                                // 🆕 使用智能映射填充数据
+                                // 🆕 使用智能映射填充数据（基于 Dify AI 映射结果）
                                 const cellMap = tableCellMappings[dt.tableId];
                                 const newRows = [];
                                 
                                 if (isResumeTable && experiences.length > 0) {
                                   // 有项目经历：为每个项目生成一行
-                                  experiences.forEach(exp => {
-                                    // 合并人员基本信息和项目经历
-                                    const enrichedProfile = { ...profile, work_experience: [exp] };
-                                    const row = cellMap 
-                                      ? fillPersonDataToRow(enrichedProfile, positionName, cellMap, dt.headers, 1)
-                                      : { _personName: personName, _positionName: positionName };
+                                  experiences.forEach((exp, expIndex) => {
+                                    const row = { 
+                                      _personName: personName, 
+                                      _positionName: positionName,
+                                      _experienceIndex: expIndex
+                                    };
                                     
-                                    // 如果没有映射，回退到旧逻辑
-                                    if (!cellMap) {
+                                    if (cellMap) {
+                                      // 使用智能映射填充
+                                      dt.headers.forEach((header, colIndex) => {
+                                        const key = `1-${colIndex}`; // 模板行索引为1
+                                        const cellInfo = cellMap[key];
+                                        
+                                        if (cellInfo && cellInfo.isBlank && cellInfo.mappedFieldPath) {
+                                          // 从人员数据中提取值
+                                          let value = extractPersonFieldValue(profile, cellInfo.mappedFieldPath);
+                                          
+                                          // 特殊处理项目经历字段
+                                          if (cellInfo.mappedFieldPath.includes('project_experiences')) {
+                                            if (cellInfo.mappedFieldPath.includes('project_name')) {
+                                              value = exp.project_name || '';
+                                            } else if (cellInfo.mappedFieldPath.includes('role')) {
+                                              value = exp.role || '';
+                                            } else if (cellInfo.mappedFieldPath.includes('start_date') || cellInfo.mappedFieldPath.includes('end_date')) {
+                                              value = (exp.time_range && exp.time_range.length === 2) 
+                                                ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` 
+                                                : '';
+                                            } else if (cellInfo.mappedFieldPath.includes('description')) {
+                                              value = exp.description || '';
+                                            }
+                                          }
+                                          
+                                          row[header] = value || '';
+                                        } else if (cellInfo) {
+                                          // 非空白单元格：保留原值
+                                          row[header] = cellInfo.text || '';
+                                        } else {
+                                          row[header] = '';
+                                        }
+                                      });
+                                    } else {
+                                      // 回退到旧逻辑
                                       dt.headers.forEach(header => {
                                         if (/姓名|名字/.test(header)) row[header] = profile.name || '';
                                         else if (/性别/.test(header)) row[header] = profile.gender || '';
@@ -3182,12 +3250,30 @@ export default function CreateBid() {
                                   });
                                 } else {
                                   // 无项目经历：生成单行
-                                  const row = cellMap 
-                                    ? fillPersonDataToRow(profile, positionName, cellMap, dt.headers, 1)
-                                    : { _personName: personName, _positionName: positionName };
+                                  const row = { 
+                                    _personName: personName, 
+                                    _positionName: positionName 
+                                  };
                                   
-                                  // 如果没有映射，回退到旧逻辑
-                                  if (!cellMap) {
+                                  if (cellMap) {
+                                    // 使用智能映射填充
+                                    dt.headers.forEach((header, colIndex) => {
+                                      const key = `1-${colIndex}`; // 模板行索引为1
+                                      const cellInfo = cellMap[key];
+                                      
+                                      if (cellInfo && cellInfo.isBlank && cellInfo.mappedFieldPath) {
+                                        // 从人员数据中提取值
+                                        const value = extractPersonFieldValue(profile, cellInfo.mappedFieldPath);
+                                        row[header] = value || '';
+                                      } else if (cellInfo) {
+                                        // 非空白单元格：保留原值
+                                        row[header] = cellInfo.text || '';
+                                      } else {
+                                        row[header] = '';
+                                      }
+                                    });
+                                  } else {
+                                    // 回退到旧逻辑
                                     dt.headers.forEach(header => {
                                       if (/姓名|名字/.test(header)) row[header] = profile.name || '';
                                       else if (/性别/.test(header)) row[header] = profile.gender || '';
