@@ -69,19 +69,18 @@ def call_dify_smart_fill(
         })
 
     payload = {
-        "inputs": {
-            "table_context": table_data.get("anchorContext", ""),
-            "table_type": table_data.get("tableType", ""),
-            "table_headers": json.dumps(table_data.get("headers", []), ensure_ascii=False),
-            "blank_cells": json.dumps(slim_blanks, ensure_ascii=False),
-            "personnel_fields": json.dumps(person_data, ensure_ascii=False),
-        },
-        "response_mode": "blocking",
-        "user": "system"
-    }
-
+    "inputs": {
+        "table_context": table_data.get("anchorContext", ""),
+        "table_html": table_data.get("tableHtml", ""),
+        "blank_cells": json.dumps(slim_blanks, ensure_ascii=False),
+        "personnel_fields": json.dumps(person_data, ensure_ascii=False),
+    },
+    "response_mode": "blocking",
+    "user": "system"
+}
     print(f"🤖 [Dify] 调用智能填充工作流")
     print(f"🤖 [Dify] 表格ID: {table_data.get('tableId')}, 空白数: {len(slim_blanks)}")
+    print(f"🤖 [Dify] 表格HTML长度: {len(table_data.get('tableHtml', ''))} 字符")  # 新增日志
 
     try:
         resp = http_requests.post(url, json=payload, headers=headers, timeout=180)

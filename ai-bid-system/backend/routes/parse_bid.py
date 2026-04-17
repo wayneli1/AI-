@@ -72,7 +72,10 @@ async def parse_bid_docx(file: UploadFile = File(...)):
                 headers=headers,
                 rowCount=table_info["rowCount"],
                 blankCells=[BlankCell(**bc) for bc in table_info["blankCells"]],
+                fillMode=table_info.get("fillMode", "multi_person"),  # 🆕 填充模式
+                emptyRowCount=table_info.get("emptyRowCount", 0),  # 🆕 空白行数
             ))
+            print(f"   🔧 [后端] 表格 {idx} fillMode={table_info.get('fillMode')}, emptyRows={table_info.get('emptyRowCount')}")
         else:
             manual_tables.append(ManualTable(
                 tableId=idx,

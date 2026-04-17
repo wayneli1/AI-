@@ -242,6 +242,13 @@ def find_template_row_index(table):
     return 1
 
 
+def normalize_header(text):
+    """归一化表头：去除所有空格、换行符、制表符"""
+    if not text:
+        return ""
+    return re.sub(r'\s+', '', str(text).strip())
+
+
 def fill_dynamic_tables(doc, dynamic_tables):
     if not dynamic_tables:
         return 0
@@ -252,6 +259,7 @@ def fill_dynamic_tables(doc, dynamic_tables):
         table_id = table_info.get("table_id")
         rows_data = table_info.get("rows", [])
         append_images = table_info.get("append_images", [])
+        fill_mode = table_info.get("fill_mode", "multi_person")  # 🆕 获取填充模式
 
         if table_id is None or table_id >= len(doc.tables):
             print(f"   ⚠️ table_id {table_id} 超出范围，跳过")
@@ -266,48 +274,124 @@ def fill_dynamic_tables(doc, dynamic_tables):
         header_row_element = table.rows[0]._element
         header_texts = build_header_texts_with_span(header_row_element)
         print(f"   📊 表格 {table_id} 表头(含跨列): {header_texts}")
+        print(f"   🔧 填充模式: {fill_mode}")
 
-        template_idx = find_template_row_index(table)
-        template_row = table.rows[template_idx]
-        template_element = template_row._element
+        # 🆕 构建归一化映射表
+        normalized_map = {}
+        for h in header_texts:
+            norm_key = normalize_header(h)
+            if norm_key:  # 只添加非空的归一化key
+                normalized_map[norm_key] = h
+        print(f"   🔧 归一化映射: {normalized_map}")
 
-        parent = template_element.getparent()
-        template_index_in_parent = list(parent).index(template_element)
+        # ===== 根据填充模式选择不同的处理逻辑 =====
+        if fill_mode == "multi_person":
+            # ===== 汇总表模式：填充现有行，不删除模板行 =====
+            print(f"   📋 汇总表模式：填充现有空白行")
+            
+            for i, row_data in enumerate(rows_data):
+                # 获取目标行索引（前端传来的 _rowIndex，或默认顺序填充）
+                target_row_index = row_data.get("_rowIndex", i + 1)
+                
+                if target_row_index >= len(table.rows):
+                    print(f"   ⚠️ 行索引 {target_row_index} 超出范围（表格只有 {len(table.rows)} 行），跳过")
+                    continue
+                
+                # 归一化前端数据的keys
+                normalized_row_data = {}
+                for key, value in row_data.items():
+                    if key.startswith("_"):  # 跳过元数据字段
+                        continue
+                    norm_key = normalize_header(key)
+                    if norm_key in normalized_map:
+                        original_header = normalized_map[norm_key]
+                        normalized_row_data[original_header] = value
+                    else:
+                        normalized_row_data[key] = value
+                
+                print(f"   🔄 第 {i+1} 行归一化: {len(row_data)} keys → {len(normalized_row_data)} keys")
+                
+                # 获取目标行的单元格
+                target_row = table.rows[target_row_index]
+                cells = target_row._element.findall(qn('w:tc'))
+                
+                # 填充单元格
+                logical_col = 0
+                filled_count = 0
+                for tc in cells:
+                    span = get_tc_gridspan(tc)
+                    header = header_texts[logical_col] if logical_col < len(header_texts) else ""
+                    value = normalized_row_data.get(header, "")
+                    
+                    if value and str(value).strip():
+                        original_text = get_cell_text_from_element(tc)
+                        set_cell_text(tc, str(value))
+                        filled_count += 1
+                        print(f"      ✓ [{target_row_index},{logical_col}] {header}: '{original_text}' → '{value}'")
+                    
+                    logical_col += span
+                
+                print(f"   ✅ 表格 {table_id} 行 {target_row_index}: 填充 {filled_count}/{len(cells)} 个单元格")
+            
+            total_filled += len(rows_data)
+            print(f"   ✅ 表格 {table_id} 汇总表填充完成: {len(rows_data)} 行")
+        
+        else:
+            # ===== 单人简历表模式：克隆模板行（原有逻辑） =====
+            print(f"   📋 单人简历表模式：克隆模板行")
+            
+            template_idx = find_template_row_index(table)
+            template_row = table.rows[template_idx]
+            template_element = template_row._element
 
-        parent.remove(template_element)
+            parent = template_element.getparent()
+            template_index_in_parent = list(parent).index(template_element)
 
-        for i, row_data in enumerate(rows_data):
-            new_row = copy.deepcopy(template_element)
+            parent.remove(template_element)
 
-            cells = new_row.findall(qn('w:tc'))
+            for i, row_data in enumerate(rows_data):
+                # 归一化前端数据的keys
+                normalized_row_data = {}
+                for key, value in row_data.items():
+                    if key.startswith("_"):  # 跳过元数据字段
+                        continue
+                    norm_key = normalize_header(key)
+                    if norm_key in normalized_map:
+                        original_header = normalized_map[norm_key]
+                        normalized_row_data[original_header] = value
+                    else:
+                        normalized_row_data[key] = value
+                
+                print(f"   🔄 第 {i+1} 行归一化: {len(row_data)} keys → {len(normalized_row_data)} keys")
 
-            # 🆕 智能填充：只填充有值的单元格，保留空白单元格的原始内容
-            logical_col = 0
-            filled_count = 0
-            for tc in cells:
-                span = get_tc_gridspan(tc)
-                header = header_texts[logical_col] if logical_col < len(header_texts) else ""
-                value = row_data.get(header, "")
+                new_row = copy.deepcopy(template_element)
+                cells = new_row.findall(qn('w:tc'))
 
-                # 只有当值非空时才填充（这样可以保留模板中的固定内容）
-                if value and str(value).strip():
-                    original_text = get_cell_text_from_element(tc)
-                    set_cell_text(tc, str(value))
-                    filled_count += 1
-                    print(f"      ✓ [{template_idx + i},{logical_col}] {header}: '{original_text}' → '{value}'")
-                else:
-                    # 保留原始内容（可能是固定文本或空白）
-                    original_text = get_cell_text_from_element(tc)
-                    if original_text:
-                        print(f"      ⏭️ [{template_idx + i},{logical_col}] {header}: 保留原值 '{original_text}'")
+                # 智能填充：只填充有值的单元格
+                logical_col = 0
+                filled_count = 0
+                for tc in cells:
+                    span = get_tc_gridspan(tc)
+                    header = header_texts[logical_col] if logical_col < len(header_texts) else ""
+                    value = normalized_row_data.get(header, "")
 
-                logical_col += span
+                    if value and str(value).strip():
+                        original_text = get_cell_text_from_element(tc)
+                        set_cell_text(tc, str(value))
+                        filled_count += 1
+                        print(f"      ✓ [{template_idx + i},{logical_col}] {header}: '{original_text}' → '{value}'")
+                    else:
+                        original_text = get_cell_text_from_element(tc)
+                        if original_text:
+                            print(f"      ⏭️ [{template_idx + i},{logical_col}] {header}: 保留原值 '{original_text}'")
 
-            parent.insert(template_index_in_parent + i, new_row)
-            print(f"   ✅ 表格 {table_id} 第 {i+1} 行: 填充 {filled_count}/{len(cells)} 个单元格")
+                    logical_col += span
 
-        total_filled += len(rows_data)
-        print(f"   ✅ 表格 {table_id} 克隆填充 {len(rows_data)} 行")
+                parent.insert(template_index_in_parent + i, new_row)
+                print(f"   ✅ 表格 {table_id} 第 {i+1} 行: 填充 {filled_count}/{len(cells)} 个单元格")
+
+            total_filled += len(rows_data)
+            print(f"   ✅ 表格 {table_id} 克隆填充 {len(rows_data)} 行")
 
         # ===== 在表格下方追加图片 =====
         if append_images and table_id < len(doc.tables):

@@ -479,7 +479,16 @@ export default function CreateBid() {
 
         if (data.analysis_report) {
           const edits = JSON.parse(data.analysis_report);
-          setManualEdits(edits);
+          if (edits && typeof edits === 'object' && !Array.isArray(edits) && edits.manualEdits !== undefined) {
+            // 新格式：包含 manualEdits + dynamicTableEdits
+            setManualEdits(edits.manualEdits || {});
+            setDynamicTableEdits(edits.dynamicTableEdits || {});
+            setDynamicTableImages(edits.dynamicTableImages || {});
+            setSelectedPersonRoles(edits.selectedPersonRoles || {});
+          } else {
+            // 旧格式：只有 manualEdits
+            setManualEdits(edits);
+          }
           setAuditResults([]);
           setStep('review'); 
         } else if (data.framework_content) {
@@ -503,7 +512,12 @@ export default function CreateBid() {
     const debounceTimer = setTimeout(async () => {
       try {
         await supabase.from('bidding_projects').update({ 
-          analysis_report: JSON.stringify(manualEdits) 
+          analysis_report: JSON.stringify({
+            manualEdits,
+            dynamicTableEdits,
+            dynamicTableImages,
+            selectedPersonRoles,
+          })
         }).eq('id', currentProjectId);
       } catch (error) {
         console.error('自动保存失败:', error);
@@ -511,7 +525,7 @@ export default function CreateBid() {
     }, 1500);
 
     return () => clearTimeout(debounceTimer);
-  }, [manualEdits, currentProjectId, step]);
+  }, [manualEdits, dynamicTableEdits, dynamicTableImages, selectedPersonRoles, currentProjectId, step]);
 
   // 监听 productCompanyName 变化，加载该公司下的产品数据
   useEffect(() => {
@@ -1630,7 +1644,12 @@ export default function CreateBid() {
 
       if (currentProjectId) {
         await supabase.from('bidding_projects').update({
-          analysis_report: JSON.stringify(merged),
+          analysis_report: JSON.stringify({
+            manualEdits: merged,
+            dynamicTableEdits,
+            dynamicTableImages,
+            selectedPersonRoles,
+          }),
           status: 'completed'
         }).eq('id', currentProjectId);
       }
@@ -1686,17 +1705,31 @@ export default function CreateBid() {
 
       // 提取动态表格数据
       const dynamicTableDataList = Object.keys(dynamicTableEdits || {})
-        .map(tableId => ({
-          table_id: parseInt(tableId),
-          rows: (dynamicTableEdits[tableId] || []).map(row => {
-            const { _personName, ...rest } = row;
-            return rest;
-          }),
-          append_images: dynamicTableImages[tableId] || [],
-        }))
+        .map(tableId => {
+          const dt = dynamicTables.find(t => t.tableId === parseInt(tableId));
+          const fillMode = dt?.fillMode || 'multi_person';
+          
+          return {
+            table_id: parseInt(tableId),
+            fill_mode: fillMode,
+            rows: (dynamicTableEdits[tableId] || []).map((row, index) => {
+              const { _personName, _positionName, _experienceIndex, _rowIndex, ...rest } = row;
+              // 🆕 汇总表模式：保留行索引
+              if (fillMode === 'multi_person' && _rowIndex !== undefined) {
+                return {
+                  ...rest,
+                  _rowIndex: _rowIndex
+                };
+              }
+              return rest;
+            }),
+            append_images: dynamicTableImages[tableId] || [],
+          };
+        })
         .filter(item => item.rows && item.rows.length > 0);
 
       console.log('🔍 动态表格数据:', dynamicTableDataList.length, '个表格');
+      console.log('🔍 动态表格详情:', dynamicTableDataList);
 
       // 既没有服务手册，又没有动态表格 → 直接下载
       if (codesToResolve.size === 0 && dynamicTableDataList.length === 0) {
@@ -2746,7 +2779,8 @@ export default function CreateBid() {
           }
           open={isTableModalVisible}
           onCancel={() => setIsTableModalVisible(false)}
-          width={860}
+          width="92vw"
+          styles={{ body: { maxHeight: '80vh', overflowY: 'auto' } }}
           footer={[
             <Button key="close" onClick={() => setIsTableModalVisible(false)}>
               关闭
@@ -2800,12 +2834,15 @@ export default function CreateBid() {
                 const personName = row._personName;
                 const positionName = row._positionName;
 
-                // 删除该行
-                const newRows = currentRows.filter((_, i) => i !== rowIndex);
-                setDynamicTableEdits(prev => ({ ...prev, [dt.tableId]: newRows }));
+                // 清空该行数据（保持位置）
+                setDynamicTableEdits(prev => {
+                  const rows = [...(prev[dt.tableId] || [])];
+                  rows[rowIndex] = {}; // 清空该位置
+                  return { ...prev, [dt.tableId]: rows };
+                });
 
                 // 检查该人员+职位是否还有其他行
-                const hasOtherRows = newRows.some(r => r._personName === personName && r._positionName === positionName);
+                const hasOtherRows = currentRows.some((r, i) => i !== rowIndex && r._personName === personName && r._positionName === positionName);
                 
                 if (!hasOtherRows) {
                   // 移除记录
@@ -2900,15 +2937,14 @@ export default function CreateBid() {
                       <div className="overflow-x-auto">
                         <table className="w-full border-collapse border border-gray-300 text-xs">
                           <tbody>
-                            {/* 渲染原始表格行 */}
+                            {/* 新渲染逻辑：空白行可编辑，填充数据替换对应位置 */}
                             {cells2d ? (
                               <>
                                 {cells2d.map((row, rowIndex) => {
-                                  // 如果有填充数据，模板行之后插入数据行
-                                  const isTemplateRow = rowIndex > 0 && currentRows.length === 0;
-                                  return (
-                                    <React.Fragment key={`orig-${rowIndex}`}>
-                                      <tr>
+                                  // 第0行是表头，直接渲染
+                                  if (rowIndex === 0) {
+                                    return (
+                                      <tr key={`header-${rowIndex}`}>
                                         {row.map((cell, cellIndex) => (
                                           <td
                                             key={cellIndex}
@@ -2924,63 +2960,126 @@ export default function CreateBid() {
                                             {cell.text || ''}
                                           </td>
                                         ))}
+                                        {/* 表头增加操作列 */}
+                                        <td className="border border-gray-300 px-2 py-1.5 bg-gray-50 font-medium text-gray-700 w-10 text-center">
+                                          操作
+                                        </td>
                                       </tr>
-                                    </React.Fragment>
-                                  );
-                                })}
-                                {/* 追加已填充的数据行 */}
-                                {currentRows.map((rowData, dataIdx) => {
-                                  // 用模板行（cells2d的第1行）的结构来渲染数据行
+                                    );
+                                  }
+
+                                  // 数据行：检查该位置是否有填充数据
+                                  const dataRowIndex = rowIndex - 1; // 减去表头
+                                  const filledData = currentRows[dataRowIndex];
                                   const templateCells = cells2d.length > 1 ? cells2d[1] : cells2d[0];
-                                  return (
-                                    <tr key={`data-${dataIdx}`} className="hover:bg-blue-50/50">
-                                      {templateCells.map((cell, cellIdx) => {
-                                        const header = cell.headerText || '';
-                                        const isBlank = !cell.text || cell.text.trim() === '' || /^[\s\u3000_\-－]+$/.test(cell.text);
-                                        const value = rowData[header] ?? '';
-                                        
-                                        return (
-                                          <td
-                                            key={cellIdx}
-                                            colSpan={cell.colSpan || 1}
-                                            className={`border border-gray-300 px-1 py-1 ${
-                                              isBlank ? 'bg-white' : 'bg-gray-50 text-gray-500'
-                                            }`}
-                                            style={{
-                                              minWidth: '80px',
-                                              verticalAlign: 'middle',
-                                              textAlign: 'center'
-                                            }}
+
+                                  if (filledData) {
+                                    // 该位置有填充数据，渲染填充的数据行
+                                    return (
+                                      <tr key={`filled-${rowIndex}`} className="hover:bg-blue-50/50">
+                                        {templateCells.map((cell, cellIdx) => {
+                                          const header = cell.headerText || '';
+                                          const isBlank = !cell.text || cell.text.trim() === '' || /^[\s\u3000_\-－]+$/.test(cell.text);
+                                          const value = filledData[header] ?? '';
+                                          
+                                          return (
+                                            <td
+                                              key={cellIdx}
+                                              colSpan={cell.colSpan || 1}
+                                              className={`border border-gray-300 px-1 py-1 ${
+                                                isBlank ? 'bg-white' : 'bg-gray-50 text-gray-500'
+                                              }`}
+                                              style={{
+                                                minWidth: '80px',
+                                                verticalAlign: 'middle',
+                                                textAlign: 'center'
+                                              }}
+                                            >
+                                              {isBlank ? (
+                                                <Input.TextArea
+                                                  value={value}
+                                                  onChange={(e) => handleCellEdit(dataRowIndex, header, e.target.value)}
+                                                  autoSize={{ minRows: 1, maxRows: 4 }}
+                                                  className="text-xs"
+                                                  placeholder="..."
+                                                  bordered={false}
+                                                  style={{ background: 'transparent' }}
+                                                />
+                                              ) : (
+                                                cell.text || ''
+                                              )}
+                                            </td>
+                                          );
+                                        })}
+                                        {/* 删除按钮列 */}
+                                        <td className="border border-gray-300 px-1 py-1 w-10 text-center">
+                                          <Popconfirm
+                                            title="确定删除该行？"
+                                            onConfirm={() => handleRowDelete(dataRowIndex)}
+                                            okText="确定"
+                                            cancelText="取消"
                                           >
-                                            {isBlank ? (
-                                              <Input.TextArea
-                                                value={value}
-                                                onChange={(e) => handleCellEdit(dataIdx, header, e.target.value)}
-                                                autoSize={{ minRows: 1, maxRows: 4 }}
-                                                className="text-xs"
-                                                placeholder="..."
-                                                bordered={false}
-                                                style={{ background: 'transparent' }}
-                                              />
-                                            ) : (
-                                              cell.text || ''
-                                            )}
-                                          </td>
-                                        );
-                                      })}
-                                      {/* 删除按钮列 */}
-                                      <td className="border border-gray-300 px-1 py-1 w-10 text-center">
-                                        <Popconfirm
-                                          title="确定删除该行？"
-                                          onConfirm={() => handleRowDelete(dataIdx)}
-                                          okText="确定"
-                                          cancelText="取消"
-                                        >
-                                          <Button type="text" danger size="small" icon={<Trash2 size={12} />} />
-                                        </Popconfirm>
-                                      </td>
-                                    </tr>
-                                  );
+                                            <Button type="text" danger size="small" icon={<Trash2 size={12} />} />
+                                          </Popconfirm>
+                                        </td>
+                                      </tr>
+                                    );
+                                  } else {
+                                    // 该位置没有填充数据，渲染空白可编辑行
+                                    return (
+                                      <tr key={`empty-${rowIndex}`} className="hover:bg-gray-50/50">
+                                        {row.map((cell, cellIndex) => {
+                                          const header = cell.headerText || '';
+                                          const isBlank = !cell.text || cell.text.trim() === '' || /^[\s\u3000_\-－]+$/.test(cell.text);
+                                          
+                                          return (
+                                            <td
+                                              key={cellIndex}
+                                              rowSpan={cell.rowSpan || 1}
+                                              colSpan={cell.colSpan || 1}
+                                              className={`border border-gray-300 px-1 py-1 ${
+                                                isBlank ? 'bg-white' : 'bg-gray-50 text-gray-500'
+                                              }`}
+                                              style={{
+                                                minWidth: '80px',
+                                                verticalAlign: 'middle',
+                                                textAlign: 'center'
+                                              }}
+                                            >
+                                              {isBlank ? (
+                                                <Input.TextArea
+                                                  value=""
+                                                  onChange={(e) => {
+                                                    // 创建新的空行数据
+                                                    setDynamicTableEdits(prev => {
+                                                      const rows = [...(prev[dt.tableId] || [])];
+                                                      // 确保该位置有数据对象
+                                                      if (!rows[dataRowIndex]) {
+                                                        rows[dataRowIndex] = {};
+                                                      }
+                                                      rows[dataRowIndex] = { ...rows[dataRowIndex], [header]: e.target.value };
+                                                      return { ...prev, [dt.tableId]: rows };
+                                                    });
+                                                  }}
+                                                  autoSize={{ minRows: 1, maxRows: 4 }}
+                                                  className="text-xs"
+                                                  placeholder="..."
+                                                  bordered={false}
+                                                  style={{ background: 'transparent' }}
+                                                />
+                                              ) : (
+                                                cell.text || ''
+                                              )}
+                                            </td>
+                                          );
+                                        })}
+                                        {/* 空白行的操作列 */}
+                                        <td className="border border-gray-300 px-1 py-1 w-10 text-center">
+                                          {/* 空白行不显示删除按钮 */}
+                                        </td>
+                                      </tr>
+                                    );
+                                  }
                                 })}
                               </>
                             ) : (
@@ -3033,6 +3132,25 @@ export default function CreateBid() {
                                 const profile = personnelProfiles.find(p => p.name === personName);
                                 if (!profile) return;
 
+                                // 🆕 获取表格填充模式
+                                const fillMode = dt.fillMode || 'multi_person';
+                                const currentRows = dynamicTableEdits[dt.tableId] || [];
+
+                                // 🆕 汇总表模式：检查是否已满
+                                if (fillMode === 'multi_person') {
+                                  const emptyRowCount = dt.emptyRowCount || 0;
+                                  if (currentRows.length >= emptyRowCount) {
+                                    message.warning(`表格只有 ${emptyRowCount} 行，已填满！`);
+                                    return;
+                                  }
+                                }
+
+                                // 🆕 单人简历表模式：只允许选择一个人
+                                if (fillMode === 'single_person_detail' && currentRows.length > 0) {
+                                  message.warning('该表格只能填写一个人的信息！');
+                                  return;
+                                }
+
                                 message.loading({ content: `正在智能填充 ${personName} 的数据...`, key: 'smart-fill', duration: 0 });
 
                                 // 查询该人员的附件图片
@@ -3064,59 +3182,88 @@ export default function CreateBid() {
                                 try {
                                   // ===== 优先使用 Dify 智能填充 =====
                                   const ts = tableStructures.find(s => s.tableId === dt.tableId);
-                                  const blankCells = (dt.blankCells || []).map(bc => ({
-                                    row: bc.row,
-                                    col: bc.col,
-                                    label: bc.label || '',
-                                    headerText: bc.headerText || '',
-                                    rowHeader: bc.rowHeader || '',
-                                    text: '',
-                                  }));
+                                  
+                                  // 🆕 根据填充模式决定发送哪些空白单元格
+                                  let blankCells = [];
+                                  if (fillMode === 'multi_person') {
+                                    // 汇总表：只发送下一个要填充的行的空白单元格
+                                    const nextRowIndex = currentRows.length + 1;  // 下一行索引（跳过表头）
+                                    blankCells = (dt.blankCells || [])
+                                      .filter(bc => bc.row === nextRowIndex)
+                                      .map(bc => ({
+                                        row: bc.row,
+                                        col: bc.col,
+                                        label: bc.label || '',
+                                        headerText: bc.headerText || '',
+                                        rowHeader: bc.rowHeader || '',
+                                        text: '',
+                                      }));
+                                  } else {
+                                    // 单人简历表：发送所有空白单元格
+                                    blankCells = (dt.blankCells || []).map(bc => ({
+                                      row: bc.row,
+                                      col: bc.col,
+                                      label: bc.label || '',
+                                      headerText: bc.headerText || '',
+                                      rowHeader: bc.rowHeader || '',
+                                      text: '',
+                                    }));
+                                  }
 
-                                  // 只发模板行（第1行）的空白单元格给 Dify
-                                  const templateBlanks = blankCells.filter(bc => bc.row === 1);
-
-                                  if (templateBlanks.length > 0) {
+                                  if (blankCells.length > 0) {
                                     const result = await callSmartFill({
                                       tableId: dt.tableId,
                                       tableType: dt.type,
                                       anchorContext: dt.anchorContext,
                                       headers: dt.headers,
-                                      blankCells: templateBlanks,
+                                      blankCells: blankCells,
                                       personData: profile,
                                       positionName,
                                     });
 
                                     if (result.success && result.fills && result.fills.length > 0) {
-                                      // Dify 返回成功：用AI结果填充
-                                      const baseRow = fillsToRowData(result.fills, dt.headers);
-                                      baseRow._personName = personName;
-                                      baseRow._positionName = positionName;
-
-                                      // 获取项目经历，判断是否需要展开多行
-                                      const experiences = getPositionExperiences(profile, positionName);
-                                      const hasProjectColumns = dt.headers.some(h => /项目|业绩|经验/.test(h));
-
-                                      if (hasProjectColumns && experiences.length > 0) {
-                                        // 项目经历表：每人多个项目，每个项目一行
-                                        // 先添加基本信息行（无项目数据的行）
-                                        // 然后为每个项目创建一行
-                                        experiences.forEach((exp, idx) => {
-                                          const row = { ...baseRow };
-                                          dt.headers.forEach(header => {
-                                            if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
-                                            else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
-                                            else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
-                                            else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
-                                          });
-                                          row._experienceIndex = idx;
-                                          newRows.push(row);
+                                      if (fillMode === 'multi_person') {
+                                        // 🆕 汇总表：只创建一行数据
+                                        const rowData = { 
+                                          _personName: personName, 
+                                          _positionName: positionName,
+                                        };
+                                        
+                                        result.fills.forEach(fill => {
+                                          const key = fill.header || dt.headers[fill.col] || `col_${fill.col}`;
+                                          if (key && fill.value) {
+                                            rowData[key] = fill.value;
+                                          }
                                         });
+                                        
+                                        newRows.push(rowData);
+                                        console.log(`✅ [Dify填充-汇总表] ${personName}: 1 行数据`);
                                       } else {
-                                        newRows.push(baseRow);
-                                      }
+                                        // 🆕 单人简历表：按行分组，创建多行数据
+                                        const rowsData = {};
+                                        
+                                        result.fills.forEach(fill => {
+                                          const rowKey = fill.row;
+                                          if (!rowsData[rowKey]) {
+                                            rowsData[rowKey] = { 
+                                              _personName: personName, 
+                                              _positionName: positionName,
+                                            };
+                                          }
+                                          
+                                          const key = fill.header || dt.headers[fill.col] || `col_${fill.col}`;
+                                          if (key && fill.value) {
+                                            rowsData[rowKey][key] = fill.value;
+                                          }
+                                        });
 
-                                      console.log(`✅ [Dify填充] ${personName}: ${result.fills.length} 个单元格`);
+                                        const sortedRows = Object.keys(rowsData)
+                                          .sort((a, b) => parseInt(a) - parseInt(b))
+                                          .map(rowKey => rowsData[rowKey]);
+                                        
+                                        newRows.push(...sortedRows);
+                                        console.log(`✅ [Dify填充-单人简历表] ${personName}: ${sortedRows.length} 行数据`);
+                                      }
                                     } else {
                                       throw new Error('Dify返回空结果');
                                     }
@@ -3128,20 +3275,33 @@ export default function CreateBid() {
                                   // ===== Dify 失败：回退到本地正则 =====
                                   console.warn(`⚠️ [智能填充] 回退到本地正则:`, difyError.message);
 
-                                  const experiences = getPositionExperiences(profile, positionName);
-                                  const hasProjectColumns = dt.headers.some(h => /项目|业绩|经验/.test(h));
-
                                   const buildRowByRegex = () => {
                                     const row = { _personName: personName, _positionName: positionName };
+                                    
+                                    // 找到第一个空位置
+                                    let insertPosition = currentRows.findIndex(r => !r || Object.keys(r).length === 0);
+                                    if (insertPosition === -1) {
+                                      insertPosition = currentRows.length;
+                                    }
+                                    
                                     dt.headers.forEach(header => {
-                                      if (/姓名|名字/.test(header)) row[header] = profile.name || '';
+                                      if (/序号/.test(header)) row[header] = (insertPosition + 1).toString(); // 使用实际插入位置
+                                      else if (/姓名|名字/.test(header)) row[header] = profile.name || '';
                                       else if (/性别/.test(header)) row[header] = profile.gender || '';
                                       else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
-                                      else if (/年龄/.test(header)) row[header] = '';
+                                      else if (/年龄/.test(header)) {
+                                        if (profile.birth_date) {
+                                          const birthYear = new Date(profile.birth_date).getFullYear();
+                                          const currentYear = new Date().getFullYear();
+                                          row[header] = (currentYear - birthYear).toString();
+                                        } else {
+                                          row[header] = '';
+                                        }
+                                      }
                                       else if (/学历/.test(header)) row[header] = profile.education || '';
                                       else if (/学位/.test(header)) row[header] = profile.degree || '';
-                                      else if (/职务|职位/.test(header)) row[header] = positionName;
-                                      else if (/职称|资格/.test(header)) row[header] = profile.title || '';
+                                      else if (/岗位|职务|职位/.test(header)) row[header] = positionName;
+                                      else if (/职称|资格|证书/.test(header)) row[header] = profile.title || '';
                                       else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
                                       else if (/专业/.test(header)) row[header] = profile.major || '';
                                       else if (/院校|学校/.test(header)) row[header] = profile.school || '';
@@ -3149,34 +3309,69 @@ export default function CreateBid() {
                                       else if (/机构|单位/.test(header)) row[header] = profile.organization || '';
                                       else if (/部门/.test(header)) row[header] = profile.department || '';
                                       else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || positionName;
-                                      else if (/从业|工作年限|经验/.test(header)) row[header] = '';
+                                      else if (/从业|工作年限/.test(header)) row[header] = '10';
                                       else row[header] = '';
                                     });
                                     return row;
                                   };
 
-                                  if (hasProjectColumns && experiences.length > 0) {
-                                    experiences.forEach((exp, idx) => {
-                                      const row = buildRowByRegex();
-                                      dt.headers.forEach(header => {
-                                        if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
-                                        else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
-                                        else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
-                                        else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
-                                      });
-                                      row._experienceIndex = idx;
-                                      newRows.push(row);
-                                    });
-                                  } else {
+                                  // 🆕 根据填充模式决定创建几行
+                                  if (fillMode === 'multi_person') {
+                                    // 汇总表：只创建一行
                                     newRows.push(buildRowByRegex());
+                                  } else {
+                                    // 单人简历表：根据项目经历创建多行
+                                    const experiences = getPositionExperiences(profile, positionName);
+                                    const hasProjectColumns = dt.headers.some(h => /项目|业绩|经验/.test(h));
+
+                                    if (hasProjectColumns && experiences.length > 0) {
+                                      experiences.forEach((exp, idx) => {
+                                        const row = buildRowByRegex();
+                                        dt.headers.forEach(header => {
+                                          if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
+                                          else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
+                                          else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
+                                          else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
+                                        });
+                                        row._experienceIndex = idx;
+                                        newRows.push(row);
+                                      });
+                                    } else {
+                                      newRows.push(buildRowByRegex());
+                                    }
                                   }
                                 }
 
-                                // 更新表格数据
-                                setDynamicTableEdits(prev => ({
-                                  ...prev,
-                                  [dt.tableId]: [...(prev[dt.tableId] || []), ...newRows]
-                                }));
+                                // 🆕 为汇总表模式添加 _rowIndex
+                                if (fillMode === 'multi_person') {
+                                  newRows.forEach((row, idx) => {
+                                    row._rowIndex = currentRows.length + idx + 2; // +2 因为跳过表头（行1）
+                                  });
+                                }
+
+                                // 更新表格数据：找到第一个空位置插入，而不是追加到末尾
+                                setDynamicTableEdits(prev => {
+                                  const existingRows = prev[dt.tableId] || [];
+                                  const updatedRows = [...existingRows];
+                                  
+                                  // 找到第一个空位置（undefined或空对象）
+                                  let insertIndex = existingRows.findIndex(row => !row || Object.keys(row).length === 0);
+                                  
+                                  // 如果没有空位置，追加到末尾
+                                  if (insertIndex === -1) {
+                                    insertIndex = existingRows.length;
+                                  }
+                                  
+                                  // 插入新行数据
+                                  newRows.forEach((newRow, idx) => {
+                                    updatedRows[insertIndex + idx] = newRow;
+                                  });
+                                  
+                                  return {
+                                    ...prev,
+                                    [dt.tableId]: updatedRows
+                                  };
+                                });
 
                                 // 记录已选人员+职位
                                 setSelectedPersonRoles(prev => ({

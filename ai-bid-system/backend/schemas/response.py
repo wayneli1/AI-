@@ -45,6 +45,8 @@ class DynamicTable(BaseModel):
     headers: List[str]
     rowCount: int
     blankCells: Optional[List[BlankCell]] = None
+    fillMode: Optional[str] = "multi_person"  # "multi_person" 或 "single_person_detail"
+    emptyRowCount: Optional[int] = 0  # 空白行数量
 
 
 class ManualTable(BaseModel):
