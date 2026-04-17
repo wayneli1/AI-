@@ -246,13 +246,26 @@ def generate_table_html(table: Table) -> str:
     """
     生成表格的HTML表示，包含完整的结构信息
     这样Dify可以看到完整的表格布局和内容
+    
+    🐛 修复：避免重复列（python-docx的row.cells会重复返回横向合并的单元格）
     """
     html_lines = ['<table border="1">']
     
     for row_idx, row in enumerate(table.rows):
         html_lines.append('  <tr>')
         
-        for cell in row.cells:
+        # 🐛 修复：使用set跟踪已处理的单元格，避免重复
+        processed_cells = set()
+        
+        for cell_idx, cell in enumerate(row.cells):
+            # 使用单元格的内存地址作为唯一标识
+            cell_id = id(cell._tc)
+            
+            # 跳过已处理的单元格（横向合并会导致重复）
+            if cell_id in processed_cells:
+                continue
+            processed_cells.add(cell_id)
+            
             # 跳过垂直合并的延续单元格
             if is_cell_merged_continuation(cell):
                 continue

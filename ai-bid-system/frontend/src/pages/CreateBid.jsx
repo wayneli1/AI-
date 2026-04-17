@@ -6,6 +6,7 @@ import {
 import { saveAs } from 'file-saver';
 import { useSearchParams } from 'react-router-dom';
 import { renderAsync } from 'docx-preview';
+import EditableHtmlTable from '../components/EditableHtmlTable';
 
 import { fillDocumentBlanks, reviewFilledBlanksWithAI } from '../utils/difyWorkflow';
 import { extractTextFromDocument } from '../utils/documentParser';
@@ -265,6 +266,7 @@ export default function CreateBid() {
   const [selectedPersonRoles, setSelectedPersonRoles] = useState({}); // { [tableId]: { personName: positionName } }
   const [tempPersonSelection, setTempPersonSelection] = useState({}); // { [tableId]: personName }
   const [filledTableHtmls, setFilledTableHtmls] = useState({}); // 🆕 存储Dify返回的填充后HTML表格 { tableId: { personName: "<table>...</table>" } }
+  const [manualFillModes, setManualFillModes] = useState({}); // 🆕 用户手动选择的表格类型 { [tableId]: 'multi_person' | 'single_person_detail' }
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -322,6 +324,16 @@ export default function CreateBid() {
     );
     return Math.min(Math.max(nextWidth, MIN_PREVIEW_PANEL_WIDTH), maxWidth);
   }, []);
+
+  /**
+   * 获取表格的实际填充模式（优先使用用户手动选择的值）
+   * @param {number} tableId - 表格ID
+   * @returns {string} 'multi_person' 或 'single_person_detail'
+   */
+  const getEffectiveFillMode = useCallback((tableId) => {
+    const table = dynamicTables.find(t => t.tableId === tableId);
+    return manualFillModes[tableId] || table?.fillMode || 'multi_person';
+  }, [manualFillModes, dynamicTables]);
 
   /**
    * 将新人员的数据行追加到累积表格中（汇总表模式）
@@ -1762,8 +1774,7 @@ export default function CreateBid() {
       // 提取动态表格数据（根据fillMode选择不同的HTML）
       const dynamicTableDataList = Object.keys(filledTableHtmls || {})
         .map(tableId => {
-          const dt = dynamicTables.find(t => t.tableId === parseInt(tableId));
-          const fillMode = dt?.fillMode || 'multi_person';
+          const fillMode = getEffectiveFillMode(parseInt(tableId));
           const tableData = filledTableHtmls[tableId];
           
           let filledHtml = '';
@@ -2887,6 +2898,39 @@ export default function CreateBid() {
                   </div>
 
                   <div className="px-4 py-3">
+                    {/* 🆕 表格类型选择器 */}
+                    <div className="mb-4 p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <span className="text-xs font-medium text-gray-700 shrink-0">表格类型:</span>
+                        <Select
+                          value={getEffectiveFillMode(dt.tableId)}
+                          onChange={(value) => {
+                            setManualFillModes(prev => ({ ...prev, [dt.tableId]: value }));
+                            message.success(`已设置为${value === 'multi_person' ? '汇总表（多人）' : '单人简历表'}`);
+                          }}
+                          style={{ width: 200 }}
+                          size="small"
+                        >
+                          <Select.Option value="multi_person">
+                            📊 汇总表（多人）
+                          </Select.Option>
+                          <Select.Option value="single_person_detail">
+                            👤 单人简历表
+                          </Select.Option>
+                        </Select>
+                        <span className="text-xs text-gray-500">
+                          {getEffectiveFillMode(dt.tableId) === 'multi_person' 
+                            ? '可添加多个人员，每人占一行' 
+                            : '只能添加一个人员'}
+                        </span>
+                      </div>
+                      {manualFillModes[dt.tableId] && manualFillModes[dt.tableId] !== dt.fillMode && (
+                        <div className="text-xs text-orange-600 mt-2">
+                          ⚠️ 已手动覆盖系统检测（原检测为: {dt.fillMode === 'multi_person' ? '汇总表' : '单人简历表'}）
+                        </div>
+                      )}
+                    </div>
+
                     {/* 🆕 新的HTML渲染方式 */}
                     <div className="space-y-4">
                       {/* 未填充时的提示 */}
@@ -2897,7 +2941,7 @@ export default function CreateBid() {
                       )}
                       
                       {/* 填充后的表格 */}
-                      {filledTableHtmls[dt.tableId] && Object.keys(filledTableHtmls[dt.tableId]).length > 0 && (
+                      {filledTableHtmls[dt.tableId] && (
                         <div>
                           <div className="text-xs font-medium text-green-700 mb-2">
                             ✅ AI填充结果
@@ -2905,44 +2949,124 @@ export default function CreateBid() {
                           <div className="text-xs text-gray-500 mb-2">
                             以下是AI填充后的表格，导出时将自动填入Word文档
                           </div>
-                          {Object.entries(filledTableHtmls[dt.tableId]).map(([personName, html]) => (
-                            <div key={personName} className="mb-4">
-                              <div className="text-xs font-medium text-blue-600 mb-1 flex items-center justify-between">
-                                <span>👤 {personName}</span>
-                                <Button
-                                  type="text"
-                                  danger
-                                  size="small"
-                                  icon={<Trash2 size={12} />}
-                                  onClick={() => {
-                                    setFilledTableHtmls(prev => {
-                                      const newHtmls = { ...prev };
-                                      delete newHtmls[dt.tableId][personName];
-                                      if (Object.keys(newHtmls[dt.tableId]).length === 0) {
-                                        delete newHtmls[dt.tableId];
-                                      }
-                                      return newHtmls;
-                                    });
-                                    setSelectedPersonRoles(prev => {
-                                      const newSelections = { ...(prev[dt.tableId] || {}) };
-                                      delete newSelections[personName];
-                                      return { ...prev, [dt.tableId]: newSelections };
-                                    });
-                                    message.success(`已删除 ${personName} 的数据`);
+                          
+                          {/* 显示累积表格（汇总表）或单个表格（单人简历表） */}
+                          {(() => {
+                            const fillMode = getEffectiveFillMode(dt.tableId);
+                            const tableData = filledTableHtmls[dt.tableId];
+                            const displayHtml = fillMode === 'multi_person' 
+                              ? tableData?.accumulated 
+                              : tableData?.single;
+                            
+                            if (!displayHtml) return null;
+                            
+                            return (
+                              <div className="mb-4">
+                                <div className="text-xs font-medium text-blue-600 mb-1">
+                                  📊 {fillMode === 'multi_person' ? '汇总表（所有人员）' : '单人简历表'}
+                                </div>
+                                <div 
+                                  className="border border-green-400 rounded overflow-auto p-2 bg-white filled-table-container"
+                                  style={{
+                                    maxHeight: '400px'
                                   }}
                                 >
-                                  删除
-                                </Button>
+                                  <EditableHtmlTable
+                                    htmlString={displayHtml}
+                                    tableId={dt.tableId}
+                                    onHtmlChange={(newHtml) => {
+                                      // 更新 filledTableHtmls 状态
+                                      setFilledTableHtmls(prev => {
+                                        const currentData = prev[dt.tableId];
+                                        if (!currentData) return prev;
+                                        
+                                        return {
+                                          ...prev,
+                                          [dt.tableId]: {
+                                            ...currentData,
+                                            // 根据 fillMode 更新对应字段
+                                            ...(fillMode === 'multi_person' 
+                                              ? { accumulated: newHtml }
+                                              : { single: newHtml }
+                                            )
+                                          }
+                                        };
+                                      });
+                                    }}
+                                  />
+                                </div>
                               </div>
-                              <div 
-                                className="border border-green-400 rounded overflow-auto p-2 bg-white filled-table-container"
-                                dangerouslySetInnerHTML={{ __html: html }}
-                                style={{
-                                  maxHeight: '400px'
-                                }}
-                              />
+                            );
+                          })()}
+                          
+                          {/* 显示已添加的人员列表 */}
+                          {filledTableHtmls[dt.tableId]?.byPerson && Object.keys(filledTableHtmls[dt.tableId].byPerson).length > 0 && (
+                            <div className="mt-3">
+                              <div className="text-xs font-medium text-gray-600 mb-2">已添加人员：</div>
+                              <div className="flex flex-wrap gap-2">
+                                {Object.keys(filledTableHtmls[dt.tableId].byPerson).map(personName => (
+                                  <Tag
+                                    key={personName}
+                                    closable
+                                    onClose={() => {
+                                      const fillMode = getEffectiveFillMode(dt.tableId);
+                                      
+                                      setFilledTableHtmls(prev => {
+                                        const tableData = prev[dt.tableId];
+                                        if (!tableData) return prev;
+                                        
+                                        // 删除该人员
+                                        const newByPerson = { ...tableData.byPerson };
+                                        delete newByPerson[personName];
+                                        
+                                        if (Object.keys(newByPerson).length === 0) {
+                                          // 如果没有人员了，删除整个表格数据
+                                          const newHtmls = { ...prev };
+                                          delete newHtmls[dt.tableId];
+                                          return newHtmls;
+                                        }
+                                        
+                                        if (fillMode === 'multi_person') {
+                                          // 汇总表：需要重新构建累积表格
+                                          let rebuiltHtml = dt.tableHtml;
+                                          Object.entries(newByPerson).forEach(([name, html]) => {
+                                            rebuiltHtml = appendPersonRowToTable(rebuiltHtml, html, name);
+                                          });
+                                          
+                                          return {
+                                            ...prev,
+                                            [dt.tableId]: {
+                                              accumulated: rebuiltHtml,
+                                              byPerson: newByPerson
+                                            }
+                                          };
+                                        } else {
+                                          // 单人简历表：直接删除
+                                          return {
+                                            ...prev,
+                                            [dt.tableId]: {
+                                              single: '',
+                                              byPerson: {}
+                                            }
+                                          };
+                                        }
+                                      });
+                                      
+                                      setSelectedPersonRoles(prev => {
+                                        const newSelections = { ...(prev[dt.tableId] || {}) };
+                                        delete newSelections[personName];
+                                        return { ...prev, [dt.tableId]: newSelections };
+                                      });
+                                      
+                                      message.success(`已删除 ${personName} 的数据`);
+                                    }}
+                                  >
+                                    {personName} - {selectedPersonRoles[dt.tableId]?.[personName] || '未知职位'}
+                                  </Tag>
+                                ))}
+                              </div>
                             </div>
-                          ))}
+                          )}
                         </div>
                       )}
                     </div>
@@ -2983,7 +3107,7 @@ export default function CreateBid() {
                                 if (!profile) return;
 
                                 // 🆕 获取表格填充模式
-                                const fillMode = dt.fillMode || 'multi_person';
+                                const fillMode = getEffectiveFillMode(dt.tableId);
                                 const currentRows = dynamicTableEdits[dt.tableId] || [];
 
                                 // 🆕 汇总表模式：检查是否已满
@@ -3070,6 +3194,7 @@ export default function CreateBid() {
                                       personData: profile,
                                       positionName,
                                       tableHtml: dt.tableHtml || '',  // 🆕 传递完整的表格HTML
+                                      fillMode: fillMode,  // 🆕 传递填充模式
                                     });
 
                                     if (result.success && result.filled_table_html) {
