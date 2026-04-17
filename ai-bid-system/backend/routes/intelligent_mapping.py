@@ -25,6 +25,7 @@ class SmartFillRequest(BaseModel):
     blankCells: List[BlankCellInfo]
     personData: Dict[str, Any]
     positionName: str = ""
+    tableHtml: str = ""  # 🆕 完整的表格HTML结构，供AI理解表格布局
 
 
 class CellFillResult(BaseModel):
@@ -146,6 +147,7 @@ async def intelligent_field_mapping(request: SmartFillRequest):
         "anchorContext": request.anchorContext,
         "headers": request.headers,
         "blankCells": [bc.dict() for bc in request.blankCells],
+        "tableHtml": request.tableHtml,  # 🆕 传递完整的表格HTML
     }
 
     # 把人员数据传给Dify，让AI根据实际数据精准填充

@@ -47,6 +47,7 @@ class DynamicTable(BaseModel):
     blankCells: Optional[List[BlankCell]] = None
     fillMode: Optional[str] = "multi_person"  # "multi_person" 或 "single_person_detail"
     emptyRowCount: Optional[int] = 0  # 空白行数量
+    tableHtml: Optional[str] = ""  # 完整的表格HTML结构，供AI理解表格布局
 
 
 class ManualTable(BaseModel):
@@ -64,6 +65,7 @@ class TableStructure(BaseModel):
     cells: List[TableCell]
     blankCells: List[BlankCell]
     anchorContext: str
+    tableHtml: Optional[str] = ""  # 完整的表格HTML结构，供AI理解表格布局
 
 
 class ParseResponse(BaseModel):

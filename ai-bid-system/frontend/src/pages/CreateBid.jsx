@@ -3219,6 +3219,7 @@ export default function CreateBid() {
                                       blankCells: blankCells,
                                       personData: profile,
                                       positionName,
+                                      tableHtml: dt.tableHtml || '',  // 🆕 传递完整的表格HTML
                                     });
 
                                     if (result.success && result.fills && result.fills.length > 0) {
@@ -3229,7 +3230,9 @@ export default function CreateBid() {
                                           _positionName: positionName,
                                         };
                                         
+                                        // 🆕 基于坐标填充：将 (row, col) 转换为 header
                                         result.fills.forEach(fill => {
+                                          // 优先使用 AI 返回的 header，否则根据 col 查找
                                           const key = fill.header || dt.headers[fill.col] || `col_${fill.col}`;
                                           if (key && fill.value) {
                                             rowData[key] = fill.value;
@@ -3237,7 +3240,7 @@ export default function CreateBid() {
                                         });
                                         
                                         newRows.push(rowData);
-                                        console.log(`✅ [Dify填充-汇总表] ${personName}: 1 行数据`);
+                                        console.log(`✅ [Dify填充-汇总表] ${personName}: 1 行数据，${result.fills.length} 个字段`);
                                       } else {
                                         // 🆕 单人简历表：按行分组，创建多行数据
                                         const rowsData = {};
@@ -3251,6 +3254,7 @@ export default function CreateBid() {
                                             };
                                           }
                                           
+                                          // 🆕 基于坐标填充：将 (row, col) 转换为 header
                                           const key = fill.header || dt.headers[fill.col] || `col_${fill.col}`;
                                           if (key && fill.value) {
                                             rowsData[rowKey][key] = fill.value;

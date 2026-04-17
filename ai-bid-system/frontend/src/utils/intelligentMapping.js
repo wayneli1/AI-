@@ -10,9 +10,10 @@ const BACKEND_API_BASE = import.meta.env.VITE_BACKEND_API_BASE || 'http://localh
  * @param {Array} params.blankCells - 空白单元格列表
  * @param {Object} params.personData - 人员库中的完整数据
  * @param {string} params.positionName - 选择的职位名称
+ * @param {string} params.tableHtml - 🆕 完整的表格HTML结构
  * @returns {Promise<Object>} { tableId, fills: [{row, col, header, value}], success }
  */
-export async function callSmartFill({ tableId, tableType, anchorContext, headers, blankCells, personData, positionName }) {
+export async function callSmartFill({ tableId, tableType, anchorContext, headers, blankCells, personData, positionName, tableHtml }) {
   const url = `${BACKEND_API_BASE}/api/intelligent-field-mapping`;
 
   // 精简人员数据，只发必要字段
@@ -52,9 +53,10 @@ export async function callSmartFill({ tableId, tableType, anchorContext, headers
     blankCells: slimBlanks,
     personData: slimPerson,
     positionName: positionName || '',
+    tableHtml: tableHtml || '',  // 🆕 传递完整的表格HTML
   };
 
-  console.log(`🤖 [智能填充] 调用: 表格${tableId}, 人员=${slimPerson.name}, 职位=${positionName}, 空白数=${slimBlanks.length}`);
+  console.log(`🤖 [智能填充] 调用: 表格${tableId}, 人员=${slimPerson.name}, 职位=${positionName}, 空白数=${slimBlanks.length}, HTML长度=${tableHtml?.length || 0}`);
 
   try {
     const response = await fetch(url, {

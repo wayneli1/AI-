@@ -61,6 +61,7 @@ async def parse_bid_docx(file: UploadFile = File(...)):
             cells=table_info["cells"],
             blankCells=[BlankCell(**bc) for bc in table_info["blankCells"]],
             anchorContext=anchor,
+            tableHtml=table_info.get("tableHtml", ""),  # 🆕 传递完整的表格HTML
         )
         table_structures.append(table_structure)
 
@@ -74,6 +75,7 @@ async def parse_bid_docx(file: UploadFile = File(...)):
                 blankCells=[BlankCell(**bc) for bc in table_info["blankCells"]],
                 fillMode=table_info.get("fillMode", "multi_person"),  # 🆕 填充模式
                 emptyRowCount=table_info.get("emptyRowCount", 0),  # 🆕 空白行数
+                tableHtml=table_info.get("tableHtml", ""),  # 🆕 传递完整的表格HTML
             ))
             print(f"   🔧 [后端] 表格 {idx} fillMode={table_info.get('fillMode')}, emptyRows={table_info.get('emptyRowCount')}")
         else:
