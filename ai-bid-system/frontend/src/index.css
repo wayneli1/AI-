@@ -59,3 +59,31 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #555;
 }
+
+/* AI填充表格样式 */
+.filled-table-container table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.filled-table-container table th,
+.filled-table-container table td {
+  border: 1px solid #d1d5db;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.filled-table-container table th {
+  background-color: #f3f4f6;
+  font-weight: 600;
+  color: #374151;
+}
+
+.filled-table-container table tr:nth-child(even) {
+  background-color: #f9fafb;
+}
+
+.filled-table-container table tr:hover {
+  background-color: #f0fdf4;
+}

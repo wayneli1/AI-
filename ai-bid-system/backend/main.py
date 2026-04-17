@@ -1,7 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from routes import parse_bid, merge_docs, intelligent_mapping
 from dotenv import load_dotenv
+import time
 
 # 加载 .env 文件
 load_dotenv()
@@ -11,6 +12,25 @@ app = FastAPI(
     description="标书解析服务 - 表格识别 + 空白扫描 + 文档合并 + 智能字段映射",
     version="2.1.0"
 )
+
+# 🔍 调试中间件：记录所有请求
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+    print(f"\n🔍 [DEBUG] 收到请求: {request.method} {request.url.path}")
+    print(f"🔍 [DEBUG] 来源: {request.client.host}:{request.client.port}")
+    print(f"🔍 [DEBUG] Headers: {dict(request.headers)}")
+    
+    try:
+        response = await call_next(request)
+        process_time = time.time() - start_time
+        print(f"✅ [DEBUG] 响应状态: {response.status_code}, 耗时: {process_time:.2f}s")
+        return response
+    except Exception as e:
+        print(f"❌ [DEBUG] 请求处理异常: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 app.add_middleware(
     CORSMiddleware,

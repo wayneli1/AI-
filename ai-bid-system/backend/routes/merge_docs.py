@@ -5,6 +5,7 @@ import re
 
 import requests
 import urllib3
+from bs4 import BeautifulSoup
 from docx import Document
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
@@ -249,6 +250,45 @@ def normalize_header(text):
     return re.sub(r'\s+', '', str(text).strip())
 
 
+def parse_filled_html_to_cells(html_string):
+    """
+    解析Dify返回的HTML表格，提取单元格文本内容为二维数组
+    
+    Args:
+        html_string: HTML表格字符串
+        
+    Returns:
+        list[list[str]]: 二维数组，每个元素是单元格文本
+    """
+    if not html_string or not html_string.strip():
+        return []
+    
+    try:
+        soup = BeautifulSoup(html_string, 'html.parser')
+        table = soup.find('table')
+        
+        if not table:
+            print("   ⚠️ HTML中未找到table标签")
+            return []
+        
+        rows = []
+        for tr in table.find_all('tr'):
+            cells = []
+            for td in tr.find_all(['td', 'th']):
+                # 获取单元格文本，去除首尾空白
+                text = td.get_text(strip=True)
+                cells.append(text)
+            if cells:  # 只添加非空行
+                rows.append(cells)
+        
+        print(f"   ✅ HTML解析成功: {len(rows)} 行")
+        return rows
+        
+    except Exception as e:
+        print(f"   ❌ HTML解析失败: {e}")
+        return []
+
+
 def fill_dynamic_tables(doc, dynamic_tables):
     if not dynamic_tables:
         return 0
@@ -257,15 +297,24 @@ def fill_dynamic_tables(doc, dynamic_tables):
 
     for table_info in dynamic_tables:
         table_id = table_info.get("table_id")
-        rows_data = table_info.get("rows", [])
+        filled_html = table_info.get("filled_html")  # 🆕 接收HTML而不是rows
+        rows_data = table_info.get("rows", [])  # 保留向后兼容
         append_images = table_info.get("append_images", [])
-        fill_mode = table_info.get("fill_mode", "multi_person")  # 🆕 获取填充模式
+        fill_mode = table_info.get("fill_mode", "multi_person")
 
         if table_id is None or table_id >= len(doc.tables):
             print(f"   ⚠️ table_id {table_id} 超出范围，跳过")
             continue
 
-        if not rows_data:
+        # 🆕 优先使用HTML，如果没有则使用rows（向后兼容）
+        if filled_html:
+            print(f"   📊 表格 {table_id} 使用HTML填充模式")
+            rows_data = parse_filled_html_to_cells(filled_html)
+            if not rows_data:
+                print(f"   ⚠️ HTML解析失败，跳过表格 {table_id}")
+                continue
+        elif not rows_data:
+            print(f"   ⚠️ 表格 {table_id} 既没有HTML也没有rows数据，跳过")
             continue
 
         table = doc.tables[table_id]
@@ -276,7 +325,38 @@ def fill_dynamic_tables(doc, dynamic_tables):
         print(f"   📊 表格 {table_id} 表头(含跨列): {header_texts}")
         print(f"   🔧 填充模式: {fill_mode}")
 
-        # 🆕 构建归一化映射表
+        # 🆕 HTML模式：直接按行填充，不需要归一化映射
+        if filled_html:
+            print(f"   📋 HTML填充模式：直接按行列对应填充")
+            
+            # 从第1行开始填充（跳过表头第0行）
+            for row_idx, row_cells in enumerate(rows_data[1:], start=1):  # 跳过HTML的表头行
+                if row_idx >= len(table.rows):
+                    print(f"   ⚠️ HTML行 {row_idx} 超出Word表格范围，跳过")
+                    break
+                
+                target_row = table.rows[row_idx]
+                word_cells = target_row._element.findall(qn('w:tc'))
+                
+                filled_count = 0
+                for col_idx, cell_value in enumerate(row_cells):
+                    if col_idx >= len(word_cells):
+                        break
+                    
+                    # 过滤[空白]标记和空字符串
+                    if cell_value and str(cell_value).strip() and str(cell_value).strip() != "[空白]":
+                        tc = word_cells[col_idx]
+                        set_cell_text(tc, str(cell_value))
+                        filled_count += 1
+                        print(f"      ✓ [{row_idx},{col_idx}] = '{cell_value}'")
+                
+                print(f"   ✅ 表格 {table_id} 行 {row_idx}: 填充 {filled_count}/{len(row_cells)} 个单元格")
+            
+            total_filled += len(rows_data) - 1  # 减去表头行
+            print(f"   ✅ 表格 {table_id} HTML填充完成: {len(rows_data)-1} 行")
+            continue
+
+        # 🆕 构建归一化映射表（仅用于旧的rows模式）
         normalized_map = {}
         for h in header_texts:
             norm_key = normalize_header(h)
@@ -323,7 +403,8 @@ def fill_dynamic_tables(doc, dynamic_tables):
                     header = header_texts[logical_col] if logical_col < len(header_texts) else ""
                     value = normalized_row_data.get(header, "")
                     
-                    if value and str(value).strip():
+                    # 过滤[空白]标记和空字符串
+                    if value and str(value).strip() and str(value).strip() != "[空白]":
                         original_text = get_cell_text_from_element(tc)
                         set_cell_text(tc, str(value))
                         filled_count += 1
@@ -375,7 +456,8 @@ def fill_dynamic_tables(doc, dynamic_tables):
                     header = header_texts[logical_col] if logical_col < len(header_texts) else ""
                     value = normalized_row_data.get(header, "")
 
-                    if value and str(value).strip():
+                    # 过滤[空白]标记和空字符串
+                    if value and str(value).strip() and str(value).strip() != "[空白]":
                         original_text = get_cell_text_from_element(tc)
                         set_cell_text(tc, str(value))
                         filled_count += 1

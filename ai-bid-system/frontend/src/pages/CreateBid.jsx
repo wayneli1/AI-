@@ -19,14 +19,7 @@ import {
 import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
 import { parseBidDocx } from '../utils/backendApi';
 import { 
-  buildCellMapping, 
-  fillPersonDataToRow, 
-  getBlankCellsMappingInfo,
-  getMappingStats 
-} from '../utils/tableFieldMapper';
-import { 
-  callSmartFill,
-  fillsToRowData
+  callSmartFill
 } from '../utils/intelligentMapping';
 
 const DESKTOP_BREAKPOINT = 1280;
@@ -271,7 +264,7 @@ export default function CreateBid() {
   const [personnelProfiles, setPersonnelProfiles] = useState([]);
   const [selectedPersonRoles, setSelectedPersonRoles] = useState({}); // { [tableId]: { personName: positionName } }
   const [tempPersonSelection, setTempPersonSelection] = useState({}); // { [tableId]: personName }
-  const [tableCellMappings, setTableCellMappings] = useState({}); // { [tableId]: cellMap } 存储每个表格的单元格映射
+  const [filledTableHtmls, setFilledTableHtmls] = useState({}); // 🆕 存储Dify返回的填充后HTML表格 { tableId: { personName: "<table>...</table>" } }
 
   // 标准化产品名称：处理中英文混合的空格问题
   const normalizeProductName = useCallback((name) => {
@@ -328,6 +321,81 @@ export default function CreateBid() {
       Math.min(MAX_PREVIEW_PANEL_WIDTH, viewportWidth - MIN_EDITOR_PANEL_WIDTH)
     );
     return Math.min(Math.max(nextWidth, MIN_PREVIEW_PANEL_WIDTH), maxWidth);
+  }, []);
+
+  /**
+   * 将新人员的数据行追加到累积表格中（汇总表模式）
+   * @param {string} accumulatedHtml - 累积的表格HTML
+   * @param {string} newPersonHtml - Dify返回的新人员表格HTML
+   * @param {string} personName - 人员姓名（用于日志）
+   * @returns {string} 更新后的表格HTML
+   */
+  const appendPersonRowToTable = useCallback((accumulatedHtml, newPersonHtml, personName) => {
+    const parser = new DOMParser();
+    
+    // 解析累积表格
+    const accDoc = parser.parseFromString(accumulatedHtml, 'text/html');
+    const accTable = accDoc.querySelector('table');
+    
+    // 解析新人员表格
+    const newDoc = parser.parseFromString(newPersonHtml, 'text/html');
+    const newTable = newDoc.querySelector('table');
+    
+    if (!accTable || !newTable) {
+      console.error('表格解析失败');
+      return accumulatedHtml;
+    }
+    
+    // 提取新表格的第1行数据（跳过表头第0行）
+    const newRows = Array.from(newTable.querySelectorAll('tr'));
+    if (newRows.length < 2) {
+      console.error('新表格没有数据行');
+      return accumulatedHtml;
+    }
+    
+    const dataRow = newRows[1];  // 第1行是数据行
+    
+    // 检查是否有实际数据（不是全[空白]）
+    const hasData = Array.from(dataRow.querySelectorAll('td')).some(td => {
+      const text = td.textContent.trim();
+      return text && text !== '[空白]';
+    });
+    
+    if (!hasData) {
+      console.warn(`${personName} 的数据行全是[空白]，跳过追加`);
+      return accumulatedHtml;
+    }
+    
+    // 在累积表格中找到第一个全[空白]的行，替换它
+    const accRows = Array.from(accTable.querySelectorAll('tr'));
+    let inserted = false;
+    
+    for (let i = 1; i < accRows.length; i++) {  // 跳过表头
+      const row = accRows[i];
+      const cells = Array.from(row.querySelectorAll('td'));
+      const isBlankRow = cells.every(td => {
+        const text = td.textContent.trim();
+        return !text || text === '[空白]';
+      });
+      
+      if (isBlankRow) {
+        // 替换这一行
+        const clonedRow = dataRow.cloneNode(true);
+        row.parentNode.replaceChild(clonedRow, row);
+        console.log(`✅ ${personName} 的数据已插入到第 ${i} 行`);
+        inserted = true;
+        break;
+      }
+    }
+    
+    if (!inserted) {
+      // 如果没有空白行，直接追加到表格末尾
+      const clonedRow = dataRow.cloneNode(true);
+      accTable.appendChild(clonedRow);
+      console.log(`✅ ${personName} 的数据已追加到表格末尾`);
+    }
+    
+    return accTable.outerHTML;
   }, []);
 
   useEffect(() => {
@@ -1175,18 +1243,6 @@ export default function CreateBid() {
       setManualTables(backendManualTables);
       setTableStructures(backendTableStructures);
       setParseMeta(backendMeta);
-      console.log('🔵 [前端] 三桶数据已设置完毕');
-
-      // 本地规则快速映射（秒级完成，不调Dify）
-      const cellMappings = {};
-      backendDynamicTables.forEach(dt => {
-        const ts = backendTableStructures.find(s => s.tableId === dt.tableId);
-        if (ts) {
-          cellMappings[dt.tableId] = buildCellMapping(dt, ts);
-        }
-      });
-      setTableCellMappings(cellMappings);
-      console.log('🔵 [前端] 本地规则映射完成');
 
       // 获取XML用于后续导出
       const { xmlString, zip } = await extractDocumentXml(file);
@@ -1703,30 +1759,38 @@ export default function CreateBid() {
 
       console.log('🔍 从 manualEdits 中提取到的暗号:', Array.from(codesToResolve.keys()));
 
-      // 提取动态表格数据
-      const dynamicTableDataList = Object.keys(dynamicTableEdits || {})
+      // 提取动态表格数据（根据fillMode选择不同的HTML）
+      const dynamicTableDataList = Object.keys(filledTableHtmls || {})
         .map(tableId => {
           const dt = dynamicTables.find(t => t.tableId === parseInt(tableId));
           const fillMode = dt?.fillMode || 'multi_person';
+          const tableData = filledTableHtmls[tableId];
+          
+          let filledHtml = '';
+          
+          if (fillMode === 'multi_person') {
+            // 汇总表：使用累积的完整表格
+            filledHtml = tableData?.accumulated || '';
+            console.log(`📊 表格 ${tableId} (汇总表): 使用累积表格，长度=${filledHtml.length}`);
+          } else {
+            // 单人简历表：使用单个表格
+            filledHtml = tableData?.single || '';
+            console.log(`📊 表格 ${tableId} (单人简历表): 使用单个表格，长度=${filledHtml.length}`);
+          }
+          
+          if (!filledHtml) {
+            console.warn(`⚠️ 表格 ${tableId} 没有填充数据`);
+            return null;
+          }
           
           return {
             table_id: parseInt(tableId),
             fill_mode: fillMode,
-            rows: (dynamicTableEdits[tableId] || []).map((row, index) => {
-              const { _personName, _positionName, _experienceIndex, _rowIndex, ...rest } = row;
-              // 🆕 汇总表模式：保留行索引
-              if (fillMode === 'multi_person' && _rowIndex !== undefined) {
-                return {
-                  ...rest,
-                  _rowIndex: _rowIndex
-                };
-              }
-              return rest;
-            }),
+            filled_html: filledHtml,
             append_images: dynamicTableImages[tableId] || [],
           };
         })
-        .filter(item => item.rows && item.rows.length > 0);
+        .filter(item => item && item.filled_html);
 
       console.log('🔍 动态表格数据:', dynamicTableDataList.length, '个表格');
       console.log('🔍 动态表格详情:', dynamicTableDataList);
@@ -2316,16 +2380,14 @@ export default function CreateBid() {
             <Tag color="blue" className="ml-3">{scannedBlanks.length} 处空白</Tag>
           </div>
           <div className="flex items-center gap-3 self-start lg:self-auto">
-            {isReviewed && (
-              <Button
-                type="primary"
-                icon={<Download size={16} />}
-                onClick={handleExportFilledWord}
-                className="bg-green-600 hover:bg-green-700 rounded-full px-6 border-0 font-bold"
-              >
-                导出已填报文件 (.docx)
-              </Button>
-              )}
+            <Button
+              type="primary"
+              icon={<Download size={16} />}
+              onClick={handleExportFilledWord}
+              className="bg-green-600 hover:bg-green-700 rounded-full px-6 border-0 font-bold"
+            >
+              导出已填报文件 (.docx)
+            </Button>
           </div>
           </div>
         </div>
@@ -2805,107 +2867,6 @@ export default function CreateBid() {
             {dynamicTables.map(dt => {
               const currentRows = dynamicTableEdits[dt.tableId] || [];
               const selectedNames = currentRows.map(r => r._personName).filter(Boolean);
-              const ts = tableStructures.find(s => s.tableId === dt.tableId);
-              const cells2d = (() => {
-                if (!ts || !ts.cells) return null;
-                const rows = {};
-                ts.cells.forEach(c => {
-                  if (c.rowSpan === 0 || c.colSpan === 0) return;
-                  if (!rows[c.row]) rows[c.row] = [];
-                  rows[c.row].push(c);
-                });
-                return Object.keys(rows).sort((a, b) => a - b).map(k => rows[k].sort((a, b) => a.col - b.col));
-              })();
-
-              // 处理单元格编辑
-              const handleCellEdit = (rowIndex, header, value) => {
-                setDynamicTableEdits(prev => {
-                  const rows = [...(prev[dt.tableId] || [])];
-                  if (rows[rowIndex]) {
-                    rows[rowIndex] = { ...rows[rowIndex], [header]: value };
-                  }
-                  return { ...prev, [dt.tableId]: rows };
-                });
-              };
-
-              // 处理行删除
-              const handleRowDelete = (rowIndex) => {
-                const row = currentRows[rowIndex];
-                const personName = row._personName;
-                const positionName = row._positionName;
-
-                // 清空该行数据（保持位置）
-                setDynamicTableEdits(prev => {
-                  const rows = [...(prev[dt.tableId] || [])];
-                  rows[rowIndex] = {}; // 清空该位置
-                  return { ...prev, [dt.tableId]: rows };
-                });
-
-                // 检查该人员+职位是否还有其他行
-                const hasOtherRows = currentRows.some((r, i) => i !== rowIndex && r._personName === personName && r._positionName === positionName);
-                
-                if (!hasOtherRows) {
-                  // 移除记录
-                  setSelectedPersonRoles(prev => {
-                    const newSelections = { ...(prev[dt.tableId] || {}) };
-                    delete newSelections[personName];
-                    return { ...prev, [dt.tableId]: newSelections };
-                  });
-                  message.success(`已删除 ${personName} - ${positionName} 的所有数据`);
-                } else {
-                  message.success('已删除该行');
-                }
-              };
-
-              const previewColumns = [
-                // 职位列（新增）
-                {
-                  title: '职位',
-                  dataIndex: '_positionName',
-                  key: '_positionName',
-                  width: 120,
-                  fixed: 'left',
-                  render: (text) => <span className="font-medium text-blue-600">{text}</span>
-                },
-                // 原有表头列（可编辑）
-                ...dt.headers.map(h => ({
-                  title: h,
-                  dataIndex: h,
-                  key: h,
-                  width: 150,
-                  render: (text, record, index) => (
-                    <Input.TextArea
-                      value={text || ''}
-                      onChange={(e) => handleCellEdit(index, h, e.target.value)}
-                      autoSize={{ minRows: 1, maxRows: 4 }}
-                      className="text-xs"
-                    />
-                  )
-                })),
-                // 操作列
-                {
-                  title: '操作',
-                  key: 'action',
-                  width: 80,
-                  fixed: 'right',
-                  render: (_, record, index) => (
-                    <Popconfirm
-                      title="确定删除该行？"
-                      description="删除后无法恢复"
-                      onConfirm={() => handleRowDelete(index)}
-                      okText="确定"
-                      cancelText="取消"
-                    >
-                      <Button
-                        type="text"
-                        danger
-                        size="small"
-                        icon={<Trash2 size={14} />}
-                      />
-                    </Popconfirm>
-                  )
-                }
-              ];
 
               return (
                 <div key={dt.tableId} className="border border-blue-200 rounded-lg overflow-hidden">
@@ -2926,174 +2887,63 @@ export default function CreateBid() {
                   </div>
 
                   <div className="px-4 py-3">
-                    {/* 表格预览 + 填充值编辑 一体化 */}
-                    <div className="mb-4">
-                      <div className="text-xs font-medium text-gray-700 mb-2 flex items-center justify-between">
-                        <span>📄 {dt.anchorContext || `表格 ${dt.tableId + 1}`}</span>
-                        {currentRows.length > 0 && (
-                          <span className="text-green-600 font-normal">{currentRows.length} 行数据已填入</span>
-                        )}
-                      </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full border-collapse border border-gray-300 text-xs">
-                          <tbody>
-                            {/* 新渲染逻辑：空白行可编辑，填充数据替换对应位置 */}
-                            {cells2d ? (
-                              <>
-                                {cells2d.map((row, rowIndex) => {
-                                  // 第0行是表头，直接渲染
-                                  if (rowIndex === 0) {
-                                    return (
-                                      <tr key={`header-${rowIndex}`}>
-                                        {row.map((cell, cellIndex) => (
-                                          <td
-                                            key={cellIndex}
-                                            rowSpan={cell.rowSpan || 1}
-                                            colSpan={cell.colSpan || 1}
-                                            className="border border-gray-300 px-2 py-1.5 bg-gray-50 font-medium text-gray-700"
-                                            style={{
-                                              minWidth: '80px',
-                                              verticalAlign: 'middle',
-                                              textAlign: 'center'
-                                            }}
-                                          >
-                                            {cell.text || ''}
-                                          </td>
-                                        ))}
-                                        {/* 表头增加操作列 */}
-                                        <td className="border border-gray-300 px-2 py-1.5 bg-gray-50 font-medium text-gray-700 w-10 text-center">
-                                          操作
-                                        </td>
-                                      </tr>
-                                    );
-                                  }
-
-                                  // 数据行：检查该位置是否有填充数据
-                                  const dataRowIndex = rowIndex - 1; // 减去表头
-                                  const filledData = currentRows[dataRowIndex];
-                                  const templateCells = cells2d.length > 1 ? cells2d[1] : cells2d[0];
-
-                                  if (filledData) {
-                                    // 该位置有填充数据，渲染填充的数据行
-                                    return (
-                                      <tr key={`filled-${rowIndex}`} className="hover:bg-blue-50/50">
-                                        {templateCells.map((cell, cellIdx) => {
-                                          const header = cell.headerText || '';
-                                          const isBlank = !cell.text || cell.text.trim() === '' || /^[\s\u3000_\-－]+$/.test(cell.text);
-                                          const value = filledData[header] ?? '';
-                                          
-                                          return (
-                                            <td
-                                              key={cellIdx}
-                                              colSpan={cell.colSpan || 1}
-                                              className={`border border-gray-300 px-1 py-1 ${
-                                                isBlank ? 'bg-white' : 'bg-gray-50 text-gray-500'
-                                              }`}
-                                              style={{
-                                                minWidth: '80px',
-                                                verticalAlign: 'middle',
-                                                textAlign: 'center'
-                                              }}
-                                            >
-                                              {isBlank ? (
-                                                <Input.TextArea
-                                                  value={value}
-                                                  onChange={(e) => handleCellEdit(dataRowIndex, header, e.target.value)}
-                                                  autoSize={{ minRows: 1, maxRows: 4 }}
-                                                  className="text-xs"
-                                                  placeholder="..."
-                                                  bordered={false}
-                                                  style={{ background: 'transparent' }}
-                                                />
-                                              ) : (
-                                                cell.text || ''
-                                              )}
-                                            </td>
-                                          );
-                                        })}
-                                        {/* 删除按钮列 */}
-                                        <td className="border border-gray-300 px-1 py-1 w-10 text-center">
-                                          <Popconfirm
-                                            title="确定删除该行？"
-                                            onConfirm={() => handleRowDelete(dataRowIndex)}
-                                            okText="确定"
-                                            cancelText="取消"
-                                          >
-                                            <Button type="text" danger size="small" icon={<Trash2 size={12} />} />
-                                          </Popconfirm>
-                                        </td>
-                                      </tr>
-                                    );
-                                  } else {
-                                    // 该位置没有填充数据，渲染空白可编辑行
-                                    return (
-                                      <tr key={`empty-${rowIndex}`} className="hover:bg-gray-50/50">
-                                        {row.map((cell, cellIndex) => {
-                                          const header = cell.headerText || '';
-                                          const isBlank = !cell.text || cell.text.trim() === '' || /^[\s\u3000_\-－]+$/.test(cell.text);
-                                          
-                                          return (
-                                            <td
-                                              key={cellIndex}
-                                              rowSpan={cell.rowSpan || 1}
-                                              colSpan={cell.colSpan || 1}
-                                              className={`border border-gray-300 px-1 py-1 ${
-                                                isBlank ? 'bg-white' : 'bg-gray-50 text-gray-500'
-                                              }`}
-                                              style={{
-                                                minWidth: '80px',
-                                                verticalAlign: 'middle',
-                                                textAlign: 'center'
-                                              }}
-                                            >
-                                              {isBlank ? (
-                                                <Input.TextArea
-                                                  value=""
-                                                  onChange={(e) => {
-                                                    // 创建新的空行数据
-                                                    setDynamicTableEdits(prev => {
-                                                      const rows = [...(prev[dt.tableId] || [])];
-                                                      // 确保该位置有数据对象
-                                                      if (!rows[dataRowIndex]) {
-                                                        rows[dataRowIndex] = {};
-                                                      }
-                                                      rows[dataRowIndex] = { ...rows[dataRowIndex], [header]: e.target.value };
-                                                      return { ...prev, [dt.tableId]: rows };
-                                                    });
-                                                  }}
-                                                  autoSize={{ minRows: 1, maxRows: 4 }}
-                                                  className="text-xs"
-                                                  placeholder="..."
-                                                  bordered={false}
-                                                  style={{ background: 'transparent' }}
-                                                />
-                                              ) : (
-                                                cell.text || ''
-                                              )}
-                                            </td>
-                                          );
-                                        })}
-                                        {/* 空白行的操作列 */}
-                                        <td className="border border-gray-300 px-1 py-1 w-10 text-center">
-                                          {/* 空白行不显示删除按钮 */}
-                                        </td>
-                                      </tr>
-                                    );
-                                  }
-                                })}
-                              </>
-                            ) : (
-                              <tr>
-                                <td className="border border-gray-300 px-3 py-2 text-gray-400 text-center" colSpan={dt.headers.length || 3}>
-                                  表格数据不可用
-                                </td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                      {currentRows.length === 0 && (
-                        <div className="text-[10px] text-gray-400 mt-1">请选择人员填充表格</div>
+                    {/* 🆕 新的HTML渲染方式 */}
+                    <div className="space-y-4">
+                      {/* 未填充时的提示 */}
+                      {(!filledTableHtmls[dt.tableId] || Object.keys(filledTableHtmls[dt.tableId]).length === 0) && (
+                        <div className="text-sm text-gray-600 mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
+                          💡 请选择人员和职位，然后点击"智能填充"按钮，AI将自动填写表格
+                        </div>
+                      )}
+                      
+                      {/* 填充后的表格 */}
+                      {filledTableHtmls[dt.tableId] && Object.keys(filledTableHtmls[dt.tableId]).length > 0 && (
+                        <div>
+                          <div className="text-xs font-medium text-green-700 mb-2">
+                            ✅ AI填充结果
+                          </div>
+                          <div className="text-xs text-gray-500 mb-2">
+                            以下是AI填充后的表格，导出时将自动填入Word文档
+                          </div>
+                          {Object.entries(filledTableHtmls[dt.tableId]).map(([personName, html]) => (
+                            <div key={personName} className="mb-4">
+                              <div className="text-xs font-medium text-blue-600 mb-1 flex items-center justify-between">
+                                <span>👤 {personName}</span>
+                                <Button
+                                  type="text"
+                                  danger
+                                  size="small"
+                                  icon={<Trash2 size={12} />}
+                                  onClick={() => {
+                                    setFilledTableHtmls(prev => {
+                                      const newHtmls = { ...prev };
+                                      delete newHtmls[dt.tableId][personName];
+                                      if (Object.keys(newHtmls[dt.tableId]).length === 0) {
+                                        delete newHtmls[dt.tableId];
+                                      }
+                                      return newHtmls;
+                                    });
+                                    setSelectedPersonRoles(prev => {
+                                      const newSelections = { ...(prev[dt.tableId] || {}) };
+                                      delete newSelections[personName];
+                                      return { ...prev, [dt.tableId]: newSelections };
+                                    });
+                                    message.success(`已删除 ${personName} 的数据`);
+                                  }}
+                                >
+                                  删除
+                                </Button>
+                              </div>
+                              <div 
+                                className="border border-green-400 rounded overflow-auto p-2 bg-white filled-table-container"
+                                dangerouslySetInnerHTML={{ __html: html }}
+                                style={{
+                                  maxHeight: '400px'
+                                }}
+                              />
+                            </div>
+                          ))}
+                        </div>
                       )}
                     </div>
 
@@ -3222,160 +3072,56 @@ export default function CreateBid() {
                                       tableHtml: dt.tableHtml || '',  // 🆕 传递完整的表格HTML
                                     });
 
-                                    if (result.success && result.fills && result.fills.length > 0) {
+                                    if (result.success && result.filled_table_html) {
+                                      // 🆕 根据fillMode采用不同的存储策略
                                       if (fillMode === 'multi_person') {
-                                        // 🆕 汇总表：只创建一行数据
-                                        const rowData = { 
-                                          _personName: personName, 
-                                          _positionName: positionName,
-                                        };
-                                        
-                                        // 🆕 基于坐标填充：将 (row, col) 转换为 header
-                                        result.fills.forEach(fill => {
-                                          // 优先使用 AI 返回的 header，否则根据 col 查找
-                                          const key = fill.header || dt.headers[fill.col] || `col_${fill.col}`;
-                                          if (key && fill.value) {
-                                            rowData[key] = fill.value;
-                                          }
-                                        });
-                                        
-                                        newRows.push(rowData);
-                                        console.log(`✅ [Dify填充-汇总表] ${personName}: 1 行数据，${result.fills.length} 个字段`);
-                                      } else {
-                                        // 🆕 单人简历表：按行分组，创建多行数据
-                                        const rowsData = {};
-                                        
-                                        result.fills.forEach(fill => {
-                                          const rowKey = fill.row;
-                                          if (!rowsData[rowKey]) {
-                                            rowsData[rowKey] = { 
-                                              _personName: personName, 
-                                              _positionName: positionName,
-                                            };
-                                          }
+                                        // 汇总表：提取当前人员的数据行，追加到累积表格中
+                                        setFilledTableHtmls(prev => {
+                                          const existingHtml = prev[dt.tableId]?.accumulated || dt.tableHtml;
+                                          const newAccumulatedHtml = appendPersonRowToTable(
+                                            existingHtml, 
+                                            result.filled_table_html,
+                                            personName
+                                          );
                                           
-                                          // 🆕 基于坐标填充：将 (row, col) 转换为 header
-                                          const key = fill.header || dt.headers[fill.col] || `col_${fill.col}`;
-                                          if (key && fill.value) {
-                                            rowsData[rowKey][key] = fill.value;
-                                          }
+                                          return {
+                                            ...prev,
+                                            [dt.tableId]: {
+                                              accumulated: newAccumulatedHtml,  // 累积的完整表格
+                                              byPerson: {
+                                                ...(prev[dt.tableId]?.byPerson || {}),
+                                                [personName]: result.filled_table_html  // 保留单个人的HTML（用于删除）
+                                              }
+                                            }
+                                          };
                                         });
-
-                                        const sortedRows = Object.keys(rowsData)
-                                          .sort((a, b) => parseInt(a) - parseInt(b))
-                                          .map(rowKey => rowsData[rowKey]);
-                                        
-                                        newRows.push(...sortedRows);
-                                        console.log(`✅ [Dify填充-单人简历表] ${personName}: ${sortedRows.length} 行数据`);
+                                        console.log(`✅ [Dify填充-汇总表] ${personName}: 数据行已追加到累积表格`);
+                                      } else {
+                                        // 单人简历表：直接存储
+                                        setFilledTableHtmls(prev => ({
+                                          ...prev,
+                                          [dt.tableId]: {
+                                            single: result.filled_table_html,
+                                            byPerson: { [personName]: result.filled_table_html }
+                                          }
+                                        }));
+                                        console.log(`✅ [Dify填充-单人简历表] ${personName}: HTML表格已生成，长度=${result.filled_table_html.length}字符`);
                                       }
+                                      
+                                      message.success(`✅ ${personName} 填充完成`);
                                     } else {
-                                      throw new Error('Dify返回空结果');
+                                      throw new Error('Dify返回空结果或格式错误');
                                     }
                                   } else {
                                     throw new Error('无空白单元格');
                                   }
 
                                 } catch (difyError) {
-                                  // ===== Dify 失败：回退到本地正则 =====
-                                  console.warn(`⚠️ [智能填充] 回退到本地正则:`, difyError.message);
-
-                                  const buildRowByRegex = () => {
-                                    const row = { _personName: personName, _positionName: positionName };
-                                    
-                                    // 找到第一个空位置
-                                    let insertPosition = currentRows.findIndex(r => !r || Object.keys(r).length === 0);
-                                    if (insertPosition === -1) {
-                                      insertPosition = currentRows.length;
-                                    }
-                                    
-                                    dt.headers.forEach(header => {
-                                      if (/序号/.test(header)) row[header] = (insertPosition + 1).toString(); // 使用实际插入位置
-                                      else if (/姓名|名字/.test(header)) row[header] = profile.name || '';
-                                      else if (/性别/.test(header)) row[header] = profile.gender || '';
-                                      else if (/出生日期|出生年月/.test(header)) row[header] = profile.birth_date ? profile.birth_date.slice(0, 10) : '';
-                                      else if (/年龄/.test(header)) {
-                                        if (profile.birth_date) {
-                                          const birthYear = new Date(profile.birth_date).getFullYear();
-                                          const currentYear = new Date().getFullYear();
-                                          row[header] = (currentYear - birthYear).toString();
-                                        } else {
-                                          row[header] = '';
-                                        }
-                                      }
-                                      else if (/学历/.test(header)) row[header] = profile.education || '';
-                                      else if (/学位/.test(header)) row[header] = profile.degree || '';
-                                      else if (/岗位|职务|职位/.test(header)) row[header] = positionName;
-                                      else if (/职称|资格|证书/.test(header)) row[header] = profile.title || '';
-                                      else if (/电话|联系/.test(header)) row[header] = profile.phone || '';
-                                      else if (/专业/.test(header)) row[header] = profile.major || '';
-                                      else if (/院校|学校/.test(header)) row[header] = profile.school || '';
-                                      else if (/身份证/.test(header)) row[header] = profile.id_number || '';
-                                      else if (/机构|单位/.test(header)) row[header] = profile.organization || '';
-                                      else if (/部门/.test(header)) row[header] = profile.department || '';
-                                      else if (/拟.*职务|担任.*职务/.test(header)) row[header] = profile.assigned_role || positionName;
-                                      else if (/从业|工作年限/.test(header)) row[header] = '10';
-                                      else row[header] = '';
-                                    });
-                                    return row;
-                                  };
-
-                                  // 🆕 根据填充模式决定创建几行
-                                  if (fillMode === 'multi_person') {
-                                    // 汇总表：只创建一行
-                                    newRows.push(buildRowByRegex());
-                                  } else {
-                                    // 单人简历表：根据项目经历创建多行
-                                    const experiences = getPositionExperiences(profile, positionName);
-                                    const hasProjectColumns = dt.headers.some(h => /项目|业绩|经验/.test(h));
-
-                                    if (hasProjectColumns && experiences.length > 0) {
-                                      experiences.forEach((exp, idx) => {
-                                        const row = buildRowByRegex();
-                                        dt.headers.forEach(header => {
-                                          if (/项目名称|工程名称/.test(header)) row[header] = exp.project_name || '';
-                                          else if (/时间|年月|起止|日期/.test(header)) row[header] = (exp.time_range && exp.time_range.length === 2) ? `${exp.time_range[0]} 至 ${exp.time_range[1]}` : '';
-                                          else if (/角色|担任职务/.test(header)) row[header] = exp.role || '';
-                                          else if (/内容|描述|职责/.test(header)) row[header] = exp.description || '';
-                                        });
-                                        row._experienceIndex = idx;
-                                        newRows.push(row);
-                                      });
-                                    } else {
-                                      newRows.push(buildRowByRegex());
-                                    }
-                                  }
+                                  // ===== Dify 失败：直接报错，不再回退 =====
+                                  console.error(`❌ [Dify填充失败]:`, difyError);
+                                  message.error(`智能填充失败: ${difyError.message}`);
+                                  return;
                                 }
-
-                                // 🆕 为汇总表模式添加 _rowIndex
-                                if (fillMode === 'multi_person') {
-                                  newRows.forEach((row, idx) => {
-                                    row._rowIndex = currentRows.length + idx + 2; // +2 因为跳过表头（行1）
-                                  });
-                                }
-
-                                // 更新表格数据：找到第一个空位置插入，而不是追加到末尾
-                                setDynamicTableEdits(prev => {
-                                  const existingRows = prev[dt.tableId] || [];
-                                  const updatedRows = [...existingRows];
-                                  
-                                  // 找到第一个空位置（undefined或空对象）
-                                  let insertIndex = existingRows.findIndex(row => !row || Object.keys(row).length === 0);
-                                  
-                                  // 如果没有空位置，追加到末尾
-                                  if (insertIndex === -1) {
-                                    insertIndex = existingRows.length;
-                                  }
-                                  
-                                  // 插入新行数据
-                                  newRows.forEach((newRow, idx) => {
-                                    updatedRows[insertIndex + idx] = newRow;
-                                  });
-                                  
-                                  return {
-                                    ...prev,
-                                    [dt.tableId]: updatedRows
-                                  };
-                                });
 
                                 // 记录已选人员+职位
                                 setSelectedPersonRoles(prev => ({

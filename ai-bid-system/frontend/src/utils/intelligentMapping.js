@@ -79,21 +79,4 @@ export async function callSmartFill({ tableId, tableType, anchorContext, headers
   }
 }
 
-/**
- * 将 Dify 返回的 fills 数组转换为 { header: value } 的行数据
- * @param {Array} fills - [{row, col, header, value}]
- * @param {string[]} headers - 表头列表
- * @returns {Object} { header1: value1, header2: value2, ... }
- */
-export function fillsToRowData(fills, headers) {
-  const rowData = {};
-  for (const fill of fills) {
-    const key = fill.header || headers[fill.col] || '';
-    if (key && fill.value) {
-      rowData[key] = fill.value;
-    }
-  }
-  return rowData;
-}
-
-export default { callSmartFill, fillsToRowData };
+export default { callSmartFill };

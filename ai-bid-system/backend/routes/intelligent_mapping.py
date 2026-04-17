@@ -40,7 +40,7 @@ class CellFillResult(BaseModel):
 class SmartFillResponse(BaseModel):
     tableId: int
     personName: str
-    fills: List[CellFillResult]
+    filled_table_html: str  # 🆕 完整的填充后HTML表格
     success: bool
     message: Optional[str] = None
 
@@ -58,30 +58,20 @@ def call_dify_smart_fill(
         "Content-Type": "application/json"
     }
 
-    # 只发空白单元格的关键信息，减少数据量
-    slim_blanks = []
-    for bc in table_data.get("blankCells", []):
-        slim_blanks.append({
-            "row": bc.get("row"),
-            "col": bc.get("col"),
-            "label": bc.get("label", ""),
-            "headerText": bc.get("headerText", ""),
-            "rowHeader": bc.get("rowHeader", ""),
-        })
-
+    # 🆕 简化输入：只传递3个关键变量
     payload = {
-    "inputs": {
-        "table_context": table_data.get("anchorContext", ""),
-        "table_html": table_data.get("tableHtml", ""),
-        "blank_cells": json.dumps(slim_blanks, ensure_ascii=False),
-        "personnel_fields": json.dumps(person_data, ensure_ascii=False),
-    },
-    "response_mode": "blocking",
-    "user": "system"
-}
+        "inputs": {
+            "table_html": table_data.get("tableHtml", ""),  # 原始表格HTML
+            "personnel_data": json.dumps(person_data, ensure_ascii=False),  # 人员数据JSON
+            "position_name": table_data.get("positionName", ""),  # 职位名称
+        },
+        "response_mode": "blocking",
+        "user": "system"
+    }
     print(f"🤖 [Dify] 调用智能填充工作流")
-    print(f"🤖 [Dify] 表格ID: {table_data.get('tableId')}, 空白数: {len(slim_blanks)}")
-    print(f"🤖 [Dify] 表格HTML长度: {len(table_data.get('tableHtml', ''))} 字符")  # 新增日志
+    print(f"🤖 [Dify] 表格ID: {table_data.get('tableId')}")
+    print(f"🤖 [Dify] 表格HTML长度: {len(table_data.get('tableHtml', ''))} 字符")
+    print(f"🤖 [Dify] 职位: {table_data.get('positionName', '')}")
 
     try:
         resp = http_requests.post(url, json=payload, headers=headers, timeout=180)
@@ -89,26 +79,15 @@ def call_dify_smart_fill(
         result = resp.json()
 
         outputs = result.get("data", {}).get("outputs", {})
-        raw_text = outputs.get("mappings", "")
+        filled_html = outputs.get("filled_table_html", "")  # 🆕 接收完整HTML
 
-        print(f"✅ [Dify] 原始返回（前300字）: {raw_text[:300]}")
+        print(f"✅ [Dify] 返回HTML长度: {len(filled_html)} 字符")
+        print(f"✅ [Dify] HTML预览（前200字）: {filled_html[:200]}")
 
-        # 清洗 markdown 代码块
-        cleaned = raw_text.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        elif cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-
-        try:
-            parsed = json.loads(cleaned)
-            return parsed
-        except json.JSONDecodeError as e:
-            print(f"❌ [Dify] JSON解析失败: {e}, 原文: {cleaned[:500]}")
-            raise HTTPException(status_code=500, detail=f"Dify返回的JSON格式错误: {str(e)}")
+        return {
+            "filled_table_html": filled_html,
+            "success": True
+        }
 
     except http_requests.exceptions.RequestException as e:
         print(f"❌ [Dify] 调用失败: {e}")
@@ -130,7 +109,7 @@ async def intelligent_field_mapping(request: SmartFillRequest):
         return SmartFillResponse(
             tableId=request.tableId,
             personName=request.personData.get("name", ""),
-            fills=[],
+            filled_table_html="",  # 🆕 返回空HTML
             success=True,
             message="智能映射未启用"
         )
@@ -148,6 +127,7 @@ async def intelligent_field_mapping(request: SmartFillRequest):
         "headers": request.headers,
         "blankCells": [bc.dict() for bc in request.blankCells],
         "tableHtml": request.tableHtml,  # 🆕 传递完整的表格HTML
+        "positionName": request.positionName,  # 🆕 传递职位名称
     }
 
     # 把人员数据传给Dify，让AI根据实际数据精准填充
@@ -156,25 +136,18 @@ async def intelligent_field_mapping(request: SmartFillRequest):
     try:
         dify_result = call_dify_smart_fill(table_data, person_data, dify_api_key, dify_base_url)
 
-        fills_data = dify_result.get("fills", dify_result.get("mappings", []))
-        fills = []
-        for item in fills_data:
-            fills.append(CellFillResult(
-                row=item.get("row", 0),
-                col=item.get("col", 0),
-                label=item.get("label", ""),
-                header=item.get("header", item.get("headerText", "")),
-                value=str(item.get("value", "")),
-                reasoning=item.get("reasoning"),
-            ))
+        filled_html = dify_result.get("filled_table_html", "")  # 🆕 接收完整HTML
+        
+        if not filled_html:
+            raise HTTPException(status_code=500, detail="Dify返回的HTML为空")
 
-        print(f"✅ [智能填充] 完成: {len(fills)} 个单元格")
+        print(f"✅ [智能填充] 完成: HTML长度={len(filled_html)}字符")
         return SmartFillResponse(
             tableId=request.tableId,
             personName=request.personData.get("name", ""),
-            fills=fills,
+            filled_table_html=filled_html,  # 🆕 返回HTML
             success=True,
-            message=f"成功填充 {len(fills)} 个单元格"
+            message=f"成功生成填充后的HTML表格"
         )
 
     except HTTPException:

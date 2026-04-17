@@ -18,17 +18,25 @@ async def parse_bid_docx(file: UploadFile = File(...)):
     print(f"\n{'='*60}")
     print(f"📥 [后端] 收到解析请求")
     print(f"📥 [后端] 文件名: {file.filename}")
+    print(f"📥 [后端] Content-Type: {file.content_type}")
     print(f"{'='*60}")
 
     if not file.filename.lower().endswith(".docx"):
+        print(f"❌ [后端] 文件格式错误: {file.filename}")
         raise HTTPException(status_code=400, detail="仅支持 .docx 格式文件")
 
     try:
+        print(f"🔍 [DEBUG] 开始读取文件内容...")
         contents = await file.read()
         print(f"📥 [后端] 文件大小: {len(contents)} bytes")
+        
+        print(f"🔍 [DEBUG] 开始解析 docx 文档...")
         doc = Document(BytesIO(contents))
+        print(f"✅ [DEBUG] docx 文档解析成功")
     except Exception as e:
-        print(f"❌ [后端] 文件解析失败: {e}")
+        print(f"❌ [后端] 文件解析失败: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
 
     paragraphs = list(doc.paragraphs)
@@ -43,48 +51,52 @@ async def parse_bid_docx(file: UploadFile = File(...)):
     manual_tables = []
 
     for idx, table in enumerate(doc.tables):
-        table_info = parse_table(table, idx, doc)
-        
-        headers = table_info["headers"]
-        anchor = table_info["anchorContext"]
-        table_type = classify_table(anchor, headers)
-        type_label = get_table_type_label(anchor, headers)
-        print(f"📊 [后端] 表格 {idx}: type={table_type}, label={type_label}, rows={table_info['rowCount']}, anchor=\"{anchor[:40]}\"")
-        print(f"📊 [后端] 表格 {idx} headers: {headers}")
-        print(f"📊 [后端] 表格 {idx} blankCells: {len(table_info['blankCells'])}")
+        try:
+            table_info = parse_table(table, idx, doc)
+            
+            headers = table_info["headers"]
+            anchor = table_info["anchorContext"]
+            table_type = classify_table(anchor, headers)
+            type_label = get_table_type_label(anchor, headers)
+            print(f"📊 [后端] 表格 {idx}: type={table_type}, label={type_label}, rows={table_info['rowCount']}, anchor=\"{anchor[:40]}\"")
+            print(f"📊 [后端] 表格 {idx} headers: {headers}")
+            print(f"📊 [后端] 表格 {idx} blankCells: {len(table_info['blankCells'])}")
 
-        table_structure = TableStructure(
-            tableId=idx,
-            rowCount=table_info["rowCount"],
-            colCount=table_info["colCount"],
-            headers=headers,
-            cells=table_info["cells"],
-            blankCells=[BlankCell(**bc) for bc in table_info["blankCells"]],
-            anchorContext=anchor,
-            tableHtml=table_info.get("tableHtml", ""),  # 🆕 传递完整的表格HTML
-        )
-        table_structures.append(table_structure)
-
-        if table_type == "dynamic":
-            dynamic_tables.append(DynamicTable(
+            table_structure = TableStructure(
                 tableId=idx,
-                type=type_label,
-                anchorContext=anchor,
-                headers=headers,
                 rowCount=table_info["rowCount"],
-                blankCells=[BlankCell(**bc) for bc in table_info["blankCells"]],
-                fillMode=table_info.get("fillMode", "multi_person"),  # 🆕 填充模式
-                emptyRowCount=table_info.get("emptyRowCount", 0),  # 🆕 空白行数
-                tableHtml=table_info.get("tableHtml", ""),  # 🆕 传递完整的表格HTML
-            ))
-            print(f"   🔧 [后端] 表格 {idx} fillMode={table_info.get('fillMode')}, emptyRows={table_info.get('emptyRowCount')}")
-        else:
-            manual_tables.append(ManualTable(
-                tableId=idx,
-                type=type_label,
-                anchorContext=anchor,
+                colCount=table_info["colCount"],
                 headers=headers,
-            ))
+                cells=table_info["cells"],
+                blankCells=[BlankCell(**bc) for bc in table_info["blankCells"]],
+                anchorContext=anchor,
+                tableHtml=table_info.get("tableHtml", ""),  # 🆕 传递完整的表格HTML
+            )
+            table_structures.append(table_structure)
+
+            if table_type == "dynamic":
+                dynamic_tables.append(DynamicTable(
+                    tableId=idx,
+                    type=type_label,
+                    anchorContext=anchor,
+                    headers=headers,
+                    rowCount=table_info["rowCount"],
+                    blankCells=[BlankCell(**bc) for bc in table_info["blankCells"]],
+                    fillMode=table_info.get("fillMode", "multi_person"),  # 🆕 填充模式
+                    emptyRowCount=table_info.get("emptyRowCount", 0),  # 🆕 空白行数
+                    tableHtml=table_info.get("tableHtml", ""),  # 🆕 传递完整的表格HTML
+                ))
+                print(f"   🔧 [后端] 表格 {idx} fillMode={table_info.get('fillMode')}, emptyRows={table_info.get('emptyRowCount')}")
+            else:
+                manual_tables.append(ManualTable(
+                    tableId=idx,
+                    type=type_label,
+                    anchorContext=anchor,
+                    headers=headers,
+                ))
+        except Exception as e:
+            print(f"⚠️ [后端] 解析表格 {idx} 失败，已跳过: {e}")
+            continue  # 遇到无法解析的复杂表格，跳过而不是让整个接口崩溃
 
     meta = {
         "fileName": file.filename,

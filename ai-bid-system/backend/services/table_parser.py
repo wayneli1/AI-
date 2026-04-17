@@ -2,6 +2,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from docx.table import Table
 from docx.document import Document
 from docx.oxml.ns import qn
+import re
 
 
 def get_cell_col_span(cell) -> int:
@@ -300,9 +301,6 @@ def get_anchor_context(doc: Document, table: Table) -> str:
         return ""
 
 
-import re
-
-
 def count_empty_rows(table: Table) -> int:
     """
     统计表格中的空白行数量（跳过表头）
@@ -351,20 +349,44 @@ def detect_table_fill_mode(table: Table, headers: List[str], anchor_context: str
 
 
 def parse_table(table: Table, table_index: int, doc: Document) -> Dict[str, Any]:
-    headers = extract_table_headers(table)
-    cells = parse_table_cells(table, table_index)
-    blank_cells = find_blank_cells(cells)
-    anchor_context = get_anchor_context(doc, table)
-    table_html = generate_table_html(table)  # 新增：生成完整的表格HTML
+    print(f"🔍 [DEBUG] 开始解析表格 {table_index}...")
     
-    # 🆕 检测表格填充模式和空白行数
-    fill_mode = detect_table_fill_mode(table, headers, anchor_context)
-    empty_row_count = count_empty_rows(table)
+    try:
+        print(f"🔍 [DEBUG] 提取表头...")
+        headers = extract_table_headers(table)
+        print(f"✅ [DEBUG] 表头提取成功: {len(headers)} 列")
+        
+        print(f"🔍 [DEBUG] 解析单元格...")
+        cells = parse_table_cells(table, table_index)
+        print(f"✅ [DEBUG] 单元格解析成功: {len(cells)} 个")
+        
+        print(f"🔍 [DEBUG] 查找空白单元格...")
+        blank_cells = find_blank_cells(cells)
+        print(f"✅ [DEBUG] 空白单元格查找完成: {len(blank_cells)} 个")
+        
+        print(f"🔍 [DEBUG] 获取锚点上下文...")
+        anchor_context = get_anchor_context(doc, table)
+        print(f"✅ [DEBUG] 锚点上下文: {anchor_context[:50]}...")
+        
+        print(f"🔍 [DEBUG] 生成表格 HTML...")
+        table_html = generate_table_html(table)
+        print(f"✅ [DEBUG] HTML 生成成功: {len(table_html)} 字符")
+        
+        print(f"🔍 [DEBUG] 检测填充模式...")
+        fill_mode = detect_table_fill_mode(table, headers, anchor_context)
+        empty_row_count = count_empty_rows(table)
+        print(f"✅ [DEBUG] 填充模式: {fill_mode}, 空白行: {empty_row_count}")
+        
+    except Exception as e:
+        print(f"❌ [DEBUG] 表格 {table_index} 解析过程出错: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
     
     return {
         "tableId": table_index,
         "rowCount": len(table.rows),
-        "colCount": len(table.columns) if table.columns else 0,
+        "colCount": len(headers),  # ✅ 修复：使用 headers 长度，避免 table.columns Bug
         "headers": [h for h in headers if h],
         "cells": cells,
         "blankCells": blank_cells,
