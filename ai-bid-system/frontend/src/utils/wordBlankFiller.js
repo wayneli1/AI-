@@ -284,6 +284,7 @@ function detectImageInsertType(blank = {}, imageUrl = '', naturalW = 0, naturalH
   const isPortrait = naturalH > naturalW * 1.15;
   if (/身份证|身份证正面|身份证反面|人像面|国徽面|法人身份证/.test(text)) return 'id_card';
   if (/营业执照/.test(text)) return 'business_license';
+  if (/学位证|毕业证|学历/.test(text)) return 'degree';
   if (/资质证书|证书|许可证|认证证书|检验报告|检测报告|iso|体系认证/.test(text)) return 'certificate';
   if (isPortrait && /系统|网关|平台|软件|硬件|产品|v\d+(?:\.\d+)?|xt电子邮件系统|邮件安全卫士|coremail|cacter/i.test(text)) return 'certificate';
   return 'generic';
@@ -295,6 +296,7 @@ function getImageSizeStrategy(type, naturalW, naturalH) {
   if (type === 'id_card') return getCmDimensionsEmu(7.05, 5.07);
   if (type === 'business_license') return getCmDimensionsEmu(14.65, 9.5);
   if (type === 'certificate') return getCmDimensionsEmu(14.64, 20.63);
+   if (type === 'degree') return getCmDimensionsEmu(14.5, 10.56);
   return getImageDimensionsEmu(220, safeW, safeH);
 }
 

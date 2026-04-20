@@ -484,20 +484,39 @@ def fill_dynamic_tables(doc, dynamic_tables):
 
         # 优先使用按人员分组的格式
         if append_images_by_person and isinstance(append_images_by_person, dict):
-            for person_name, urls in append_images_by_person.items():
-                if isinstance(urls, list):
-                    for url in urls:
-                        images_to_append.append((person_name, url))
+            for person_name, imgs in append_images_by_person.items():
+                if isinstance(imgs, list):
+                    for img in imgs:
+                        # 支持新格式 {url, type} 和旧格式纯字符串
+                        if isinstance(img, dict):
+                            images_to_append.append((person_name, img.get('url', ''), img.get('type', '')))
+                        else:
+                            images_to_append.append((person_name, str(img), ''))
         elif append_images:
             # 向后兼容旧的扁平数组格式
             for url in append_images:
-                images_to_append.append((None, url))
+                images_to_append.append((None, url, ''))
+
+        # 图片尺寸规范
+        def get_image_size(att_type):
+            if att_type in ('id_card_front', 'id_card_back', 'id_card'):
+                return (Cm(7.05), Cm(5.07))
+            if att_type == 'business_license':
+                return (Cm(14.65), Cm(9.5))
+            if att_type in ('qualification_certificate', 'title_certificate', 'certificate'):
+                return (Cm(14.64), Cm(20.63))
+            if att_type in ('degree_certificate', 'graduation_certificate'):
+                return (Cm(14.5), Cm(10.56))
+            # 兜底：只设宽度，高度自适应
+            return (Cm(14.0), None)
 
         if images_to_append and table_id < len(doc.tables):
             table_element = doc.tables[table_id]._element
             current = table_element
 
-            for idx, (person_name, img_url) in enumerate(images_to_append):
+            for idx, (person_name, img_url, att_type) in enumerate(images_to_append):
+                if not img_url:
+                    continue
                 try:
                     resp = requests.get(img_url, verify=False, timeout=15)
                     resp.raise_for_status()
@@ -508,11 +527,16 @@ def fill_dynamic_tables(doc, dynamic_tables):
 
                     p = Paragraph(p_elem, doc._body)
                     run = p.add_run()
-                    run.add_picture(img_stream, width=Cm(14.0))
+
+                    width, height = get_image_size(att_type)
+                    if height:
+                        run.add_picture(img_stream, width=width, height=height)
+                    else:
+                        run.add_picture(img_stream, width=width)
 
                     current = p_elem
                     label = f"{person_name} - " if person_name else ""
-                    print(f"   🖼️ 表格 {table_id} 追加图片 {label}{idx + 1}/{len(images_to_append)}: {img_url[:60]}")
+                    print(f"   🖼️ 表格 {table_id} 追加图片 {label}{idx + 1}/{len(images_to_append)} [{att_type}] {width}×{height}: {img_url[:60]}")
 
                 except Exception as e:
                     print(f"   ⚠️ 下载图片失败 [{img_url[:60]}]: {e}")
