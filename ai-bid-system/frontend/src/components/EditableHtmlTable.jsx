@@ -9,10 +9,10 @@ import './EditableHtmlTable.css';
  * 2. 支持单元格点击编辑（contentEditable）
  * 3. 处理colspan/rowspan复杂表格结构
  * 4. 编辑后回写HTML字符串
- * 5. 表头不可编辑，只编辑数据行
+ * 5. 支持通过headerRows控制表头行数（默认0，所有行可编辑）
  */
 
-const EditableHtmlTable = ({ htmlString, onHtmlChange, tableId }) => {
+const EditableHtmlTable = ({ htmlString, onHtmlChange, tableId, headerRows = 0 }) => {
   const [editingCell, setEditingCell] = useState(null); // { rowIndex, cellIndex }
   const [tableData, setTableData] = useState(null);
   const editableRef = useRef(null);
@@ -38,7 +38,7 @@ const EditableHtmlTable = ({ htmlString, onHtmlChange, tableId }) => {
         rows: rows.map((row, rowIndex) => {
           const cells = Array.from(row.querySelectorAll('td, th'));
           return {
-            isHeader: rowIndex === 0, // 第一行为表头
+            isHeader: rowIndex < headerRows, // 前headerRows行为表头
             cells: cells.map(cell => ({
               content: cell.textContent.trim(),
               tagName: cell.tagName.toLowerCase(),

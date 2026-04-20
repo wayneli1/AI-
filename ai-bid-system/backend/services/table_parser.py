@@ -337,6 +337,53 @@ def count_empty_rows(table: Table) -> int:
     return empty_count
 
 
+def detect_first_row_type(table: Table) -> str:
+    """
+    检测第一行是标题行还是字段行
+    返回: "title_row" (标题行，不需要填充) 或 "field_row" (字段行，需要填充)
+    
+    判断规则：
+    1. 如果第一行包含多个常见字段名（姓名、年龄等），判定为字段行
+    2. 如果第一行只有1个单元格且文本较长，判定为标题行
+    3. 如果第一行跨列合并且文本较长，判定为标题行
+    4. 默认判定为字段行
+    """
+    if not table.rows or len(table.rows) < 1:
+        return "field_row"
+    
+    first_row = table.rows[0]
+    first_row_texts = [get_cell_text(cell) for cell in first_row.cells]
+    
+    # 常见字段名关键词
+    field_keywords = ['姓名', '年龄', '性别', '学历', '专业', '职务', '职称', 
+                      '证书', '编号', '时间', '单位', '项目', '业绩', '经验',
+                      '工作', '资格', '等级', '日期', '毕业', '院校']
+    
+    # 统计第一行包含字段关键词的单元格数量
+    field_count = sum(1 for text in first_row_texts 
+                     if any(kw in text for kw in field_keywords))
+    
+    # 如果第一行有多个字段关键词（>=2），判定为字段行
+    if field_count >= 2:
+        return "field_row"
+    
+    # 如果第一行只有1个单元格且文本较长（>10字符），判定为标题行
+    non_empty_cells = [text for text in first_row_texts if text]
+    if len(non_empty_cells) == 1 and len(non_empty_cells[0]) > 10:
+        return "title_row"
+    
+    # 如果第一行第一个单元格跨列合并（colspan > 2）且文本较长（>8字符），判定为标题行
+    if first_row.cells:
+        first_cell = first_row.cells[0]
+        col_span = get_cell_col_span(first_cell)
+        first_text = get_cell_text(first_cell)
+        if col_span > 2 and len(first_text) > 8:
+            return "title_row"
+    
+    # 默认判定为字段行
+    return "field_row"
+
+
 def detect_table_fill_mode(table: Table, headers: List[str], anchor_context: str) -> str:
     """
     检测表格填充模式
@@ -390,6 +437,10 @@ def parse_table(table: Table, table_index: int, doc: Document) -> Dict[str, Any]
         empty_row_count = count_empty_rows(table)
         print(f"✅ [DEBUG] 填充模式: {fill_mode}, 空白行: {empty_row_count}")
         
+        print(f"🔍 [DEBUG] 检测第一行类型...")
+        first_row_type = detect_first_row_type(table)
+        print(f"✅ [DEBUG] 第一行类型: {first_row_type}")
+        
     except Exception as e:
         print(f"❌ [DEBUG] 表格 {table_index} 解析过程出错: {type(e).__name__}: {e}")
         import traceback
@@ -407,4 +458,5 @@ def parse_table(table: Table, table_index: int, doc: Document) -> Dict[str, Any]
         "tableHtml": table_html,  # 新增：完整的表格HTML结构
         "fillMode": fill_mode,  # 🆕 填充模式
         "emptyRowCount": empty_row_count,  # 🆕 空白行数量
+        "firstRowType": first_row_type,  # 🆕 第一行类型
     }

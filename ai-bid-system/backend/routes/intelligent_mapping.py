@@ -29,6 +29,7 @@ class SmartFillRequest(BaseModel):
     positionName: str = ""
     tableHtml: str = ""  # 🆕 完整的表格HTML结构，供AI理解表格布局
     fillMode: str = "multi_person"  # 🆕 填充模式：multi_person 或 single_person_detail
+    firstRowType: str = "field_row"  # 🆕 第一行类型：title_row (标题行) 或 field_row (字段行)
 
 
 class CellFillResult(BaseModel):
@@ -156,13 +157,14 @@ def call_dify_smart_fill(
         "Content-Type": "application/json"
     }
 
-    # 🆕 传递4个关键变量（新增 fill_mode）
+    # 🆕 传递5个关键变量（新增 fill_mode 和 first_row_type）
     payload = {
         "inputs": {
             "table_html": table_data.get("tableHtml", ""),  # 原始表格HTML
             "personnel_data": json.dumps(person_data, ensure_ascii=False),  # 人员数据JSON
             "position_name": table_data.get("positionName", ""),  # 职位名称
             "fill_mode": table_data.get("fillMode", "multi_person"),  # 🆕 填充模式
+            "first_row_type": table_data.get("firstRowType", "field_row"),  # 🆕 第一行类型
         },
         "response_mode": "blocking",
         "user": "system"
@@ -172,6 +174,7 @@ def call_dify_smart_fill(
     print(f"🤖 [Dify] 表格HTML长度: {len(table_data.get('tableHtml', ''))} 字符")
     print(f"🤖 [Dify] 职位: {table_data.get('positionName', '')}")
     print(f"🤖 [Dify] 填充模式: {table_data.get('fillMode', 'multi_person')}")
+    print(f"🤖 [Dify] 第一行类型: {table_data.get('firstRowType', 'field_row')}")
 
     try:
         resp = http_requests.post(url, json=payload, headers=headers, timeout=180)
@@ -229,6 +232,7 @@ async def intelligent_field_mapping(request: SmartFillRequest):
         "tableHtml": request.tableHtml,  # 🆕 传递完整的表格HTML
         "positionName": request.positionName,  # 🆕 传递职位名称
         "fillMode": request.fillMode,  # 🆕 传递填充模式
+        "firstRowType": request.firstRowType,  # 🆕 传递第一行类型
     }
     
     # 🐛 修复：清理输入HTML中的重复列（在传给Dify之前）

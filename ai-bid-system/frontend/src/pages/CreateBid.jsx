@@ -1691,12 +1691,52 @@ export default function CreateBid() {
       console.log('🔍 processedResult 最终结果:', processedResult);
       console.log('🔍 processedResult 键:', Object.keys(processedResult));
 
+      // ===== 🔍 新增：验证AI返回的blank IDs是否都在scannedBlanks中 =====
+      const scannedBlankIds = new Set(scannedBlanks.map(b => b.id));
+      const processedBlankIds = Object.keys(processedResult);
+      const orphanedIds = processedBlankIds.filter(id => !scannedBlankIds.has(id));
+      
+      if (orphanedIds.length > 0) {
+        console.warn('⚠️ [数据一致性警告] AI返回了不在scannedBlanks中的blank IDs:', orphanedIds);
+        console.warn('⚠️ 这些值将无法导出到Word文档！');
+      }
+      
+      console.log('🔍 [数据验证] scannedBlanks数量:', scannedBlanks.length);
+      console.log('🔍 [数据验证] scannedBlanks IDs:', Array.from(scannedBlankIds));
+      console.log('🔍 [数据验证] processedResult IDs:', processedBlankIds);
+      console.log('🔍 [数据验证] 孤立的IDs:', orphanedIds);
+      // ===== 验证结束 =====
+
       const merged = { ...manualEdits };
+      
+      // ===== 🔧 修复：改进合并逻辑，确保所有processedResult的值都被合并 =====
+      // 策略1：优先合并scannedBlanks中的blanks（正常路径）
       for (const blank of scannedBlanks) {
-        if (!merged[blank.id] && processedResult[blank.id]) {
+        if (processedResult[blank.id] !== undefined && processedResult[blank.id] !== null) {
+          // 如果AI返回了值，使用AI的值（即使manualEdits中已有值，AI的值优先）
           merged[blank.id] = processedResult[blank.id] || '';
         }
       }
+      
+      // 策略2：合并processedResult中所有有值的项（包括可能的孤立blanks）
+      // 注意：这些孤立的blanks虽然会被存储，但在导出时会被忽略（因为不在scannedBlanks中）
+      for (const [blankId, value] of Object.entries(processedResult)) {
+        if (value !== undefined && value !== null && value !== '') {
+          if (!merged[blankId]) {
+            merged[blankId] = value;
+            if (!scannedBlankIds.has(blankId)) {
+              console.warn(`⚠️ [合并警告] 合并了孤立blank ${blankId}，但它不会被导出`);
+            }
+          }
+        }
+      }
+      // ===== 修复结束 =====
+      
+      // ===== 🔍 新增：记录合并后的状态 =====
+      console.log('🔍 [合并后] merged键数量:', Object.keys(merged).length);
+      console.log('🔍 [合并后] merged中有值的键:', Object.keys(merged).filter(k => merged[k]));
+      // ===== 记录结束 =====
+      
       setManualEdits(merged);
 
       setIsAuditing(true);
@@ -1746,6 +1786,38 @@ export default function CreateBid() {
         scannedBlanksCount: scannedBlanks.length,
         manualEditsCount: Object.keys(manualEdits).length,
       });
+
+      // ===== 🔍 新增：导出前数据完整性验证 =====
+      const scannedBlankIds = new Set(scannedBlanks.map(b => b.id));
+      const manualEditsKeys = Object.keys(manualEdits);
+      
+      console.log('🔍 [导出验证] scannedBlanks IDs:', Array.from(scannedBlankIds));
+      console.log('🔍 [导出验证] manualEdits keys:', manualEditsKeys);
+      
+      // 检查 blank_4 的状态
+      const blank4InScanned = scannedBlankIds.has('blank_4');
+      const blank4InManual = manualEdits['blank_4'];
+      console.log('🔍 [导出验证] blank_4 在 scannedBlanks 中:', blank4InScanned);
+      console.log('🔍 [导出验证] blank_4 在 manualEdits 中:', blank4InManual ? `是 (值="${blank4InManual}")` : '否');
+      
+      // 找出有值但不在scannedBlanks中的blanks（这些值将无法导出）
+      const orphanedBlanks = manualEditsKeys.filter(id => 
+        manualEdits[id] && manualEdits[id].trim() !== '' && !scannedBlankIds.has(id)
+      );
+      
+      if (orphanedBlanks.length > 0) {
+        console.error('❌ [导出验证失败] 发现孤立的blanks（有值但不在scannedBlanks中）:', orphanedBlanks);
+        orphanedBlanks.forEach(id => {
+          console.error(`  - ${id}: "${manualEdits[id].substring(0, 50)}..."`);
+        });
+        console.error('❌ 这些值将不会被导出到Word文档！');
+      }
+      
+      // 统计将被导出的blanks
+      const blanksToExport = scannedBlanks.filter(b => manualEdits[b.id] && manualEdits[b.id].trim() !== '');
+      console.log('🔍 [导出验证] 将被导出的blanks数量:', blanksToExport.length);
+      console.log('🔍 [导出验证] 将被导出的blank IDs:', blanksToExport.map(b => b.id));
+      // ===== 验证结束 =====
 
       message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
 

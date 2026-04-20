@@ -329,8 +329,8 @@ def fill_dynamic_tables(doc, dynamic_tables):
         if filled_html:
             print(f"   📋 HTML填充模式：直接按行列对应填充")
             
-            # 从第1行开始填充（跳过表头第0行）
-            for row_idx, row_cells in enumerate(rows_data[1:], start=1):  # 跳过HTML的表头行
+            # 从第0行开始填充（简历表所有行都是数据行，无表头行需跳过）
+            for row_idx, row_cells in enumerate(rows_data):
                 if row_idx >= len(table.rows):
                     print(f"   ⚠️ HTML行 {row_idx} 超出Word表格范围，跳过")
                     break
@@ -352,8 +352,8 @@ def fill_dynamic_tables(doc, dynamic_tables):
                 
                 print(f"   ✅ 表格 {table_id} 行 {row_idx}: 填充 {filled_count}/{len(row_cells)} 个单元格")
             
-            total_filled += len(rows_data) - 1  # 减去表头行
-            print(f"   ✅ 表格 {table_id} HTML填充完成: {len(rows_data)-1} 行")
+            total_filled += len(rows_data)
+            print(f"   ✅ 表格 {table_id} HTML填充完成: {len(rows_data)} 行")
             continue
 
         # 🆕 构建归一化映射表（仅用于旧的rows模式）
