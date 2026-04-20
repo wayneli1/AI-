@@ -31,6 +31,6 @@ echo 按 Ctrl+C 停止服务
 echo.
 
 cd backend
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 
 pause

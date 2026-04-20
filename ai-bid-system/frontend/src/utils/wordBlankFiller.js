@@ -599,7 +599,13 @@ function rebuildParagraphXml(paragraphXml, nodes) {
       const oldEnd = oldStart + node.fullMatch.length;
       result = result.substring(0, oldStart) + newFull + result.substring(oldEnd);
       delta += newFull.length - node.fullMatch.length;
-    }else if (node.isBr) { newFull = node._newText ? '<w:t>' + node._newText + '</w:t>' : ''; }
+    } else if (node.isBr) {
+      const newFull = node._newText ? '<w:t>' + node._newText + '</w:t>' : '';
+      const oldStart = node.matchStart + delta;
+      const oldEnd = oldStart + node.fullMatch.length;
+      result = result.substring(0, oldStart) + newFull + result.substring(oldEnd);
+      delta += newFull.length - node.fullMatch.length;
+    }
   }
   return result;
 }

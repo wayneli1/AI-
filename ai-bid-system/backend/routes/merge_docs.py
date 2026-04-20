@@ -122,11 +122,37 @@ def find_and_replace_insert_codes(main_doc, url_mapping):
     total_merged = 0
 
     paragraphs_to_process = []
-    for para in main_doc.paragraphs:
+    
+    # 1. 搜索文档主体段落
+    print(f"   🔍 搜索文档主体段落: {len(main_doc.paragraphs)} 个")
+    for idx, para in enumerate(main_doc.paragraphs):
         para_text = para.text
+        # 🔍 调试：打印所有段落的文本内容
+        if idx < 10 or '[INSERT_DOC:' in para_text or 'INSERT_DOC' in para_text or '售后' in para_text or '服务手册' in para_text:
+            print(f"   🔍 段落 {idx}: {repr(para_text[:150])}")
+        if '[INSERT_DOC:' in para_text or 'INSERT_DOC' in para_text:
+            print(f"   🔍 主体段落包含暗号关键字: {para_text[:100]}")
         codes = re.findall(r'\[INSERT_DOC:([^\]]+)\]', para_text)
         for code in codes:
             paragraphs_to_process.append((para, code))
+    
+    # 2. 搜索表格内的段落
+    print(f"   🔍 搜索表格: {len(main_doc.tables)} 个")
+    for table_idx, table in enumerate(main_doc.tables):
+        print(f"   🔍 表格 {table_idx}: {len(table.rows)} 行")
+        for row_idx, row in enumerate(table.rows):
+            for cell_idx, cell in enumerate(row.cells):
+                for para_idx, para in enumerate(cell.paragraphs):
+                    para_text = para.text
+                    # 🔍 调试：打印表格中包含关键字的段落
+                    if '售后' in para_text or '服务手册' in para_text or '[INSERT_DOC:' in para_text or 'INSERT_DOC' in para_text:
+                        print(f"   🔍 表格[{table_idx}][{row_idx}][{cell_idx}] 段落 {para_idx}: {repr(para_text[:150])}")
+                    if '[INSERT_DOC:' in para_text or 'INSERT_DOC' in para_text:
+                        print(f"   🔍 表格[{table_idx}][{row_idx}][{cell_idx}] 段落 {para_idx} 包含暗号关键字: {para_text[:100]}")
+                    codes = re.findall(r'\[INSERT_DOC:([^\]]+)\]', para_text)
+                    for code in codes:
+                        print(f"   ✅ 找到暗号: [INSERT_DOC:{code}]")
+                        paragraphs_to_process.append((para, code))
 
     if not paragraphs_to_process:
         print("   ℹ️ 未找到任何 [INSERT_DOC:xxx] 暗码")
