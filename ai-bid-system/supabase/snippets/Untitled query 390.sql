@@ -9,6 +9,8 @@ CREATE TABLE IF NOT EXISTS public.personnel_attachments (
 
   attachment_type TEXT NOT NULL CHECK (attachment_type IN (
     'id_card',
+    'id_card_front',
+    'id_card_back',
     'graduation_certificate',
     'degree_certificate',
     'title_certificate',

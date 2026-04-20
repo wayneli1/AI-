@@ -565,6 +565,8 @@ export default function CreateBid() {
             setDynamicTableEdits(edits.dynamicTableEdits || {});
             setDynamicTableImages(edits.dynamicTableImages || {});
             setSelectedPersonRoles(edits.selectedPersonRoles || {});
+            setFilledTableHtmls(edits.filledTableHtmls || {});
+            setManualFillModes(edits.manualFillModes || {});
           } else {
             // 旧格式：只有 manualEdits
             setManualEdits(edits);
@@ -597,6 +599,8 @@ export default function CreateBid() {
             dynamicTableEdits,
             dynamicTableImages,
             selectedPersonRoles,
+            filledTableHtmls,
+            manualFillModes,
           })
         }).eq('id', currentProjectId);
       } catch (error) {
@@ -605,7 +609,7 @@ export default function CreateBid() {
     }, 1500);
 
     return () => clearTimeout(debounceTimer);
-  }, [manualEdits, dynamicTableEdits, dynamicTableImages, selectedPersonRoles, currentProjectId, step]);
+  }, [manualEdits, dynamicTableEdits, dynamicTableImages, selectedPersonRoles, filledTableHtmls, manualFillModes, currentProjectId, step]);
 
   // 监听 productCompanyName 变化，加载该公司下的产品数据
   useEffect(() => {
@@ -1870,13 +1874,19 @@ export default function CreateBid() {
             table_id: parseInt(tableId),
             fill_mode: fillMode,
             filled_html: filledHtml,
-            append_images: dynamicTableImages[tableId] || [],
+            append_images_by_person: dynamicTableImages[tableId] || {},
           };
         })
         .filter(item => item && item.filled_html);
 
       console.log('🔍 动态表格数据:', dynamicTableDataList.length, '个表格');
       console.log('🔍 动态表格详情:', dynamicTableDataList);
+      dynamicTableDataList.forEach(item => {
+        const imgByPerson = item.append_images_by_person || {};
+        const totalImages = Object.values(imgByPerson).flat().length;
+        console.log(`🔍 表格 ${item.table_id} 图片数据:`, imgByPerson, `共 ${totalImages} 张`);
+      });
+      console.log('🔍 dynamicTableImages 原始状态:', dynamicTableImages);
 
       // 既没有服务手册，又没有动态表格 → 直接下载
       if (codesToResolve.size === 0 && dynamicTableDataList.length === 0) {
@@ -3129,7 +3139,20 @@ export default function CreateBid() {
                                         delete newSelections[personName];
                                         return { ...prev, [dt.tableId]: newSelections };
                                       });
-                                      
+                                       
+                                      setDynamicTableImages(prev => {
+                                        const tableImages = prev[dt.tableId];
+                                        if (!tableImages || !tableImages[personName]) return prev;
+                                        const newTableImages = { ...tableImages };
+                                        delete newTableImages[personName];
+                                        if (Object.keys(newTableImages).length === 0) {
+                                          const newImages = { ...prev };
+                                          delete newImages[dt.tableId];
+                                          return newImages;
+                                        }
+                                        return { ...prev, [dt.tableId]: newTableImages };
+                                      });
+                                       
                                       message.success(`已删除 ${personName} 的数据`);
                                     }}
                                   >
@@ -3218,10 +3241,13 @@ export default function CreateBid() {
                                 } catch (err) {
                                   console.warn(`查询人员 ${personName} 附件失败:`, err);
                                 }
-                                setDynamicTableImages(prev => ({
-                                  ...prev,
-                                  [dt.tableId]: [...(prev[dt.tableId] || []), ...allImages]
-                                }));
+                                 setDynamicTableImages(prev => ({
+                                   ...prev,
+                                   [dt.tableId]: {
+                                     ...(prev[dt.tableId] || {}),
+                                     [personName]: allImages
+                                   }
+                                 }));
 
                                 const newRows = [];
 
