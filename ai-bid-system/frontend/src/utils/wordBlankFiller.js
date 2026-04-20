@@ -672,15 +672,43 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
     pIdx++;
   }
 
-  for (const blank of blanks) {
+  console.log('🔧 [Blank替换] 开始替换，共', blanks.length, '个blank，倒序处理');
+  console.log('🔧 [Blank替换] XML段落总数:', paragraphs.length);
+
+  // 🔧 修复：倒序遍历blanks，从后往前替换，避免前面的替换影响后面blank的index
+  for (let i = blanks.length - 1; i >= 0; i--) {
+    const blank = blanks[i];
     const value = filledValues[blank.id];
     
-    if (value === undefined || value === null || value === '') continue;
-    if (processedIds.has(blank.id)) continue;
+    console.log(`\n📍 [${i}] 处理 ${blank.id}:`, {
+      paraIndex: blank.paraIndex,
+      index: blank.index,
+      type: blank.type,
+      matchText: blank.matchText?.substring(0, 20),
+      value: value?.substring(0, 30),
+      context: blank.context?.substring(0, 50)
+    });
+    
+    if (value === undefined || value === null || value === '') {
+      console.log('  ⏭️  跳过：无填充值');
+      continue;
+    }
+    if (processedIds.has(blank.id)) {
+      console.log('  ⏭️  跳过：已处理');
+      continue;
+    }
     processedIds.add(blank.id);
 
     const matchingParagraph = paragraphs.find(p => p.paraIndex === blank.paraIndex);
-    if (!matchingParagraph) continue;
+    if (!matchingParagraph) {
+      console.log('  ❌ 错误：找不到段落 paraIndex=', blank.paraIndex);
+      continue;
+    }
+
+    console.log('  ✅ 找到段落:', {
+      paraIndex: matchingParagraph.paraIndex,
+      text: matchingParagraph.text.substring(0, 60)
+    });
 
     const paraXml = matchingParagraph.xml;
     const isImage = isImageUrl(value) && imageRidMap && imageRidMap[blank.id];
@@ -706,10 +734,22 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
       const { nodes, fullText } = buildTextNodeMap(paraXml);
       let matchText = blank.matchText;
       
+      console.log('  🔍 文本定位:', {
+        fullText: fullText.substring(0, 80),
+        fullTextLength: fullText.length,
+        blankIndex: blank.index,
+        matchText: matchText?.substring(0, 20)
+      });
+      
       const searchBlank = { ...blank, matchText };
       let blankPos = findBlankInFullText(fullText, searchBlank);
       if (blankPos === -1 && Number.isInteger(blank.index) && blank.index >= 0 && blank.index <= fullText.length) {
         blankPos = blank.index;
+        console.log('  📌 使用 blank.index 作为定位:', blankPos);
+      } else if (blankPos !== -1) {
+        console.log('  📌 通过 matchText 找到位置:', blankPos);
+      } else {
+        console.log('  ⚠️  未找到位置，blankPos=-1');
       }
       
       if (blankPos === -1 || blank.type === 'attachment') {
@@ -779,6 +819,14 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
     }
 
     if (newParaXml !== matchingParagraph.xml) {
+      const oldText = getVisibleTextFromXml(matchingParagraph.xml);
+      const newText = getVisibleTextFromXml(newParaXml);
+      console.log('  ✅ 替换成功:', {
+        oldText: oldText.substring(0, 60),
+        newText: newText.substring(0, 60),
+        xmlLengthChange: newParaXml.length - matchingParagraph.xml.length
+      });
+      
       modifiedXml = modifiedXml.substring(0, matchingParagraph.start) + newParaXml + modifiedXml.substring(matchingParagraph.end);
       const diff = newParaXml.length - matchingParagraph.xml.length;
       paragraphs.forEach(p => {
@@ -786,9 +834,12 @@ export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap,
         else if (p.start === matchingParagraph.start) { p.xml = newParaXml; p.end = p.start + newParaXml.length; }
       });
       matchingParagraph.xml = newParaXml;
+    } else {
+      console.log('  ⚠️  段落XML未改变');
     }
   }
 
+  console.log('\n🎉 [Blank替换] 完成，共处理', processedIds.size, '个blank');
   return modifiedXml;
 }
 

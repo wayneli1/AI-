@@ -2,6 +2,7 @@ from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse
 from docx import Document
 from io import BytesIO
+from docx.text.paragraph import Paragraph  # 👈 新增这一行：引入 Paragraph 对象
 
 from schemas.response import (
     NormalBlank, DynamicTable, ManualTable, BlankCell, TableStructure, ParseResponse
@@ -34,13 +35,16 @@ async def parse_bid_docx(file: UploadFile = File(...)):
         doc = Document(BytesIO(contents))
         print(f"✅ [DEBUG] docx 文档解析成功")
     except Exception as e:
-        print(f"❌ [后端] 文件解析失败: {type(e).__name__}: {e}")
-        import traceback
-        traceback.print_exc()
+        # ... (报错处理) ...
         raise HTTPException(status_code=400, detail=f"文件解析失败: {str(e)}")
 
-    paragraphs = list(doc.paragraphs)
-    print(f"📄 [后端] 段落数: {len(paragraphs)}, 表格数: {len(doc.tables)}")
+    # ✅ 修改开始：强制获取 XML 中所有的 <w:p> 节点（包含表格内的段落，与前端正则行为保持绝对一致）
+    all_p_elements = doc._element.xpath('//w:p')
+    # 将 lxml 元素重新封装为 python-docx 的 Paragraph 对象
+    paragraphs = [Paragraph(p, doc._part) for p in all_p_elements]
+    # ✅ 修改结束
+
+    print(f"📄 [后端] 真实段落总数(含表格内): {len(paragraphs)}, 表格数: {len(doc.tables)}")
 
     normal_blanks_raw = scan_normal_blanks(paragraphs)
     normal_blanks = [NormalBlank(**b) for b in normal_blanks_raw]

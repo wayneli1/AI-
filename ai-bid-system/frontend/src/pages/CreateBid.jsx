@@ -1,11 +1,10 @@
-import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
+import React, { useRef, useCallback, useEffect, useMemo } from 'react';
 import { Alert, Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect, Select, Popconfirm } from 'antd';
 import {
   UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package, ShieldCheck, TriangleAlert
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import { useSearchParams } from 'react-router-dom';
-import { renderAsync } from 'docx-preview';
 import EditableHtmlTable from '../components/EditableHtmlTable';
 
 import { fillDocumentBlanks, reviewFilledBlanksWithAI } from '../utils/difyWorkflow';
@@ -23,398 +22,132 @@ import {
   callSmartFill
 } from '../utils/intelligentMapping';
 
-const DESKTOP_BREAKPOINT = 1280;
-const MIN_PREVIEW_PANEL_WIDTH = 360;
-const MAX_PREVIEW_PANEL_WIDTH = 960;
-const MIN_EDITOR_PANEL_WIDTH = 480;
-
-const normalizeAuditText = (value = '') => String(value || '').replace(/\s+/g, '').trim().toLowerCase();
-
-const deriveAuditFieldHint = (blank) => {
-  const rawHint = String(blank?.fieldHint || '').trim();
-  const localContext = String(blank?.markedContext || blank?.localContext || blank?.context || '');
-  const marker = '【🎯】';
-  const markerIndex = localContext.indexOf(marker);
-  const before = markerIndex >= 0 ? localContext.slice(0, markerIndex) : localContext;
-  const after = markerIndex >= 0 ? localContext.slice(markerIndex + marker.length) : '';
-
-  // 1. 冒号就近匹配
-  const lastColonMatch = before.match(/([^：:，。,；;（）()\n]{1,24})[：:]\s*$/);
-  if (lastColonMatch?.[1]) {
-    return lastColonMatch[1].replace(/[_－\-\s]+/g, '').trim();
-  }
-
-  // 🐛 核心修复：处理特殊倒装句式（无冒号，且真实含义向后倒装）
-  const cleanBefore = before.replace(/[_－\-\s]+/g, '');
-  const cleanAfter = after.replace(/[_－\-\s]+/g, '');
-  
-  // 句式 1："系 [公司名称] 的法定代表人"
-  if (/(?:系|是|为)$/.test(cleanBefore) && /^的?(?:法定代表人|法人代表|法人|委托代理人|授权代表)/.test(cleanAfter)) {
-    return '投标人名称'; 
-  }
-  // 句式 2："( [公司名称] ) 法定代表人"
-  if (cleanBefore.endsWith('（') || cleanBefore.endsWith('(')) {
-    if (/^(?:法定代表人|法人代表|法人|委托代理人|授权代表)/.test(cleanAfter)) {
-      return '投标人名称'; 
-    }
-  }
-
-  // 2. 关键词模糊距离匹配
-  const nearestBefore = [...before.matchAll(/(单位名称|投标人名称|供应商名称|报价人单位名称|法定代表人姓名|法定代表人|被授权人姓名|被授权人|委托代理人|授权代表|姓名|性别|年龄|职务|身份证号码|身份证号|联系电话|电子邮箱|开户地址|联系地址|注册地址|详细通讯地址|地址|邮编|开户行|银行账号|统一社会信用代码|项目名称|项目|报价|版本号|型号)/g)];
-  
-  // 稍微放宽向后匹配的条件，允许带一点点介词或符号
-  const nearestAfter = after.match(/^.{0,3}?(单位名称|投标人名称|供应商名称|报价人单位名称|法定代表人姓名|法定代表人|被授权人姓名|被授权人|委托代理人|授权代表|姓名|性别|年龄|职务|身份证号码|身份证号|联系电话|电子邮箱|开户地址|联系地址|注册地址|详细通讯地址|地址|邮编|开户行|银行账号|统一社会信用代码|项目名称|项目|报价|版本号|型号)/);
-
-  const candidate = nearestAfter?.[1] || nearestBefore.at(-1)?.[1] || rawHint;
-  if (/开户地址|联系地址|注册地址|详细通讯地址/.test(candidate)) return '地址';
-  if (/报价人单位名称|投标人名称|供应商名称|单位名称|公司名称/.test(candidate)) return '投标人名称';
-  if (/法定代表人姓名|法定代表人/.test(candidate)) return '法定代表人信息';
-  if (/被授权人姓名|被授权人|委托代理人|授权代表/.test(candidate)) return '被授权人信息';
-  if (/身份证号码|身份证号/.test(candidate)) return '身份证号码';
-  if (/联系电话/.test(candidate)) return '电话';
-  if (/电子邮箱/.test(candidate)) return '邮箱';
-  return candidate;
-};
-
-const getRuleSuggestion = (blank, company) => {
-  if (!blank || !company) return '';
-  const hint = deriveAuditFieldHint(blank);
-  if (/投标人名称|单位名称|公司名称/.test(hint)) return company.company_name || '';
-  if (/法定代表人信息|法定代表人姓名|姓名/.test(hint)) return company.legal_rep_name || '';
-  if (/被授权人信息|委托代理人|授权代表/.test(hint)) return company.legal_rep_name || '';
-  if (/性别/.test(hint)) return company.gender || '';
-  if (/职务/.test(hint)) return company.position || '';
-  if (/身份证号码|身份证号/.test(hint)) return company.id_number || '';
-  if (/电话|联系电话|联系方式/.test(hint)) return company.phone || '';
-  if (/邮箱|电子邮箱/.test(hint)) return company.email || '';
-  if (/地址|联系地址|通讯地址/.test(hint)) return company.address || '';
-  if (/统一社会信用代码|信用代码/.test(hint)) return company.uscc || '';
-  return '';
-};
-
-const validateFilledBlanksWithRules = (blanks = [], values = {}, company = null) => {
-  const results = {};
-
-  blanks.forEach((blank) => {
-    const value = String(values[blank.id] || '').trim();
-    if (!value) return;
-
-    const hint = deriveAuditFieldHint(blank);
-    const normalizedValue = normalizeAuditText(value);
-    const normalizedCompanyName = normalizeAuditText(company?.company_name || '');
-    const result = {
-      blankId: blank.id,
-      fieldHint: hint || '未命名字段',
-      status: 'pass',
-      source: 'rule',
-      reason: '规则校验通过',
-      suggestedValue: ''
-    };
-
-    const companyLikeInWrongField = normalizedCompanyName && normalizedValue === normalizedCompanyName && !/投标人名称|单位名称|公司名称/.test(hint);
-    if (companyLikeInWrongField) {
-      result.status = 'error';
-      result.reason = `${hint || '该字段'} 不应填写为公司名称`;
-      result.suggestedValue = getRuleSuggestion(blank, company);
-      results[blank.id] = result;
-      return;
-    }
-
-    if (/性别/.test(hint)) {
-      if (!['男', '女'].includes(value)) {
-        result.status = 'error';
-        result.reason = '性别字段只能填写“男”或“女”';
-        result.suggestedValue = company?.gender || '';
-      }
-    } else if (/年龄/.test(hint)) {
-      if (!/^\d{1,3}$/.test(value)) {
-        result.status = 'warning';
-        result.reason = '年龄字段建议填写纯数字';
-      }
-    } else if (/邮箱|电子邮箱/.test(hint)) {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) {
-        result.status = 'error';
-        result.reason = '邮箱格式不正确';
-        result.suggestedValue = company?.email || '';
-      }
-    } else if (/身份证号码|身份证号/.test(hint)) {
-      if (!/^(\d{17}[\dXx]|\d{15})$/.test(value)) {
-        result.status = 'error';
-        result.reason = '身份证号码格式不正确';
-        result.suggestedValue = company?.id_number || '';
-      }
-    } else if (/电话|联系电话|联系方式/.test(hint)) {
-      if (!/^[\d\-+()\s]{7,20}$/.test(value)) {
-        result.status = 'warning';
-        result.reason = '联系电话格式看起来不合理';
-        result.suggestedValue = company?.phone || '';
-      }
-    } else if (/统一社会信用代码|信用代码/.test(hint)) {
-      if (!/^[0-9A-Z]{18}$/.test(value.toUpperCase())) {
-        result.status = 'error';
-        result.reason = '统一社会信用代码格式不正确';
-        result.suggestedValue = company?.uscc || '';
-      }
-    } else if (/投标人名称|单位名称|公司名称/.test(hint)) {
-      if (normalizedCompanyName && normalizedValue !== normalizedCompanyName) {
-        result.status = 'warning';
-        result.reason = '单位名称与当前投标主体档案不一致';
-        result.suggestedValue = company?.company_name || '';
-      }
-    } else if (/法定代表人信息|法定代表人姓名|姓名/.test(hint)) {
-      const normalizedLegalRep = normalizeAuditText(company?.legal_rep_name || '');
-      if (normalizedLegalRep && normalizedValue !== normalizedLegalRep) {
-        result.status = 'warning';
-        result.reason = '姓名与当前投标主体档案中的法定代表人不一致';
-        result.suggestedValue = company?.legal_rep_name || '';
-      }
-    }
-
-    results[blank.id] = result;
-  });
-
-  return results;
-};
-
-const mergeAuditResults = (blanks = [], values = {}, ruleResults = {}, aiResults = {}) => {
-  return blanks
-    .filter((blank) => values[blank.id])
-    .map((blank) => {
-      const ruleResult = ruleResults[blank.id] || null;
-      const aiResult = aiResults[blank.id] || null;
-      let status = 'pass';
-      if (ruleResult?.status === 'error' || aiResult?.status === 'error') status = 'error';
-      else if (ruleResult?.status === 'warning' || aiResult?.status === 'warning') status = 'warning';
-
-      return {
-        blankId: blank.id,
-        fieldHint: deriveAuditFieldHint(blank) || blank.fieldHint || '未命名字段',
-        localContext: blank.localContext || blank.context || '',
-        value: values[blank.id] || '',
-        status,
-        ruleResult,
-        aiResult,
-        suggestedValue: aiResult?.suggestedValue || ruleResult?.suggestedValue || ''
-      };
-    });
-};
-
-const summarizeAuditResults = (results = []) => ({
-  total: results.length,
-  pass: results.filter((item) => item.status === 'pass').length,
-  warning: results.filter((item) => item.status === 'warning').length,
-  error: results.filter((item) => item.status === 'error').length,
-  suggested: results.filter((item) => item.suggestedValue).length
-});
+// 导入拆分的模块
+import { useCreateBidState } from '../hooks/useCreateBidState';
+import { useProductManagement } from '../hooks/useProductManagement';
+import { usePreviewPanel } from '../hooks/usePreviewPanel';
+import { useProjectLoader } from '../hooks/useProjectLoader';
+import {
+  deriveAuditFieldHint,
+  getRuleSuggestion,
+  validateFilledBlanksWithRules,
+  mergeAuditResults,
+  summarizeAuditResults
+} from '../utils/createBidHelpers';
+import { appendPersonRowToTable, getEffectiveFillMode } from '../utils/tableHelpers';
 
 export default function CreateBid() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const urlProjectId = searchParams.get('id');
 
-  const [step, setStep] = useState('upload');
+  // 使用状态管理Hook
+  const state = useCreateBidState();
+  const {
+    step, setStep,
+    originalFile, setOriginalFile,
+    originalZip, setOriginalZip,
+    originalXml, setOriginalXml,
+    scannedBlanks, setScannedBlanks,
+    manualEdits, setManualEdits,
+    targetCompany, setTargetCompany,
+    isCompanyModalVisible, setIsCompanyModalVisible,
+    companyList, setCompanyList,
+    fetchingCompanies, setFetchingCompanies,
+    companyProfiles, setCompanyProfiles,
+    selectedCompany, setSelectedCompany,
+    tempSelectedCompany, setTempSelectedCompany,
+    tempKbName, setTempKbName,
+    tenderContext, setTenderContext,
+    isContextModalVisible, setIsContextModalVisible,
+    isExtractingTender, setIsExtractingTender,
+    selectedProductIds, setSelectedProductIds,
+    selectedServiceManualIds, setSelectedServiceManualIds,
+    productTreeData, setProductTreeData,
+    loadingProducts, setLoadingProducts,
+    productCompanyName, setProductCompanyName,
+    templateSlots, setTemplateSlots,
+    templateSlotAssets, setTemplateSlotAssets,
+    templateSlotSamples, setTemplateSlotSamples,
+    isScanning, setIsScanning,
+    isFilling, setIsFilling,
+    isAuditing, setIsAuditing,
+    currentProjectId, setCurrentProjectId,
+    imageUrlMap, setImageUrlMap,
+    auditResults, setAuditResults,
+    normalBlanks, setNormalBlanks,
+    dynamicTables, setDynamicTables,
+    manualTables, setManualTables,
+    tableStructures, setTableStructures,
+    parseMeta, setParseMeta,
+    dynamicTableEdits, setDynamicTableEdits,
+    isTableModalVisible, setIsTableModalVisible,
+    dynamicTableImages, setDynamicTableImages,
+    personnelProfiles, setPersonnelProfiles,
+    selectedPersonRoles, setSelectedPersonRoles,
+    tempPersonSelection, setTempPersonSelection,
+    filledTableHtmls, setFilledTableHtmls,
+    manualFillModes, setManualFillModes,
+  } = state;
+
+  // 使用产品管理Hook
+  const { normalizeProductName, fuzzyMatchPlaceholder, buildPlaceholderRegex } = useProductManagement();
+
+  // 使用预览面板Hook
+  const {
+    highlightBlankId,
+    setHighlightBlankId,
+    previewRef,
+    previewScrollRef,
+    isRenderingPreview,
+    previewError,
+    isDesktopViewport,
+    isResizingPreview,
+    previewPanelWidth,
+    scrollToBlank,
+    handlePreviewResizeStart,
+  } = usePreviewPanel(originalFile, step, scannedBlanks, manualEdits);
+
+  // 使用项目加载Hook
+  useProjectLoader(
+    urlProjectId,
+    user,
+    currentProjectId,
+    step,
+    manualEdits,
+    dynamicTableEdits,
+    dynamicTableImages,
+    selectedPersonRoles,
+    filledTableHtmls,
+    manualFillModes,
+    setCurrentProjectId,
+    setOriginalFile,
+    setOriginalXml,
+    setOriginalZip,
+    setScannedBlanks,
+    setDynamicTables,
+    setManualTables,
+    setTableStructures,
+    setParseMeta,
+    setManualEdits,
+    setDynamicTableEdits,
+    setDynamicTableImages,
+    setSelectedPersonRoles,
+    setFilledTableHtmls,
+    setManualFillModes,
+    setAuditResults,
+    setStep
+  );
+
   const fileInputRef = useRef(null);
-
-  const [originalFile, setOriginalFile] = useState(null);
-  const [originalZip, setOriginalZip] = useState(null);
-  const [originalXml, setOriginalXml] = useState('');
-  const [scannedBlanks, setScannedBlanks] = useState([]);
-  const [manualEdits, setManualEdits] = useState({});
-
-  const [targetCompany, setTargetCompany] = useState('');
-  const [isCompanyModalVisible, setIsCompanyModalVisible] = useState(false);
-  const [companyList, setCompanyList] = useState([]);
-  const [fetchingCompanies, setFetchingCompanies] = useState(false);
-  const [companyProfiles, setCompanyProfiles] = useState([]);
-  const [selectedCompany, setSelectedCompany] = useState(null);
-  const [tempSelectedCompany, setTempSelectedCompany] = useState(null);
-  const [tempKbName, setTempKbName] = useState('');
-
-  const [tenderContext, setTenderContext] = useState(''); 
-  const [isContextModalVisible, setIsContextModalVisible] = useState(false);
   const tenderFileInputRef = useRef(null);
-  const [isExtractingTender, setIsExtractingTender] = useState(false);
-
-  // 产品资产库相关状态
-  const [selectedProductIds, setSelectedProductIds] = useState([]);
-  const [selectedServiceManualIds, setSelectedServiceManualIds] = useState([]);
-  const [productTreeData, setProductTreeData] = useState([]);
-  const [loadingProducts, setLoadingProducts] = useState(false);
-  const [productCompanyName, setProductCompanyName] = useState('');
-
-  const [templateSlots, setTemplateSlots] = useState([]);
-  const [templateSlotAssets, setTemplateSlotAssets] = useState([]);
-  const [templateSlotSamples, setTemplateSlotSamples] = useState([]);
-
-  const [isScanning, setIsScanning] = useState(false);
-  const [isFilling, setIsFilling] = useState(false);
-  const [isAuditing, setIsAuditing] = useState(false);
-  const [currentProjectId, setCurrentProjectId] = useState(null);
-  const [imageUrlMap, setImageUrlMap] = useState({}); // 保存占位符到URL的映射
-  const [auditResults, setAuditResults] = useState([]);
-
-  // 后端解析结果 - 三桶数据
-  const [normalBlanks, setNormalBlanks] = useState([]);
-  const [dynamicTables, setDynamicTables] = useState([]);
-  const [manualTables, setManualTables] = useState([]);
-  const [tableStructures, setTableStructures] = useState([]);
-  const [parseMeta, setParseMeta] = useState(null);
-  const [dynamicTableEdits, setDynamicTableEdits] = useState({});
-  const [isTableModalVisible, setIsTableModalVisible] = useState(false);
-  const [dynamicTableImages, setDynamicTableImages] = useState({});
-  const [personnelProfiles, setPersonnelProfiles] = useState([]);
-  const [selectedPersonRoles, setSelectedPersonRoles] = useState({}); // { [tableId]: { personName: positionName } }
-  const [tempPersonSelection, setTempPersonSelection] = useState({}); // { [tableId]: personName }
-  const [filledTableHtmls, setFilledTableHtmls] = useState({}); // 🆕 存储Dify返回的填充后HTML表格 { tableId: { personName: "<table>...</table>" } }
-  const [manualFillModes, setManualFillModes] = useState({}); // 🆕 用户手动选择的表格类型 { [tableId]: 'multi_person' | 'single_person_detail' }
-
-  // 标准化产品名称：处理中英文混合的空格问题
-  const normalizeProductName = useCallback((name) => {
-    if (!name || typeof name !== 'string') return '';
-    // 1. 统一处理连字符前后的空格
-    let normalized = name.replace(/\s*-\s*/g, '-');
-    // 2. 移除所有空格
-    normalized = normalized.replace(/\s+/g, '');
-    // 3. 在英文单词和中文之间添加空格
-    normalized = normalized.replace(/([a-zA-Z])([\u4e00-\u9fa5])/g, '$1 $2');
-    normalized = normalized.replace(/([\u4e00-\u9fa5])([a-zA-Z])/g, '$1 $2');
-    // 4. 在英文单词和数字之间添加空格
-    normalized = normalized.replace(/([a-zA-Z])(\d)/g, '$1 $2');
-    normalized = normalized.replace(/(\d)([a-zA-Z])/g, '$1 $2');
-    // 5. 移除多余空格，保留单词间单个空格
-    return normalized.replace(/\s+/g, ' ').trim();
-  }, []);
-
-  // 模糊匹配占位符：标准化后进行比较
-  const fuzzyMatchPlaceholder = useCallback((value, placeholder) => {
-    if (!value || !placeholder) return false;
-    const normalizedValue = normalizeProductName(value);
-    const normalizedPlaceholder = normalizeProductName(placeholder);
-    return normalizedValue.includes(normalizedPlaceholder);
-  }, [normalizeProductName]);
-
-  // 构建占位符正则表达式
-  const buildPlaceholderRegex = useCallback((placeholder) => {
-    // 转义特殊字符
-    const escaped = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    // 将空格替换为 \\s*（允许0个或多个空格）
-    const pattern = escaped.replace(/\\s+/g, '\\\\s*');
-    return new RegExp(pattern, 'g');
-  }, []);
-
-  const [highlightBlankId, setHighlightBlankId] = useState(null);
-  const previewRef = useRef(null);
-  const previewScrollRef = useRef(null);
-  const previewResizeStateRef = useRef({ startX: 0, startWidth: 0 });
-  const [isRenderingPreview, setIsRenderingPreview] = useState(false);
-  const [previewError, setPreviewError] = useState('');
-  const [isDesktopViewport, setIsDesktopViewport] = useState(() => window.innerWidth >= DESKTOP_BREAKPOINT);
-  const [isResizingPreview, setIsResizingPreview] = useState(false);
-  const [previewPanelWidth, setPreviewPanelWidth] = useState(() => {
-    const viewportWidth = window.innerWidth;
-    const maxWidth = Math.min(MAX_PREVIEW_PANEL_WIDTH, viewportWidth - MIN_EDITOR_PANEL_WIDTH);
-    const defaultWidth = Math.round(viewportWidth * 0.48);
-    return Math.min(Math.max(defaultWidth, MIN_PREVIEW_PANEL_WIDTH), maxWidth);
-  });
-
-  const clampPreviewPanelWidth = useCallback((nextWidth, viewportWidth = window.innerWidth) => {
-    const maxWidth = Math.max(
-      MIN_PREVIEW_PANEL_WIDTH,
-      Math.min(MAX_PREVIEW_PANEL_WIDTH, viewportWidth - MIN_EDITOR_PANEL_WIDTH)
-    );
-    return Math.min(Math.max(nextWidth, MIN_PREVIEW_PANEL_WIDTH), maxWidth);
-  }, []);
 
   /**
    * 获取表格的实际填充模式（优先使用用户手动选择的值）
-   * @param {number} tableId - 表格ID
-   * @returns {string} 'multi_person' 或 'single_person_detail'
    */
-  const getEffectiveFillMode = useCallback((tableId) => {
-    const table = dynamicTables.find(t => t.tableId === tableId);
-    return manualFillModes[tableId] || table?.fillMode || 'multi_person';
+  const getEffectiveFillModeWrapper = useCallback((tableId) => {
+    return getEffectiveFillMode(tableId, manualFillModes, dynamicTables);
   }, [manualFillModes, dynamicTables]);
-
-  /**
-   * 将新人员的数据行追加到累积表格中（汇总表模式）
-   * @param {string} accumulatedHtml - 累积的表格HTML
-   * @param {string} newPersonHtml - Dify返回的新人员表格HTML
-   * @param {string} personName - 人员姓名（用于日志）
-   * @returns {string} 更新后的表格HTML
-   */
-  const appendPersonRowToTable = useCallback((accumulatedHtml, newPersonHtml, personName) => {
-    const parser = new DOMParser();
-    
-    // 解析累积表格
-    const accDoc = parser.parseFromString(accumulatedHtml, 'text/html');
-    const accTable = accDoc.querySelector('table');
-    
-    // 解析新人员表格
-    const newDoc = parser.parseFromString(newPersonHtml, 'text/html');
-    const newTable = newDoc.querySelector('table');
-    
-    if (!accTable || !newTable) {
-      console.error('表格解析失败');
-      return accumulatedHtml;
-    }
-    
-    // 提取新表格的第1行数据（跳过表头第0行）
-    const newRows = Array.from(newTable.querySelectorAll('tr'));
-    if (newRows.length < 2) {
-      console.error('新表格没有数据行');
-      return accumulatedHtml;
-    }
-    
-    const dataRow = newRows[1];  // 第1行是数据行
-    
-    // 检查是否有实际数据（不是全[空白]）
-    const hasData = Array.from(dataRow.querySelectorAll('td')).some(td => {
-      const text = td.textContent.trim();
-      return text && text !== '[空白]';
-    });
-    
-    if (!hasData) {
-      console.warn(`${personName} 的数据行全是[空白]，跳过追加`);
-      return accumulatedHtml;
-    }
-    
-    // 在累积表格中找到第一个全[空白]的行，替换它
-    const accRows = Array.from(accTable.querySelectorAll('tr'));
-    let inserted = false;
-    
-    for (let i = 1; i < accRows.length; i++) {  // 跳过表头
-      const row = accRows[i];
-      const cells = Array.from(row.querySelectorAll('td'));
-      const isBlankRow = cells.every(td => {
-        const text = td.textContent.trim();
-        return !text || text === '[空白]';
-      });
-      
-      if (isBlankRow) {
-        // 替换这一行
-        const clonedRow = dataRow.cloneNode(true);
-        row.parentNode.replaceChild(clonedRow, row);
-        console.log(`✅ ${personName} 的数据已插入到第 ${i} 行`);
-        inserted = true;
-        break;
-      }
-    }
-    
-    if (!inserted) {
-      // 如果没有空白行，直接追加到表格末尾
-      const clonedRow = dataRow.cloneNode(true);
-      accTable.appendChild(clonedRow);
-      console.log(`✅ ${personName} 的数据已追加到表格末尾`);
-    }
-    
-    return accTable.outerHTML;
-  }, []);
-
-  useEffect(() => {
-    if (urlProjectId && user) {
-      loadExistingProject(urlProjectId);
-    }
-  }, [urlProjectId, user]);
 
   useEffect(() => {
     if (!user) return;
@@ -428,188 +161,6 @@ export default function CreateBid() {
     };
     fetchPersonnel();
   }, [user]);
-
-  useEffect(() => {
-    const handleWindowResize = () => {
-      const viewportWidth = window.innerWidth;
-      setIsDesktopViewport(viewportWidth >= DESKTOP_BREAKPOINT);
-      setPreviewPanelWidth((currentWidth) => clampPreviewPanelWidth(currentWidth, viewportWidth));
-    };
-
-    window.addEventListener('resize', handleWindowResize);
-    return () => window.removeEventListener('resize', handleWindowResize);
-  }, [clampPreviewPanelWidth]);
-
-  useEffect(() => {
-    if (!isResizingPreview) return undefined;
-
-    const handleMouseMove = (event) => {
-      const { startX, startWidth } = previewResizeStateRef.current;
-      const deltaX = event.clientX - startX;
-      setPreviewPanelWidth(clampPreviewPanelWidth(startWidth + deltaX));
-    };
-
-    const stopResize = () => {
-      setIsResizingPreview(false);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', stopResize);
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', stopResize);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [clampPreviewPanelWidth, isResizingPreview]);
-
-  useEffect(() => {
-    const container = previewRef.current;
-    if (!container) return undefined;
-
-    if (!originalFile || (step !== 'scan' && step !== 'review')) {
-      container.innerHTML = '';
-      setPreviewError('');
-      setIsRenderingPreview(false);
-      return undefined;
-    }
-
-    let cancelled = false;
-
-    const renderPreview = async () => {
-      setIsRenderingPreview(true);
-      setPreviewError('');
-
-      try {
-        const arrayBuffer = await originalFile.arrayBuffer();
-        if (cancelled) return;
-
-        container.innerHTML = '';
-        await renderAsync(arrayBuffer, container, null, {
-          className: 'docx-preview-render',
-          ignoreWidth: false,
-          ignoreHeight: true,
-          inWrapper: true,
-          breakPages: true,
-          useBase64URL: true,
-          renderHeaders: true,
-          renderFooters: true,
-          renderFootnotes: true,
-          renderEndnotes: true
-        });
-      } catch (error) {
-        if (!cancelled) {
-          console.error('原文预览渲染失败:', error);
-          setPreviewError('原文预览渲染失败，请重新上传后重试');
-        }
-      } finally {
-        if (!cancelled) {
-          setIsRenderingPreview(false);
-        }
-      }
-    };
-
-    renderPreview();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [originalFile, step]);
-
-  const loadExistingProject = async (id) => {
-    try {
-      message.loading({ content: '正在从云端恢复标书数据...', key: 'load', duration: 0 });
-      const { data, error } = await supabase.from('bidding_projects').select('*').eq('id', id).single();
-      if (error) throw error;
-
-      if (data) {
-        setCurrentProjectId(data.id);
-        
-        if (data.file_url) {
-          const response = await fetch(data.file_url);
-          const blob = await response.blob();
-          const file = new File([blob], `${data.project_name}.docx`, { 
-            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' 
-          });
-          setOriginalFile(file);
-          
-          const { xmlString, zip } = await extractDocumentXml(file);
-          setOriginalXml(xmlString);
-          setOriginalZip(zip);
-        }
-
-        if (data.framework_content) {
-          const parsed = JSON.parse(data.framework_content);
-          if (Array.isArray(parsed)) {
-            const blanks = filterIgnoredBlanks(parsed);
-            setScannedBlanks(blanks);
-          } else {
-            setScannedBlanks(parsed.normalBlanks || []);
-            setDynamicTables(parsed.dynamicTables || []);
-            setManualTables(parsed.manualTables || []);
-            setTableStructures(parsed.tableStructures || []);
-            setParseMeta(parsed.meta || null);
-          }
-        }
-
-        if (data.analysis_report) {
-          const edits = JSON.parse(data.analysis_report);
-          if (edits && typeof edits === 'object' && !Array.isArray(edits) && edits.manualEdits !== undefined) {
-            // 新格式：包含 manualEdits + dynamicTableEdits
-            setManualEdits(edits.manualEdits || {});
-            setDynamicTableEdits(edits.dynamicTableEdits || {});
-            setDynamicTableImages(edits.dynamicTableImages || {});
-            setSelectedPersonRoles(edits.selectedPersonRoles || {});
-            setFilledTableHtmls(edits.filledTableHtmls || {});
-            setManualFillModes(edits.manualFillModes || {});
-          } else {
-            // 旧格式：只有 manualEdits
-            setManualEdits(edits);
-          }
-          setAuditResults([]);
-          setStep('review'); 
-        } else if (data.framework_content) {
-          setStep('scan'); 
-        } else {
-          setStep('upload');
-        }
-
-        message.success({ content: '项目恢复成功！', key: 'load' });
-      }
-    } catch (err) {
-      console.error("加载历史项目失败:", err);
-      message.error({ content: '恢复项目失败，可能文件已损坏', key: 'load' });
-      setStep('upload');
-    }
-  };
-
-  useEffect(() => {
-    if (!currentProjectId || step === 'upload') return;
-
-    const debounceTimer = setTimeout(async () => {
-      try {
-        await supabase.from('bidding_projects').update({ 
-          analysis_report: JSON.stringify({
-            manualEdits,
-            dynamicTableEdits,
-            dynamicTableImages,
-            selectedPersonRoles,
-            filledTableHtmls,
-            manualFillModes,
-          })
-        }).eq('id', currentProjectId);
-      } catch (error) {
-        console.error('自动保存失败:', error);
-      }
-    }, 1500);
-
-    return () => clearTimeout(debounceTimer);
-  }, [manualEdits, dynamicTableEdits, dynamicTableImages, selectedPersonRoles, filledTableHtmls, manualFillModes, currentProjectId, step]);
 
   // 监听 productCompanyName 变化，加载该公司下的产品数据
   useEffect(() => {
@@ -896,323 +447,6 @@ export default function CreateBid() {
     setSelectedProductIds(productIds);
     setSelectedServiceManualIds(serviceManualIds);
   }, []);
-
-  const getPreviewLocatorText = useCallback((blank) => {
-    if (!blank) return '';
-
-    if (blank.type === 'empty_cell') {
-      return (blank._cellLabel || blank.context || '').replace('：[空白单元格]', '').trim();
-    }
-
-    if (blank.context && blank.matchText) {
-      const contextWithoutBlank = blank.context.replace(blank.matchText, ' ').replace(/\s+/g, ' ').trim();
-      if (contextWithoutBlank) return contextWithoutBlank;
-    }
-
-    if (blank.matchText && !/^\s+$/.test(blank.matchText) && blank.matchText !== '[空白单元格]') {
-      return blank.matchText.trim();
-    }
-
-    return (blank.context || '').trim();
-  }, []);
-
-  const normalizePreviewText = useCallback((text) => {
-    return (text || '').replace(/\s+/g, ' ').trim();
-  }, []);
-
-  const collectPreviewCandidates = useCallback((container) => {
-    const selector = 'span, p, td, th, div, li';
-    const rawCandidates = Array.from(container.querySelectorAll(selector))
-      .map((node, index) => ({ node, text: normalizePreviewText(node.textContent), index }))
-      .filter(({ text }) => text && text.length <= 400);
-
-    return rawCandidates.filter(({ node, text }) => {
-      const duplicateDescendant = Array.from(node.querySelectorAll(selector)).some((child) => {
-        if (child === node) return false;
-        return normalizePreviewText(child.textContent) === text;
-      });
-      return !duplicateDescendant;
-    });
-  }, [normalizePreviewText]);
-
-  const getPreviewAnchorTokens = useCallback((blank) => {
-    if (!blank) return [];
-
-    const tokens = [];
-    const locatorText = getPreviewLocatorText(blank);
-    const cleanContext = normalizePreviewText(blank.context || '');
-    const cleanMatchText = normalizePreviewText(blank.matchText || '');
-
-    if (blank.type === 'empty_cell') {
-      const label = normalizePreviewText((blank._cellLabel || '').replace('：[空白单元格]', ''));
-      if (label) tokens.push(label);
-
-      if (label.includes('（项：')) {
-        const parts = label.replace('）', '').split('（项：').map((part) => normalizePreviewText(part));
-        parts.forEach((part) => {
-          if (part) tokens.push(part);
-        });
-      }
-    }
-
-    if (cleanMatchText && cleanMatchText !== '[空白单元格]' && !/^_+$/.test(cleanMatchText) && !/^-+$/.test(cleanMatchText)) {
-      tokens.push(cleanMatchText);
-    }
-
-    if (locatorText) tokens.push(normalizePreviewText(locatorText));
-    if (cleanContext) tokens.push(cleanContext);
-
-    return [...new Set(tokens)].filter((token) => token && token.length >= 2);
-  }, [getPreviewLocatorText, normalizePreviewText]);
-
-  const getBlankDisplayName = useCallback((blank) => {
-    if (!blank) return '';
-    if (blank._cellLabel) return blank._cellLabel;
-    const locatorText = getPreviewLocatorText(blank);
-    if (locatorText) return locatorText;
-    return normalizePreviewText(blank.context || blank.matchText || blank.id);
-  }, [getPreviewLocatorText, normalizePreviewText]);
-
-  const clearPreviewAnchors = useCallback(() => {
-    const container = previewRef.current;
-    if (!container) return;
-
-    container.querySelectorAll('[data-preview-blank-ids]').forEach((node) => {
-      node.removeAttribute('data-preview-blank-ids');
-      node.removeAttribute('data-preview-primary-blank-id');
-      node.classList.remove('preview-blank-anchor', 'preview-blank-anchor-active');
-      node.style.cursor = '';
-      node.style.transition = '';
-      node.style.borderRadius = '';
-      node.style.backgroundColor = '';
-      node.style.boxShadow = '';
-      node.onclick = null;
-      node.onkeydown = null;
-    });
-  }, []);
-
-  const applyPreviewAnchorStyles = useCallback(() => {
-    const container = previewRef.current;
-    if (!container) return;
-
-    container.querySelectorAll('[data-preview-blank-ids]').forEach((node) => {
-      const ids = (node.getAttribute('data-preview-blank-ids') || '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-
-      const relatedBlanks = ids
-        .map((id) => scannedBlanks.find((blank) => blank.id === id))
-        .filter(Boolean);
-
-      const hasFilled = relatedBlanks.some((blank) => !!manualEdits[blank.id]);
-      const hasPending = relatedBlanks.some((blank) => !manualEdits[blank.id]);
-      const isActive = highlightBlankId && ids.includes(highlightBlankId);
-
-      node.style.cursor = 'pointer';
-      node.style.transition = 'background-color 0.2s ease, box-shadow 0.2s ease';
-      node.style.borderRadius = '6px';
-
-      if (isActive) {
-        node.style.backgroundColor = 'rgba(224, 231, 255, 0.85)';
-        node.style.boxShadow = 'inset 0 0 0 2px rgba(79, 70, 229, 0.85), 0 0 0 3px rgba(165, 180, 252, 0.45)';
-        return;
-      }
-
-      if (hasFilled && !hasPending) {
-        node.style.backgroundColor = 'rgba(220, 252, 231, 0.75)';
-        node.style.boxShadow = 'inset 0 0 0 1px rgba(34, 197, 94, 0.55)';
-        return;
-      }
-
-      node.style.backgroundColor = 'rgba(254, 240, 138, 0.55)';
-      node.style.boxShadow = 'inset 0 0 0 1px rgba(245, 158, 11, 0.55)';
-    });
-  }, [highlightBlankId, manualEdits, scannedBlanks]);
-
-  const resolvePreviewBlankId = useCallback((anchor) => {
-    if (!anchor) return '';
-
-    const blankIds = (anchor.getAttribute('data-preview-blank-ids') || '')
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean);
-
-    if (blankIds.length === 0) return '';
-    if (highlightBlankId && blankIds.includes(highlightBlankId)) return highlightBlankId;
-
-    const primaryBlankId = anchor.getAttribute('data-preview-primary-blank-id');
-    if (primaryBlankId && blankIds.includes(primaryBlankId)) return primaryBlankId;
-
-    return blankIds.find((id) => scannedBlanks.some((blank) => blank.id === id)) || blankIds[0];
-  }, [highlightBlankId, scannedBlanks]);
-
-  const findPreviewAnchor = useCallback((blank) => {
-    const container = previewRef.current;
-    if (!container || !blank) return null;
-
-     const exactAnchor = container.querySelector(`[data-preview-blank-ids~="${blank.id}"]`) ||
-      Array.from(container.querySelectorAll('[data-preview-blank-ids]')).find((node) => {
-        const ids = (node.getAttribute('data-preview-blank-ids') || '').split(',').map((item) => item.trim());
-        return ids.includes(blank.id);
-      });
-    if (exactAnchor) return exactAnchor;
-
-    const locatorText = getPreviewLocatorText(blank);
-    if (!locatorText) return null;
-
-    const candidates = Array.from(
-      container.querySelectorAll('p, td, th, span, div, li')
-    );
-
-    return candidates.find((node) => {
-      const text = node.textContent?.replace(/\s+/g, ' ').trim();
-      return text && text.includes(locatorText) && text.length <= 300;
-    }) || null;
-  }, [getPreviewLocatorText]);
-
-  const scrollToTable = useCallback((blankId) => {
-    setHighlightBlankId(blankId);
-    setTimeout(() => {
-      const el = document.querySelector(`[data-row-key="${blankId}"]`);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('ring-2', 'ring-indigo-400');
-        const input = el.querySelector('input');
-        if (input) input.focus({ preventScroll: true });
-        setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-400'), 2000);
-      }
-    }, 100);
-  }, []);
-
-  const decoratePreviewAnchors = useCallback(() => {
-    const container = previewRef.current;
-    if (!container) return;
-
-    clearPreviewAnchors();
-    if (scannedBlanks.length === 0) return;
-
-    const candidates = collectPreviewCandidates(container);
-    const assignedOccurrenceCounts = new Map();
-
-    scannedBlanks.forEach((blank) => {
-      const tokens = getPreviewAnchorTokens(blank);
-      if (tokens.length === 0) return;
-
-      const sortedTokens = [...tokens].sort((a, b) => b.length - a.length);
-      const primaryToken = normalizePreviewText(sortedTokens[0]);
-      const blankKey = normalizePreviewText(getBlankDisplayName(blank) || primaryToken);
-      const blankOccurrence = assignedOccurrenceCounts.get(blankKey) || 0;
-
-      const matchedCandidates = [];
-
-      tokens.forEach((token, tokenIndex) => {
-        candidates.forEach(({ node, text, index }) => {
-          if (!text.includes(token)) return;
-
-          matchedCandidates.push({
-            node,
-            text,
-            index,
-            token,
-            score: token.length * 100 - text.length - tokenIndex * 10
-          });
-        });
-      });
-
-      const exactPrimaryCandidates = matchedCandidates
-        .filter(({ text }) => text === primaryToken)
-        .sort((a, b) => b.score - a.score || a.index - b.index);
-
-      let bestNode = exactPrimaryCandidates[blankOccurrence]?.node || null;
-
-      if (!bestNode) {
-        const rankedCandidates = matchedCandidates.sort((a, b) => b.score - a.score || a.index - b.index);
-        bestNode = rankedCandidates.find(({ node }) => !node.hasAttribute('data-preview-blank-ids'))?.node
-          || rankedCandidates[0]?.node
-          || null;
-      }
-
-      if (!bestNode) return;
-      assignedOccurrenceCounts.set(blankKey, blankOccurrence + 1);
-
-      const existingIds = (bestNode.getAttribute('data-preview-blank-ids') || '')
-        .split(',')
-        .map((item) => item.trim())
-        .filter(Boolean);
-
-      if (!existingIds.includes(blank.id)) {
-        existingIds.push(blank.id);
-      }
-
-      bestNode.setAttribute('data-preview-blank-ids', existingIds.join(','));
-      if (!bestNode.getAttribute('data-preview-primary-blank-id')) {
-        bestNode.setAttribute('data-preview-primary-blank-id', blank.id);
-      }
-      const titleText = existingIds
-        .map((id) => scannedBlanks.find((item) => item.id === id))
-        .filter(Boolean)
-        .map((item) => getBlankDisplayName(item))
-        .filter(Boolean)
-        .join('\n');
-      bestNode.setAttribute('title', titleText || getBlankDisplayName(blank));
-      bestNode.setAttribute('tabindex', '0');
-      bestNode.setAttribute('role', 'button');
-      bestNode.classList.add('preview-blank-anchor');
-      bestNode.style.cursor = 'pointer';
-      bestNode.onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const targetBlankId = resolvePreviewBlankId(bestNode);
-        if (targetBlankId) {
-          scrollToTable(targetBlankId);
-        }
-      };
-      bestNode.onkeydown = (event) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        event.stopPropagation();
-        const targetBlankId = resolvePreviewBlankId(bestNode);
-        if (targetBlankId) {
-          scrollToTable(targetBlankId);
-        }
-      };
-    });
-    applyPreviewAnchorStyles();
-  }, [applyPreviewAnchorStyles, clearPreviewAnchors, collectPreviewCandidates, getBlankDisplayName, getPreviewAnchorTokens, normalizePreviewText, resolvePreviewBlankId, scannedBlanks, scrollToTable]);
-
-  // 💡 【右侧表格】点击后：滚动【左侧原文】
-  const scrollToBlank = useCallback((blankId) => {
-    setHighlightBlankId(blankId);
-    setTimeout(() => {
-      const blank = scannedBlanks.find((item) => item.id === blankId);
-      const el = findPreviewAnchor(blank);
-      if (el) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('ring-2', 'ring-indigo-400', 'bg-indigo-50');
-        setTimeout(() => el.classList.remove('ring-2', 'ring-indigo-400', 'bg-indigo-50'), 2000);
-      }
-    }, 100);
-  }, [findPreviewAnchor, scannedBlanks]);
-
-  const handlePreviewResizeStart = useCallback((event) => {
-    if (!isDesktopViewport) return;
-
-    previewResizeStateRef.current = {
-      startX: event.clientX,
-      startWidth: previewPanelWidth
-    };
-    setIsResizingPreview(true);
-  }, [isDesktopViewport, previewPanelWidth]);
-
-  useEffect(() => {
-    if (!previewRef.current || isRenderingPreview) return;
-    decoratePreviewAnchors();
-  }, [decoratePreviewAnchors, isRenderingPreview]);
-
-  useEffect(() => {
-    applyPreviewAnchorStyles();
-  }, [applyPreviewAnchorStyles]);
 
   const handleFileUpload = async (event) => {
     console.log('🔍 [handleFileUpload] 文件上传开始');
@@ -1791,44 +1025,26 @@ export default function CreateBid() {
         manualEditsCount: Object.keys(manualEdits).length,
       });
 
-      // ===== 🔍 新增：导出前数据完整性验证 =====
+      // 数据完整性验证
       const scannedBlankIds = new Set(scannedBlanks.map(b => b.id));
       const manualEditsKeys = Object.keys(manualEdits);
       
-      console.log('🔍 [导出验证] scannedBlanks IDs:', Array.from(scannedBlankIds));
-      console.log('🔍 [导出验证] manualEdits keys:', manualEditsKeys);
-      
-      // 检查 blank_4 的状态
-      const blank4InScanned = scannedBlankIds.has('blank_4');
-      const blank4InManual = manualEdits['blank_4'];
-      console.log('🔍 [导出验证] blank_4 在 scannedBlanks 中:', blank4InScanned);
-      console.log('🔍 [导出验证] blank_4 在 manualEdits 中:', blank4InManual ? `是 (值="${blank4InManual}")` : '否');
-      
-      // 找出有值但不在scannedBlanks中的blanks（这些值将无法导出）
       const orphanedBlanks = manualEditsKeys.filter(id => 
         manualEdits[id] && manualEdits[id].trim() !== '' && !scannedBlankIds.has(id)
       );
       
       if (orphanedBlanks.length > 0) {
-        console.error('❌ [导出验证失败] 发现孤立的blanks（有值但不在scannedBlanks中）:', orphanedBlanks);
+        console.error('❌ 发现孤立的blanks（有值但不在scannedBlanks中）:', orphanedBlanks);
         orphanedBlanks.forEach(id => {
           console.error(`  - ${id}: "${manualEdits[id].substring(0, 50)}..."`);
         });
-        console.error('❌ 这些值将不会被导出到Word文档！');
       }
-      
-      // 统计将被导出的blanks
-      const blanksToExport = scannedBlanks.filter(b => manualEdits[b.id] && manualEdits[b.id].trim() !== '');
-      console.log('🔍 [导出验证] 将被导出的blanks数量:', blanksToExport.length);
-      console.log('🔍 [导出验证] 将被导出的blank IDs:', blanksToExport.map(b => b.id));
-      // ===== 验证结束 =====
 
       message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
 
       const filledBlob = await generateFilledDocx(originalZip, originalXml, scannedBlanks, manualEdits, imageUrlMap);
-      console.log('🔍 前端 Word 文档生成完成，blob大小:', filledBlob.size, 'bytes');
 
-      // ===== 核心修复：从 manualEdits 中实时提取所有 [INSERT_DOC:xxx] 暗号 =====
+      // 从 manualEdits 中提取所有 [INSERT_DOC:xxx] 暗号
       const codesToResolve = new Map();
 
       for (const [blankId, value] of Object.entries(manualEdits)) {
@@ -1850,7 +1066,7 @@ export default function CreateBid() {
       // 提取动态表格数据（根据fillMode选择不同的HTML）
       const dynamicTableDataList = Object.keys(filledTableHtmls || {})
         .map(tableId => {
-          const fillMode = getEffectiveFillMode(parseInt(tableId));
+          const fillMode = getEffectiveFillModeWrapper(parseInt(tableId));
           const tableData = filledTableHtmls[tableId];
           
           let filledHtml = '';
@@ -2985,7 +2201,7 @@ export default function CreateBid() {
                       <div className="flex items-center gap-3">
                         <span className="text-xs font-medium text-gray-700 shrink-0">表格类型:</span>
                         <Select
-                          value={getEffectiveFillMode(dt.tableId)}
+                          value={getEffectiveFillModeWrapper(dt.tableId)}
                           onChange={(value) => {
                             setManualFillModes(prev => ({ ...prev, [dt.tableId]: value }));
                             message.success(`已设置为${value === 'multi_person' ? '汇总表（多人）' : '单人简历表'}`);
@@ -3034,7 +2250,7 @@ export default function CreateBid() {
                           
                           {/* 显示累积表格（汇总表）或单个表格（单人简历表） */}
                           {(() => {
-                            const fillMode = getEffectiveFillMode(dt.tableId);
+                            const fillMode = getEffectiveFillModeWrapper(dt.tableId);
                             const tableData = filledTableHtmls[dt.tableId];
                             const displayHtml = fillMode === 'multi_person' 
                               ? tableData?.accumulated 
@@ -3091,7 +2307,7 @@ export default function CreateBid() {
                                     key={personName}
                                     closable
                                     onClose={() => {
-                                      const fillMode = getEffectiveFillMode(dt.tableId);
+                                      const fillMode = getEffectiveFillModeWrapper(dt.tableId);
                                       
                                       setFilledTableHtmls(prev => {
                                         const tableData = prev[dt.tableId];
@@ -3201,8 +2417,8 @@ export default function CreateBid() {
                                 const profile = personnelProfiles.find(p => p.name === personName);
                                 if (!profile) return;
 
-                                // 🆕 获取表格填充模式
-                                const fillMode = getEffectiveFillMode(dt.tableId);
+                                  // 🆕 获取表格填充模式
+                                const fillMode = getEffectiveFillModeWrapper(dt.tableId);
                                 const currentRows = dynamicTableEdits[dt.tableId] || [];
 
                                 // 🆕 汇总表模式：检查是否已满
