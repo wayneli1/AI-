@@ -88,30 +88,70 @@ def transfer_images(main_doc, sub_doc, new_element):
 
 def shift_heading_levels(element):
     """
-    将子文档中所有标题样式降一级：Heading1→Heading2, Heading2→Heading3, ...
-    这样合并后的子文档标题层级自然嵌套在父文档之下。
-    处理样式名格式：Heading1, Heading 1, 1 (纯数字), 等。
+    合并子文档时处理段落样式：
+    1. 标题降一级（Heading1→Heading2 等）
+    2. 只对标题样式的段落剥离 numPr，防止：
+       - 子文档编号与父文档编号拼接（如 "5.4.1.5.3."）
+       - 普通正文被父文档编号样式感染（如 "5.5.如网关故障..."）
+    3. 保留非标题段落的 numPr（如列表项的编号）
+    4. 处理 Body Text 2 样式：重置为 Normal，防止父文档编号样式感染
+    
+    支持两种样式格式：
+    - 文本格式：Heading1, Heading 2, Heading3 等
+    - 数字 ID 格式：3 (Heading 1), 4 (Heading 2), 5 (Heading 3) 等
     """
     qn_pStyle = qn('w:pStyle')
+    qn_numPr = qn('w:numPr')
+    
+    # 样式 ID 到标题级别的映射（常见的 Word 标题样式 ID）
+    # 3=Heading 1, 4=Heading 2, 5=Heading 3, 6=Heading 4, 7=Heading 5, 
+    # 8=Heading 6, 9=Heading 7, 10=Heading 8, 11=Heading 9
+    style_id_to_heading_level = {
+        '3': 1, '4': 2, '5': 3, '6': 4, '7': 5,
+        '8': 6, '9': 7, '10': 8, '11': 9
+    }
+    
     for p in element.iter(qn('w:p')):
         pPr = p.find(qn('w:pPr'))
         if pPr is None:
             continue
+
         style_elem = pPr.find(qn_pStyle)
-        if style_elem is None:
-            continue
-        val = style_elem.get(qn('w:val'), '')
-        # 匹配 Heading1 / Heading 1 / Heading11 等格式
-        m = re.match(r'^Heading\s*(\d+)$', val, re.IGNORECASE)
-        if m:
-            old_level = int(m.group(1))
-            new_level = min(old_level + 1, 9)  # 最多降到 Heading9
-            style_elem.set(qn('w:val'), f'Heading{new_level}')
-        # 匹配纯数字标题样式（如 "1", "2"）
-        elif re.match(r'^\d+$', val):
-            old_level = int(val)
-            new_level = min(old_level + 1, 9)
-            style_elem.set(qn('w:val'), str(new_level))
+        is_heading = False
+        is_body_text_2 = False
+        
+        if style_elem is not None:
+            val = style_elem.get(qn('w:val'), '')
+            
+            # 匹配 Heading1 / Heading 1 / Heading11 等格式
+            m = re.match(r'^Heading\s*(\d+)$', val, re.IGNORECASE)
+            if m:
+                is_heading = True
+                old_level = int(m.group(1))
+                new_level = min(old_level + 1, 9)  # 最多降到 Heading9
+                style_elem.set(qn('w:val'), f'Heading{new_level}')
+            # 匹配纯数字样式 ID（如 '3', '4', '5' 等）
+            elif val in style_id_to_heading_level:
+                is_heading = True
+                old_level = style_id_to_heading_level[val]
+                new_level = min(old_level + 1, 9)  # 最多降到 Heading9
+                # 将数字 ID 转换为新的数字 ID
+                new_style_id = str(new_level + 2)  # 3=Heading1, 所以 new_level+2 = 对应的 ID
+                style_elem.set(qn('w:val'), new_style_id)
+            # 处理 Body Text 2 样式：重置为 Normal，防止父文档编号样式感染
+            # Body Text 2 在父文档中可能被定义为具有编号（如级别2），导致子文档段落被错误编号
+            elif val == '2' or val.lower() == 'body text 2':
+                is_body_text_2 = True
+                # 将 Body Text 2 重置为 Normal 样式
+                style_elem.set(qn('w:val'), 'Normal')
+
+        # 只对标题样式的段落剥离 numPr
+        # 非标题段落保留 numPr（保留列表编号等）
+        # Body Text 2 样式也需要剥离 numPr，防止父文档编号感染
+        if is_heading or is_body_text_2:
+            numPr = pPr.find(qn_numPr)
+            if numPr is not None:
+                pPr.remove(numPr)
 
 
 def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
