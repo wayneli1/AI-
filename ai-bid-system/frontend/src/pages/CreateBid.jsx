@@ -1047,7 +1047,9 @@ export default function CreateBid() {
         .map(blank => ({
           paraIndex: blank.paraIndex,
           originalText: blank.matchText || '',
-          filledText: manualEdits[blank.id]
+          filledText: manualEdits[blank.id],
+          type: blank.type || '',
+          context: blank.context || '',
         }));
       
       console.log('📝 构建的 normal_blanks 数据:', normalBlanksData.length, '个填空');

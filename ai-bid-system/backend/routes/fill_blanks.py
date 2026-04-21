@@ -68,6 +68,8 @@ async def fill_blanks(
                 para_index = blank.get("paraIndex")
                 original_text = blank.get("originalText", "")
                 filled_text = blank.get("filledText", "")
+                blank_type = blank.get("type", "")
+                blank_context = blank.get("context", "")
                 
                 # 验证参数
                 if para_index is None or not filled_text:
@@ -82,8 +84,8 @@ async def fill_blanks(
                 # 获取目标段落（使用全局 xpath 索引，与扫描时一致）
                 target_para = all_paragraphs[para_index]
                 
-                # 执行替换（使用模糊匹配策略）
-                success = replace_text_fuzzy(target_para, original_text, filled_text)
+                # 执行替换（使用模糊匹配策略，支持图片URL自动插入）
+                success = replace_text_fuzzy(target_para, original_text, filled_text, blank_type, blank_context)
                 
                 if success:
                     filled_count += 1

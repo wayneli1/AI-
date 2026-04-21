@@ -86,6 +86,34 @@ def transfer_images(main_doc, sub_doc, new_element):
                         pass
 
 
+def shift_heading_levels(element):
+    """
+    将子文档中所有标题样式降一级：Heading1→Heading2, Heading2→Heading3, ...
+    这样合并后的子文档标题层级自然嵌套在父文档之下。
+    处理样式名格式：Heading1, Heading 1, 1 (纯数字), 等。
+    """
+    qn_pStyle = qn('w:pStyle')
+    for p in element.iter(qn('w:p')):
+        pPr = p.find(qn('w:pPr'))
+        if pPr is None:
+            continue
+        style_elem = pPr.find(qn_pStyle)
+        if style_elem is None:
+            continue
+        val = style_elem.get(qn('w:val'), '')
+        # 匹配 Heading1 / Heading 1 / Heading11 等格式
+        m = re.match(r'^Heading\s*(\d+)$', val, re.IGNORECASE)
+        if m:
+            old_level = int(m.group(1))
+            new_level = min(old_level + 1, 9)  # 最多降到 Heading9
+            style_elem.set(qn('w:val'), f'Heading{new_level}')
+        # 匹配纯数字标题样式（如 "1", "2"）
+        elif re.match(r'^\d+$', val):
+            old_level = int(val)
+            new_level = min(old_level + 1, 9)
+            style_elem.set(qn('w:val'), str(new_level))
+
+
 def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
     sub_doc = Document(io.BytesIO(subdoc_bytes))
 
@@ -110,6 +138,10 @@ def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
 
         new_element = copy.deepcopy(child)
         transfer_images(main_doc, sub_doc, new_element)
+
+        # ✅ 合并时将子文档标题降一级（Heading1→Heading2 等），自然嵌套在父文档之下
+        shift_heading_levels(new_element)
+
         parent_elm.insert(insert_index, new_element)
         insert_index += 1
         inserted_count += 1
@@ -523,16 +555,17 @@ def fill_dynamic_tables(doc, dynamic_tables):
             for url in append_images:
                 images_to_append.append((None, url, ''))
 
-        # 图片尺寸规范
+        # 图片尺寸规范（单位：cm）
+        # 身份证：6.80×4.24  营业执照：9.55×9.55  资质证书：14.63×20.66  学历证书：14.63×10.14
         def get_image_size(att_type):
             if att_type in ('id_card_front', 'id_card_back', 'id_card'):
-                return (Cm(7.05), Cm(5.07))
+                return (Cm(6.80), Cm(4.24))
             if att_type == 'business_license':
-                return (Cm(14.65), Cm(9.5))
+                return (Cm(9.55), Cm(9.55))
             if att_type in ('qualification_certificate', 'title_certificate', 'certificate'):
-                return (Cm(14.64), Cm(20.63))
+                return (Cm(14.63), Cm(20.66))
             if att_type in ('degree_certificate', 'graduation_certificate'):
-                return (Cm(14.5), Cm(10.56))
+                return (Cm(14.63), Cm(10.14))
             # 兜底：只设宽度，高度自适应
             return (Cm(14.0), None)
 
