@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from routes import parse_bid, merge_docs, intelligent_mapping
+from routes import parse_bid, merge_docs, intelligent_mapping, fill_blanks
 from dotenv import load_dotenv
 import time
 
@@ -42,6 +42,7 @@ app.add_middleware(
 
 app.include_router(parse_bid.router, prefix="/api", tags=["parser"])
 app.include_router(merge_docs.router, prefix="/api", tags=["merge"])
+app.include_router(fill_blanks.router, prefix="/api", tags=["fill-blanks"])
 app.include_router(intelligent_mapping.router, prefix="/api", tags=["intelligent-mapping"])
 
 

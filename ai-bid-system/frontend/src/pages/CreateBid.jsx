@@ -13,11 +13,10 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import {
   extractDocumentXml,
-  generateFilledDocx,
   filterIgnoredBlanks
 } from '../utils/wordBlankFiller';
 import { buildTemplateLearningPrompt, matchSlotForBlank } from '../utils/templateLearning';
-import { parseBidDocx } from '../utils/backendApi';
+import { parseBidDocx, exportFilledDocument } from '../utils/backendApi';
 import { 
   callSmartFill
 } from '../utils/intelligentMapping';
@@ -1019,7 +1018,7 @@ export default function CreateBid() {
     }
 
     try {
-      console.log('🔍 [handleExportFilledWord] 开始导出Word文档');
+      console.log('🔍 [handleExportFilledWord] 开始导出Word文档（新架构：后端处理）');
       console.log('🔍 导出参数:', {
         scannedBlanksCount: scannedBlanks.length,
         manualEditsCount: Object.keys(manualEdits).length,
@@ -1042,7 +1041,16 @@ export default function CreateBid() {
 
       message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
 
-      const filledBlob = await generateFilledDocx(originalZip, originalXml, scannedBlanks, manualEdits, imageUrlMap);
+      // ===== 新架构：构建 normal_blanks 数据 =====
+      const normalBlanksData = scannedBlanks
+        .filter(blank => manualEdits[blank.id] && manualEdits[blank.id].trim() !== '')
+        .map(blank => ({
+          paraIndex: blank.paraIndex,
+          originalText: blank.matchText || '',
+          filledText: manualEdits[blank.id]
+        }));
+      
+      console.log('📝 构建的 normal_blanks 数据:', normalBlanksData.length, '个填空');
 
       // 从 manualEdits 中提取所有 [INSERT_DOC:xxx] 暗号
       const codesToResolve = new Map();
@@ -1104,159 +1112,101 @@ export default function CreateBid() {
       });
       console.log('🔍 dynamicTableImages 原始状态:', dynamicTableImages);
 
-      // 既没有服务手册，又没有动态表格 → 直接下载
-      if (codesToResolve.size === 0 && dynamicTableDataList.length === 0) {
-        console.log('🔍 没有服务手册和动态表格，直接下载');
-        saveAs(filledBlob, `已填报_${originalFile.name}`);
-        message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
-        return;
-      }
+      // ===== 如果有服务手册暗号，需要查询 Supabase 构建 mapping =====
+      let dynamicManualUrlMap = {};
+      
+      if (codesToResolve.size > 0) {
+        console.log('📡 正在查询服务手册资产以动态构建映射...');
 
-      // 只有动态表格，没有服务手册 → 直接发后端
-      if (codesToResolve.size === 0 && dynamicTableDataList.length > 0) {
-        console.log('📡 仅有动态表格数据，直接发送后端处理');
-        const BACKEND_API_BASE = import.meta.env.VITE_BACKEND_API_BASE || 'http://localhost:8000';
-        const formData = new FormData();
-        formData.append('file', filledBlob, `filled_${originalFile.name}`);
-        formData.append('mapping', JSON.stringify({}));
-        formData.append('dynamic_tables', JSON.stringify(dynamicTableDataList));
+        const { data: products, error: productsError } = await supabase
+          .from('products')
+          .select('id')
+          .eq('user_id', user.id);
 
-        try {
-          const response = await fetch(`${BACKEND_API_BASE}/api/merge-docs`, {
-            method: 'POST',
-            body: formData,
+        if (productsError) throw productsError;
+
+        const productIds = (products || []).map(p => p.id);
+        console.log('📡 当前用户的产品ID数量:', productIds.length);
+
+        let serviceManuals = [];
+        if (productIds.length > 0) {
+          const { data: allAssets, error: assetsError } = await supabase
+            .from('product_assets')
+            .select('*, products!inner(product_name, version)')
+            .in('product_id', productIds);
+
+          if (assetsError) throw assetsError;
+
+          serviceManuals = (allAssets || []).filter(asset => {
+            if (!asset.file_url) return false;
+            const isDoc = asset.asset_type === 'document' ||
+                          (asset.file_url.includes('.doc') || asset.file_url.includes('.docx'));
+            const isManual = asset.asset_name && (
+              asset.asset_name.includes('售后服务手册') ||
+              asset.asset_name.includes('服务手册')
+            );
+            return isDoc && isManual;
           });
-          if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(`后端处理失败: HTTP ${response.status} - ${errorText}`);
-          }
-          const mergedBlob = await response.blob();
-          saveAs(mergedBlob, `已填报_${originalFile.name}`);
-          message.success({ content: '导出成功！动态表格已填入。', key: 'export' });
-        } catch (err) {
-          console.error('❌ 动态表格处理失败:', err);
-          message.error({ content: `导出失败: ${err.message}`, key: 'export' });
+
+          console.log('📡 找到的服务手册资产:', serviceManuals.length);
+          serviceManuals.forEach(sm => {
+            console.log(`  - ${sm.asset_name} -> ${sm.file_url}`);
+          });
         }
-        return;
-      }
 
-      // ===== 动态查询 Supabase 获取所有服务手册资产的 URL =====
-      console.log('📡 正在查询服务手册资产以动态构建映射...');
+        // ===== 用标准化名称模糊匹配暗号与资产 =====
+        for (const [fullCode, { name: codeName }] of codesToResolve) {
+          const normalizedCodeName = normalizeProductName(codeName);
+          console.log(`🔍 尝试匹配暗号: ${fullCode}, 标准化: ${normalizedCodeName}`);
 
-      const { data: products, error: productsError } = await supabase
-        .from('products')
-        .select('id')
-        .eq('user_id', user.id);
+          let matched = false;
+          for (const manual of serviceManuals) {
+            let manualName = manual.asset_name;
+            manualName = manualName.replace(/[（）()]/g, '');
+            manualName = manualName.replace(/\d{4,}/g, '');
+            manualName = manualName.replace(/[\s_-]+/g, ' ').trim();
+            const normalizedManualName = normalizeProductName(manualName);
 
-      if (productsError) throw productsError;
+            console.log(`  对比: "${normalizedManualName}" (原始: "${manual.asset_name}")`);
 
-      const productIds = (products || []).map(p => p.id);
-      console.log('📡 当前用户的产品ID数量:', productIds.length);
+            if (normalizedCodeName === normalizedManualName ||
+                normalizedManualName.includes(normalizedCodeName) ||
+                normalizedCodeName.includes(normalizedManualName)) {
+              dynamicManualUrlMap[fullCode] = manual.file_url;
+              console.log(`✅ 匹配成功: ${fullCode} -> ${manual.file_url}`);
+              matched = true;
+              break;
+            }
+          }
 
-      let serviceManuals = [];
-      if (productIds.length > 0) {
-        const { data: allAssets, error: assetsError } = await supabase
-          .from('product_assets')
-          .select('*, products!inner(product_name, version)')
-          .in('product_id', productIds);
-
-        if (assetsError) throw assetsError;
-
-        serviceManuals = (allAssets || []).filter(asset => {
-          if (!asset.file_url) return false;
-          const isDoc = asset.asset_type === 'document' ||
-                        (asset.file_url.includes('.doc') || asset.file_url.includes('.docx'));
-          const isManual = asset.asset_name && (
-            asset.asset_name.includes('售后服务手册') ||
-            asset.asset_name.includes('服务手册')
-          );
-          return isDoc && isManual;
-        });
-
-        console.log('📡 找到的服务手册资产:', serviceManuals.length);
-        serviceManuals.forEach(sm => {
-          console.log(`  - ${sm.asset_name} -> ${sm.file_url}`);
-        });
-      }
-
-      // ===== 用标准化名称模糊匹配暗号与资产 =====
-      const dynamicManualUrlMap = {};
-
-      for (const [fullCode, { name: codeName }] of codesToResolve) {
-        const normalizedCodeName = normalizeProductName(codeName);
-        console.log(`🔍 尝试匹配暗号: ${fullCode}, 标准化: ${normalizedCodeName}`);
-
-        let matched = false;
-        for (const manual of serviceManuals) {
-          let manualName = manual.asset_name;
-          manualName = manualName.replace(/[（）()]/g, '');
-          manualName = manualName.replace(/\d{4,}/g, '');
-          manualName = manualName.replace(/[\s_-]+/g, ' ').trim();
-          const normalizedManualName = normalizeProductName(manualName);
-
-          console.log(`  对比: "${normalizedManualName}" (原始: "${manual.asset_name}")`);
-
-          if (normalizedCodeName === normalizedManualName ||
-              normalizedManualName.includes(normalizedCodeName) ||
-              normalizedCodeName.includes(normalizedManualName)) {
-            dynamicManualUrlMap[fullCode] = manual.file_url;
-            console.log(`✅ 匹配成功: ${fullCode} -> ${manual.file_url}`);
-            matched = true;
-            break;
+          if (!matched) {
+            console.warn(`⚠️ 未找到匹配的资产: ${fullCode}`);
           }
         }
 
-        if (!matched) {
-          console.warn(`⚠️ 未找到匹配的资产: ${fullCode}`);
-        }
+        console.log('📡 动态构建的 mapping:', dynamicManualUrlMap);
       }
 
-      console.log('📡 动态构建的 mapping:', dynamicManualUrlMap);
-
-      if (Object.keys(dynamicManualUrlMap).length === 0 && dynamicTableDataList.length === 0) {
-        console.log('⚠️ 未能解析任何服务手册URL，也无动态表格，将直接下载');
-        saveAs(filledBlob, `已填报_${originalFile.name}`);
-        message.warning({ content: '导出成功，但未能找到对应的服务手册文件，暗号将保留为文本', key: 'export', duration: 5 });
-        return;
-      }
-
-      // ===== 调用后端合并接口 =====
-      console.log('📡 调用后端合并接口...');
-      console.log('📡 请求目标: POST /api/merge-docs');
-
-      const BACKEND_API_BASE = import.meta.env.VITE_BACKEND_API_BASE || 'http://localhost:8000';
-
-      const formData = new FormData();
-      formData.append('file', filledBlob, `filled_${originalFile.name}`);
-      formData.append('mapping', JSON.stringify(dynamicManualUrlMap));
-
-      if (dynamicTableDataList.length > 0) {
-        formData.append('dynamic_tables', JSON.stringify(dynamicTableDataList));
-      }
-
-      console.log('📡 FormData 构造完成:');
-      console.log('  - file:', filledBlob.name, filledBlob.size, 'bytes');
-      console.log('  - mapping keys:', Object.keys(dynamicManualUrlMap));
-      console.log('  - dynamic_tables:', dynamicTableDataList.length, '个表格');
-
-      const response = await fetch(`${BACKEND_API_BASE}/api/merge-docs`, {
-        method: 'POST',
-        body: formData,
+      // ===== 调用新的后端 API：/api/fill-blanks =====
+      console.log('📡 调用后端填充接口 /api/fill-blanks');
+      console.log('📡 请求数据:', {
+        normalBlanks: normalBlanksData.length,
+        dynamicTables: dynamicTableDataList.length,
+        mappingKeys: Object.keys(dynamicManualUrlMap).length
       });
 
-      console.log('📡 后端响应状态:', response.status, response.statusText);
+      const filledBlob = await exportFilledDocument(
+        originalFile,
+        normalBlanksData,
+        dynamicTableDataList,
+        dynamicManualUrlMap
+      );
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ 后端返回错误:', response.status, errorText);
-        throw new Error(`后端合并失败: HTTP ${response.status} - ${errorText}`);
-      }
+      console.log('📡 后端返回文档，大小:', filledBlob.size, 'bytes');
 
-      const mergedBlob = await response.blob();
-      console.log('📡 后端返回合并后的文档，大小:', mergedBlob.size, 'bytes');
-
-      saveAs(mergedBlob, `已填报_${originalFile.name}`);
-      message.success({ content: '导出成功！服务手册已合并到文档中。', key: 'export' });
+      // 下载文件
+      saveAs(filledBlob, `已填报_${originalFile.name}`);
+      message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
 
     } catch (err) {
       console.error('❌ 导出失败:', err);
@@ -2446,14 +2396,14 @@ export default function CreateBid() {
                                     .select('file_url, attachment_type')
                                     .eq('personnel_profile_id', profile.id)
                                     .eq('enabled', true);
-                                  if (attachments) {
-                                    const imageTypes = ['id_card_front', 'id_card_back', 'degree_certificate', 'qualification_certificate'];
-                                    attachments.forEach(att => {
-                                      if (imageTypes.includes(att.attachment_type) && att.file_url) {
-                                        allImages.push(att.file_url);
-                                      }
-                                    });
-                                  }
+if (attachments) {
+                                     const imageTypes = ['id_card_front', 'id_card_back', 'degree_certificate', 'qualification_certificate'];
+                                     attachments.forEach(att => {
+                                       if (imageTypes.includes(att.attachment_type) && att.file_url) {
+                                         allImages.push({ url: att.file_url, type: att.attachment_type });
+                                       }
+                                     });
+                                   }
                                 } catch (err) {
                                   console.warn(`查询人员 ${personName} 附件失败:`, err);
                                 }

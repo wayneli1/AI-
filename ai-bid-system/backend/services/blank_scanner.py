@@ -202,18 +202,32 @@ def scan_normal_blanks(paragraphs) -> List[Dict[str, Any]]:
             })
             has_blank_already = True
 
-        # 6) 冒号后长空格
+        # 6) 冒号后长空格（合并紧跟的装饰性括号，如"：   （盖章）"→单个blank）
+        _DECORATIVE_BRACKET_RE = re.compile(
+            r'\s*[（(]\s*(?:盖章处|签章处|盖章|签字|请填写[^）)]*|待补充|待定|填写[^）)]*|请盖章)\s*[)）]'
+        )
         for m in SPACE_AFTER_COLON_PATTERN.finditer(text):
             space_start = m.start() + len(m.group(1))
             space_str = m.group(2)
+
+            # 检查冒号后空格是否紧跟装饰性括号（如"（盖章）"），若是则合并为一个blank
+            remaining_after_space = text[space_start + len(space_str):]
+            bracket_match = _DECORATIVE_BRACKET_RE.match(remaining_after_space)
+            if bracket_match:
+                full_match_text = space_str + bracket_match.group()
+                full_end_in_text = space_start + len(full_match_text)
+                marked_ctx = text[:space_start] + "【🎯】" + text[full_end_in_text:]
+            else:
+                full_match_text = space_str
+                marked_ctx = text[:space_start] + "【🎯】" + text[space_start + len(space_str):]
+
             blank_counter += 1
-            marked_ctx = text[:space_start] + "【🎯】" + text[space_start + len(space_str) :]
             blanks.append({
                 "id": f"blank_{blank_counter}",
                 "paraIndex": para_index,
                 "context": text,
                 "markedContext": marked_ctx,
-                "matchText": space_str,
+                "matchText": full_match_text,
                 "type": "keyword_space",
                 "confidence": "medium",
                 "index": space_start,
@@ -222,8 +236,10 @@ def scan_normal_blanks(paragraphs) -> List[Dict[str, Any]]:
             })
             has_blank_already = True
 
-        # 7) 圆括号填空
+        # 7) 圆括号填空（装饰性括号如"（盖章）"在已有空白时跳过，避免同位置重复）
         for m in ROUND_BRACKET_PATTERN.finditer(text):
+            if has_blank_already:
+                continue
             blank_counter += 1
             marked_ctx = text[: m.start()] + "【🎯】" + text[m.end() :]
             blanks.append({
@@ -240,8 +256,10 @@ def scan_normal_blanks(paragraphs) -> List[Dict[str, Any]]:
             })
             has_blank_already = True
 
-        # 8) 方括号填空
+        # 8) 方括号填空（装饰性方括号在已有空白时跳过，避免同位置重复）
         for m in SQUARE_BRACKET_PATTERN.finditer(text):
+            if has_blank_already:
+                continue
             blank_counter += 1
             marked_ctx = text[: m.start()] + "【🎯】" + text[m.end() :]
             blanks.append({
@@ -341,6 +359,31 @@ def scan_normal_blanks(paragraphs) -> List[Dict[str, Any]]:
 
     # 按阅读顺序排序
     filtered.sort(key=lambda x: (x["paraIndex"], x["index"]))
+
+    # 合并同一段落中仅由空格分隔的相邻下划线/横线组（语义上是同一个填空位）
+    # 例如 "__________     ___________________" 应合并为单个blank
+    merged = []
+    for b in filtered:
+        if (
+            b["type"] in ("underscore", "dash")
+            and merged
+            and merged[-1]["paraIndex"] == b["paraIndex"]
+            and merged[-1]["type"] in ("underscore", "dash")
+        ):
+            prev = merged[-1]
+            prev_end = prev["index"] + len(prev["matchText"])
+            gap = text_gap = b["context"][prev_end:b["index"]] if prev_end <= b["index"] and prev["context"] == b["context"] else None
+            # 仅当间隔是纯空格（含中文空格）时合并
+            if gap is not None and re.match(r'^[\s\u3000]+$', gap):
+                # 合并：扩展 matchText 包含中间空格
+                combined_match = prev["matchText"] + gap + b["matchText"]
+                combined_end = b["index"] + len(b["matchText"])
+                prev["matchText"] = combined_match
+                prev["markedContext"] = b["context"][:prev["index"]] + "【🎯】" + b["context"][combined_end:]
+                # 保持 confidence 为 high
+                continue
+        merged.append(b)
+    filtered = merged
 
     # 分配段落内序号
     current_para = -1

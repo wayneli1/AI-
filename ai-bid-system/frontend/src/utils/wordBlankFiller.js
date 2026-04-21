@@ -172,148 +172,12 @@ const getAdjacentCellLabel = (currentCellInfo, allCellInfos) => {
   return null;
 };
 
-function isImageUrl(value) {
-  if (!value || typeof value !== 'string') return false;
-  const v = value.trim();
-  if (/^\{\{IMG_.+?\}\}$/.test(v)) return true;
-  return /^https?:\/\/.+\.(png|jpg|jpeg|gif|bmp|webp|svg)(\?.*)?$/i.test(v) ||
-         /^https?:\/\/.+\.(png|jpg|jpeg|gif|bmp|webp|svg)$/i.test(v) ||
-         /^https?:\/\/.*\/storage\/v1\/object\/public\//i.test(v);
-}
-
-function isDocumentUrl(value) {
-  if (!value || typeof value !== 'string') return false;
-  const v = value.trim();
-  const docPatterns = [
-    /^https?:\/\/.*\.(docx?|pdf|txt)(\?.*)?$/i,
-    /^https?:\/\/.*\/storage\/v1\/object\/public\/.*\.(docx?|pdf|txt)/i,
-    /^https?:\/\/.*\.supabase\.(co|in)\/storage\/v1\/object\/public\/.*/i
-  ];
-  return docPatterns.some(pattern => pattern.test(v));
-}
-
-function getDisplayTextFromUrl(url, context) {
-  if (!url || typeof url !== 'string') return '服务手册';
-  if (context && typeof context === 'string') {
-    if (context.includes('售后服务手册')) {
-      const manualMatch = context.match(/([^：:（）(]+)(?:售后服务手册)/);
-      if (manualMatch && manualMatch[1] && manualMatch[1].trim().length > 0) return `${manualMatch[1].trim()}售后服务手册`;
-    } else if (context.includes('服务手册')) {
-      const manualMatch = context.match(/([^：:（）(]+)(?:服务手册)/);
-      if (manualMatch && manualMatch[1] && manualMatch[1].trim().length > 0) return `${manualMatch[1].trim()}服务手册`;
-    }
-    const productMatch = context.match(/([a-zA-Z0-9\u4e00-\u9fa5]+产品|[a-zA-Z0-9\u4e00-\u9fa5]+系统)/);
-    if (productMatch && productMatch[1]) return `${productMatch[1].trim()}售后服务手册`;
-  }
-  const fileName = url.split('/').pop().split('?')[0];
-  const cleanName = fileName.replace(/[_-]/g, ' ').replace(/\.[^/.]+$/, '');
-  if (cleanName && cleanName.length > 3 && !cleanName.match(/^[0-9a-f]{32}$/i)) {
-    let prettyName = cleanName.replace(/\d{4}[-_]?\d{2}[-_]?\d{2}/g, '').replace(/\d{10,}/g, '').replace(/^[\s_-]+|[\s_-]+$/g, '');
-    if (prettyName && prettyName.length > 2) return prettyName;
-    return cleanName;
-  }
-  return '服务手册';
-}
-
-function guessImageMime(url) {
-  const lower = url.toLowerCase().split('?')[0];
-  if (lower.endsWith('.png')) return 'image/png';
-  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
-  if (lower.endsWith('.gif')) return 'image/gif';
-  return 'image/png';
-}
-
-function guessImageExt(mime) {
-  const map = { 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/gif': 'gif' };
-  return map[mime] || 'png';
-}
-
-async function fetchImageAsArrayBuffer(url) {
-  const resp = await fetch(url);
-  if (!resp.ok) throw new Error(`图片下载失败: ${url}`);
-  const ct = resp.headers.get('content-type') || '';
-  const buf = await resp.arrayBuffer();
-  let mime = guessImageMime(url);
-  if (ct && ct.startsWith('image/')) mime = ct.split(';')[0];
-  return { buffer: buf, mime };
-}
-
-function buildImageRunXml(rId, cxEmu, cyEmu) {
-  return `<w:r><w:rPr><w:noProof/></w:rPr><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${cxEmu}" cy="${cyEmu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:docPr id="${Math.floor(Math.random() * 100000)}" name="injected_image"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"/></wp:cNvGraphicFramePr><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:nvPicPr><pic:cNvPr id="0" name="injected.png"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="${rId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cxEmu}" cy="${cyEmu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
-}
-
-function buildHyperlinkXml(rId, displayText, url) {
-  return `<w:hyperlink r:id="${rId}" w:history="1" w:tooltip="${escapeXml(url)}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>${escapeXml(displayText)}</w:t></w:r></w:hyperlink>`;
-}
-
-function parseRelsXml(relsXml) {
-  let maxId = 0;
-  const ridRegex = /Id="rId(\d+)"/g;
-  let m;
-  while ((m = ridRegex.exec(relsXml)) !== null) {
-    const n = parseInt(m[1], 10);
-    if (n > maxId) maxId = n;
-  }
-  return { xml: relsXml, maxId };
-}
-
-function addRelationship(relsObj, target, type) {
-  const newId = ++relsObj.maxId;
-  const rId = `rId${newId}`;
-  relsObj.xml = relsObj.xml.replace('</Relationships>', `<Relationship Id="${rId}" Type="${type}" Target="${target}"/></Relationships>`);
-  return rId;
-}
-
-const PX_TO_EMU = 914400 / 96;
-const CM_TO_EMU = 360000;
-function getImageDimensionsEmu(pxWidth, naturalW, naturalH) {
-  const cx = Math.round(pxWidth * PX_TO_EMU);
-  const ratio = naturalH / naturalW;
-  return { cx, cy: Math.round(cx * ratio) };
-}
-
-function getCmDimensionsEmu(widthCm, heightCm) {
-  return {
-    cx: Math.round(widthCm * CM_TO_EMU),
-    cy: Math.round(heightCm * CM_TO_EMU)
-  };
-}
-
-function detectImageInsertType(blank = {}, imageUrl = '', naturalW = 0, naturalH = 0) {
-  const text = `${blank.context || ''} ${blank.markedContext || ''} ${imageUrl || ''}`.toLowerCase();
-  const isPortrait = naturalH > naturalW * 1.15;
-  if (/身份证|身份证正面|身份证反面|人像面|国徽面|法人身份证/.test(text)) return 'id_card';
-  if (/营业执照/.test(text)) return 'business_license';
-  if (/学位证|毕业证|学历/.test(text)) return 'degree';
-  if (/资质证书|证书|许可证|认证证书|检验报告|检测报告|iso|体系认证/.test(text)) return 'certificate';
-  if (isPortrait && /系统|网关|平台|软件|硬件|产品|v\d+(?:\.\d+)?|xt电子邮件系统|邮件安全卫士|coremail|cacter/i.test(text)) return 'certificate';
-  return 'generic';
-}
-
-function getImageSizeStrategy(type, naturalW, naturalH) {
-  const safeW = naturalW || 400;
-  const safeH = naturalH || 300;
-  if (type === 'id_card') return getCmDimensionsEmu(7.05, 5.07);
-  if (type === 'business_license') return getCmDimensionsEmu(14.65, 9.5);
-  if (type === 'certificate') return getCmDimensionsEmu(14.64, 20.63);
-   if (type === 'degree') return getCmDimensionsEmu(14.5, 10.56);
-  return getImageDimensionsEmu(220, safeW, safeH);
-}
-
-function loadImageNaturalSize(buffer) {
-  return new Promise((resolve) => {
-    const blob = new Blob([buffer]);
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => { URL.revokeObjectURL(url); resolve({ w: img.naturalWidth, h: img.naturalHeight }); };
-    img.onerror = () => { URL.revokeObjectURL(url); resolve({ w: 400, h: 300 }); };
-    img.src = url;
-  });
-}
-
-function escapeXml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-}
+// ===== 以下函数已废弃，由后端处理 =====
+// isImageUrl, isDocumentUrl, getDisplayTextFromUrl, guessImageMime, guessImageExt
+// fetchImageAsArrayBuffer, buildImageRunXml, buildHyperlinkXml, parseRelsXml
+// addRelationship, getImageDimensionsEmu, getCmDimensionsEmu, detectImageInsertType
+// getImageSizeStrategy, loadImageNaturalSize, escapeXml
+// 这些函数用于前端 XML 操作和图片处理，现已迁移到后端 python-docx 实现
 
 export function scanBlanksFromXml(xmlString) {
   const blanks = [];
@@ -391,25 +255,44 @@ export function scanBlanksFromXml(xmlString) {
         blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[0], index: m.index, type: 'dash', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
-      // 坐标切片生成 markedContext (关键词+长空格)
+      // 坐标切片生成 markedContext (关键词+长空格，合并紧跟的装饰性括号如"（盖章）")
+      const decorativeBracketRe = /\s*[（(]\s*(?:盖章处|签章处|盖章|签字|请填写[^）)]*|待补充|待定|填写[^）)]*|请盖章)\s*[)）]/;
       const spacePattern = /([：:])(\s{3,})/g;
       while ((m = spacePattern.exec(text)) !== null) {
         const colonStr = m[1];
         const spaceStr = m[2];
-        const spaceIndex = m.index + colonStr.length; 
-        const markedCtx = text.substring(0, spaceIndex) + '【🎯】' + text.substring(spaceIndex + spaceStr.length);
-        blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: spaceStr, index: spaceIndex, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
+        const spaceIndex = m.index + colonStr.length;
+        // 检查空格后是否紧跟装饰性括号，若是则合并
+        const afterSpace = text.substring(spaceIndex + spaceStr.length);
+        const bracketM = decorativeBracketRe.exec(afterSpace);
+        let fullMatchText = spaceStr;
+        let markedCtx;
+        if (bracketM && bracketM.index === 0) {
+          fullMatchText = spaceStr + bracketM[0];
+          markedCtx = text.substring(0, spaceIndex) + '【🎯】' + text.substring(spaceIndex + fullMatchText.length);
+        } else {
+          markedCtx = text.substring(0, spaceIndex) + '【🎯】' + text.substring(spaceIndex + spaceStr.length);
+        }
+        blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: fullMatchText, index: spaceIndex, type: 'keyword_space', confidence: 'medium', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
-      // 坐标切片生成 markedContext (括号填空)
+      // 检查当前段是否已有实质空白（用于防止同位置装饰性括号重复）
+      const alreadyHasSubstantiveBlank = blanks.some(b =>
+        b.paraIndex === currentParaIndex &&
+        ['underscore', 'dash', 'keyword_space', 'repeated_keyword', 'image_placeholder'].includes(b.type)
+      );
+
+      // 坐标切片生成 markedContext (括号填空 - 装饰性括号在已有空白时跳过，避免同位置重复)
       const roundBracketPattern = /[（(]\s*(盖章处|签章处|盖章|签字|请填写[^）)]*|待补充|待定|填写[^）)]*|请盖章)\s*[)）]/g;
       while ((m = roundBracketPattern.exec(text)) !== null) {
+        if (alreadyHasSubstantiveBlank) continue;
         const markedCtx = text.substring(0, m.index) + '【🎯】' + text.substring(m.index + m[0].length);
         blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[0], index: m.index, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
 
       const squareBracketPattern = /[[【]\s*(填写[^\]】]*|待补充|待定|请填写[^\]】]*)\s*[\]】]/g;
       while ((m = squareBracketPattern.exec(text)) !== null) {
+        if (alreadyHasSubstantiveBlank) continue;
         const markedCtx = text.substring(0, m.index) + '【🎯】' + text.substring(m.index + m[0].length);
         blanks.push({ id: `blank_${++blankCounter}`, context: text, markedContext: markedCtx, matchText: m[0], index: m.index, type: 'brackets', confidence: 'high', paraIndex: currentParaIndex, fill_role: determineFillRole(text) });
       }
@@ -554,300 +437,44 @@ export function scanBlanksFromXml(xmlString) {
       b.need_image = true;
     }
   }
-  return uniqueBlanks;
-}
 
-function buildTextNodeMap(paragraphXml) {
-  // 💡 增加第五个捕获组，用于捕获 <w:br/>
-  const NODE_REGEX = /(<w:t(?:\s[^>]*)?>)([^<]*)(<\/w:t>)|(<w:tab(?:\s[^>]*)?\/>)|(<w:br(?:\s[^>]*)?\/>)/g;
-  const nodes = [];
-  let offset = 0;
-  let m;
-  
-  while ((m = NODE_REGEX.exec(paragraphXml)) !== null) {
-    if (m[4]) {
-      const text = '    ';
-      nodes.push({ fullMatch: m[0], openTag: '', text, closeTag: '', matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: true });
-      offset += text.length;
-    } else if (m[5]) {
-      const text = '\n'; // 处理软回车节点
-      nodes.push({ fullMatch: m[0], openTag: '', text, closeTag: '', matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false, isBr: true });
-      offset += text.length;
-    } else {
-      const text = m[2]; 
-      nodes.push({ fullMatch: m[0], openTag: m[1], text, closeTag: m[3], matchStart: m.index, matchEnd: m.index + m[0].length, textStart: offset, textEnd: offset + text.length, isTab: false });
-      offset += text.length;
-    }
-  }
-  let fullText = '';
-  for (const n of nodes) fullText += n.text;
-  return { nodes, fullText };
-}
-
-function rebuildParagraphXml(paragraphXml, nodes) {
-  let result = paragraphXml;
-  let delta = 0;
-  for (const node of nodes) {
-    if (node._replaced) {
-      let newFull;
-      if (node.isTab) {
-        newFull = node._newText ? `<w:t>${node._newText}</w:t>` : '';
-      } else {
-        newFull = node.openTag + node._newText + node.closeTag;
-      }
-      const oldStart = node.matchStart + delta;
-      const oldEnd = oldStart + node.fullMatch.length;
-      result = result.substring(0, oldStart) + newFull + result.substring(oldEnd);
-      delta += newFull.length - node.fullMatch.length;
-    } else if (node.isBr) {
-      const newFull = node._newText ? '<w:t>' + node._newText + '</w:t>' : '';
-      const oldStart = node.matchStart + delta;
-      const oldEnd = oldStart + node.fullMatch.length;
-      result = result.substring(0, oldStart) + newFull + result.substring(oldEnd);
-      delta += newFull.length - node.fullMatch.length;
-    }
-  }
-  return result;
-}
-
-function findBlankInFullText(fullText, blank) {
-  if (!blank.matchText) {
-    return Number.isInteger(blank.index) ? blank.index : -1;
-  }
-  let searchFrom = Math.max(0, (blank.index || 0) - 5);
-  let idx = fullText.indexOf(blank.matchText, searchFrom);
-  if (idx !== -1) return idx;
-  return fullText.indexOf(blank.matchText);
-}
-
-function getExpandedPlaceholderRange(fullText, start, blank) {
-  const matchText = blank.matchText || '';
-  let rangeStart = start;
-  let rangeEnd = start + matchText.length;
-  if (blank.type === 'underscore') {
-    while (rangeStart > 0 && /[_＿]/.test(fullText[rangeStart - 1])) rangeStart -= 1;
-    while (rangeEnd < fullText.length && /[_＿]/.test(fullText[rangeEnd])) rangeEnd += 1;
-  } else if (blank.type === 'dash') {
-    while (rangeStart > 0 && /[-－—─﹣]/.test(fullText[rangeStart - 1])) rangeStart -= 1;
-    while (rangeEnd < fullText.length && /[-－—─﹣]/.test(fullText[rangeEnd])) rangeEnd += 1;
-  }
-  return { start: rangeStart, end: rangeEnd };
-}
-
-function getOverlappingNodes(nodes, textStart, textEnd) {
-  const result = [];
-  for (const node of nodes) {
-    if (node.textEnd <= textStart || node.textStart >= textEnd) continue;
-    result.push(node);
-  }
-  return result;
-}
-
-function replaceTextRangeInNodes(nodes, textStart, textEnd, replacementText) {
-  let overlappingNodes = getOverlappingNodes(nodes, textStart, textEnd);
-  if (overlappingNodes.length === 0 && textStart === textEnd) {
-    const insertNode = nodes.find((node) => textStart >= node.textStart && textStart <= node.textEnd);
-    if (insertNode) overlappingNodes = [insertNode];
-  }
-  if (overlappingNodes.length === 0) return false;
-
-  const safeReplacement = replacementText ?? '';
-  for (let i = 0; i < overlappingNodes.length; i++) {
-    const node = overlappingNodes[i];
-    const sliceStart = Math.max(textStart, node.textStart) - node.textStart;
-    const sliceEnd = Math.min(textEnd, node.textEnd) - node.textStart;
-    const prefix = node.text.slice(0, sliceStart);
-    const suffix = node.text.slice(sliceEnd);
-    node._replaced = true;
-    node._newText = i === 0 ? prefix + safeReplacement + suffix : prefix + suffix;
-  }
-  return true;
-}
-
-export function replaceBlanksInXml(xmlString, blanks, filledValues, imageRidMap, hyperlinkRidMap = {}) {
-  let modifiedXml = xmlString;
-  const processedIds = new Set();
-
-  const paragraphs = [];
-  const paragraphRegex = /<w:p[\s>][\s\S]*?<\/w:p>/g;
-  let pMatch;
-  let pIdx = 0;
-
-  while ((pMatch = paragraphRegex.exec(modifiedXml)) !== null) {
-    paragraphs.push({ start: pMatch.index, end: pMatch.index + pMatch[0].length, xml: pMatch[0], text: getVisibleTextFromXml(pMatch[0]), paraIndex: pIdx });
-    pIdx++;
-  }
-
-  console.log('🔧 [Blank替换] 开始替换，共', blanks.length, '个blank，倒序处理');
-  console.log('🔧 [Blank替换] XML段落总数:', paragraphs.length);
-
-  // 🔧 修复：倒序遍历blanks，从后往前替换，避免前面的替换影响后面blank的index
-  for (let i = blanks.length - 1; i >= 0; i--) {
-    const blank = blanks[i];
-    const value = filledValues[blank.id];
-    
-    console.log(`\n📍 [${i}] 处理 ${blank.id}:`, {
-      paraIndex: blank.paraIndex,
-      index: blank.index,
-      type: blank.type,
-      matchText: blank.matchText?.substring(0, 20),
-      value: value?.substring(0, 30),
-      context: blank.context?.substring(0, 50)
-    });
-    
-    if (value === undefined || value === null || value === '') {
-      console.log('  ⏭️  跳过：无填充值');
-      continue;
-    }
-    if (processedIds.has(blank.id)) {
-      console.log('  ⏭️  跳过：已处理');
-      continue;
-    }
-    processedIds.add(blank.id);
-
-    const matchingParagraph = paragraphs.find(p => p.paraIndex === blank.paraIndex);
-    if (!matchingParagraph) {
-      console.log('  ❌ 错误：找不到段落 paraIndex=', blank.paraIndex);
-      continue;
-    }
-
-    console.log('  ✅ 找到段落:', {
-      paraIndex: matchingParagraph.paraIndex,
-      text: matchingParagraph.text.substring(0, 60)
-    });
-
-    const paraXml = matchingParagraph.xml;
-    const isImage = isImageUrl(value) && imageRidMap && imageRidMap[blank.id];
-    const isDocUrl = isDocumentUrl(value);
-    const hyperlinkRId = hyperlinkRidMap && hyperlinkRidMap[blank.id];
-    let newParaXml = paraXml;
-
-    if (blank.type === 'empty_cell' || blank.matchText === '[空白单元格]') {
-      if (isImage) {
-        const imgInfo = imageRidMap[blank.id];
-        newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
-      } else if (isDocUrl) {
-        const displayText = getDisplayTextFromUrl(value, blank.context);
-        if (hyperlinkRId) {
-          newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
-        } else {
-          newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
-        }
-      } else {
-        newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
-      }
-    } else {
-      const { nodes, fullText } = buildTextNodeMap(paraXml);
-      let matchText = blank.matchText;
-      
-      console.log('  🔍 文本定位:', {
-        fullText: fullText.substring(0, 80),
-        fullTextLength: fullText.length,
-        blankIndex: blank.index,
-        matchText: matchText?.substring(0, 20)
-      });
-      
-      const searchBlank = { ...blank, matchText };
-      let blankPos = findBlankInFullText(fullText, searchBlank);
-      if (blankPos === -1 && Number.isInteger(blank.index) && blank.index >= 0 && blank.index <= fullText.length) {
-        blankPos = blank.index;
-        console.log('  📌 使用 blank.index 作为定位:', blankPos);
-      } else if (blankPos !== -1) {
-        console.log('  📌 通过 matchText 找到位置:', blankPos);
-      } else {
-        console.log('  ⚠️  未找到位置，blankPos=-1');
-      }
-      
-      if (blankPos === -1 || blank.type === 'attachment') {
-        if (blank.type !== 'attachment' && replaceTextRangeInNodes(nodes, blank.index || fullText.length, blank.index || fullText.length, !isImage && !isDocUrl ? escapeXml(value) : '')) {
-          let tempParaXml = rebuildParagraphXml(paraXml, nodes);
-          if (isImage) {
-            const imgInfo = imageRidMap[blank.id];
-            newParaXml = tempParaXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
-          } else if (isDocUrl) {
-            const displayText = getDisplayTextFromUrl(value, blank.context);
-            if (hyperlinkRId) {
-              newParaXml = tempParaXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
-            } else {
-              newParaXml = tempParaXml;
-            }
-          } else {
-            newParaXml = tempParaXml;
-          }
-        } else if (isImage) {
-          const imgInfo = imageRidMap[blank.id];
-          newParaXml = paraXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
-        } else if (isDocUrl) {
-          const displayText = getDisplayTextFromUrl(value, blank.context);
-          if (hyperlinkRId) {
-            newParaXml = paraXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
-          } else {
-            newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
-          }
-        } else {
-          newParaXml = paraXml.replace(/<\/w:p>/, `<w:r><w:t>${escapeXml(value)}</w:t></w:r></w:p>`);
-        }
-      } else {
-        const expandedRange = getExpandedPlaceholderRange(fullText, blankPos, blank);
-        let coveredNodes = getOverlappingNodes(nodes, expandedRange.start, expandedRange.end);
-        
-        // 🐛 BUG 修复：针对冒号后直接为空（0长度插入，start === end）的极端边界情况
-        // 因为 getOverlappingNodes 在边界上会返回空数组，导致替换逻辑直接被跳过，致使数据丢失
-        if (coveredNodes.length === 0 && expandedRange.start === expandedRange.end) {
-          const insertNode = nodes.find((node) => expandedRange.start >= node.textStart && expandedRange.start <= node.textEnd);
-          if (insertNode) coveredNodes = [insertNode];
-        }
-        if (coveredNodes.length > 0) {
-          if (isImage) {
-            const imgInfo = imageRidMap[blank.id];
-            for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
-            let tempParaXml = rebuildParagraphXml(paraXml, nodes);
-            newParaXml = tempParaXml.replace(/<\/w:p>/, buildImageRunXml(imgInfo.rId, imgInfo.cxEmu, imgInfo.cyEmu) + '</w:p>');
-          } else if (isDocUrl) {
-            const displayText = getDisplayTextFromUrl(value, blank.context);
-            if (hyperlinkRId) {
-              for (const node of coveredNodes) { node._replaced = true; node._newText = ''; }
-              let tempParaXml = rebuildParagraphXml(paraXml, nodes);
-              newParaXml = tempParaXml.replace(/<\/w:p>/, buildHyperlinkXml(hyperlinkRId, displayText, value) + '</w:p>');
-            } else {
-              for (let i = 0; i < coveredNodes.length; i++) {
-                coveredNodes[i]._replaced = true;
-                coveredNodes[i]._newText = i === 0 ? escapeXml(value) : '';
-              }
-              newParaXml = rebuildParagraphXml(paraXml, nodes);
-            }
-          } else {
-            replaceTextRangeInNodes(nodes, expandedRange.start, expandedRange.end, escapeXml(value));
-            newParaXml = rebuildParagraphXml(paraXml, nodes);
+  // 合并同一段落中仅由空格分隔的相邻下划线/横线组（语义上是同一个填空位）
+  // 例如 "__________     ___________________" 应合并为单个blank
+  const mergedBlanks = [];
+  for (const b of uniqueBlanks) {
+    if (
+      (b.type === 'underscore' || b.type === 'dash') &&
+      mergedBlanks.length > 0
+    ) {
+      const prev = mergedBlanks[mergedBlanks.length - 1];
+      if (
+        prev.paraIndex === b.paraIndex &&
+        (prev.type === 'underscore' || prev.type === 'dash')
+      ) {
+        const prevEnd = prev.index + (prev.matchText || '').length;
+        if (prevEnd <= b.index && prev.context === b.context) {
+          const gap = b.context.substring(prevEnd, b.index);
+          // 仅当间隔是纯空格（含中文空格）时合并
+          if (/^[\s\u3000]*$/.test(gap)) {
+            const combinedMatch = prev.matchText + gap + b.matchText;
+            const combinedEnd = b.index + (b.matchText || '').length;
+            prev.matchText = combinedMatch;
+            prev.markedContext = b.context.substring(0, prev.index) + '【🎯】' + b.context.substring(combinedEnd);
+            continue;
           }
         }
       }
     }
-
-    if (newParaXml !== matchingParagraph.xml) {
-      const oldText = getVisibleTextFromXml(matchingParagraph.xml);
-      const newText = getVisibleTextFromXml(newParaXml);
-      console.log('  ✅ 替换成功:', {
-        oldText: oldText.substring(0, 60),
-        newText: newText.substring(0, 60),
-        xmlLengthChange: newParaXml.length - matchingParagraph.xml.length
-      });
-      
-      modifiedXml = modifiedXml.substring(0, matchingParagraph.start) + newParaXml + modifiedXml.substring(matchingParagraph.end);
-      const diff = newParaXml.length - matchingParagraph.xml.length;
-      paragraphs.forEach(p => {
-        if (p.start > matchingParagraph.start) { p.start += diff; p.end += diff; }
-        else if (p.start === matchingParagraph.start) { p.xml = newParaXml; p.end = p.start + newParaXml.length; }
-      });
-      matchingParagraph.xml = newParaXml;
-    } else {
-      console.log('  ⚠️  段落XML未改变');
-    }
+    mergedBlanks.push(b);
   }
 
-  console.log('\n🎉 [Blank替换] 完成，共处理', processedIds.size, '个blank');
-  return modifiedXml;
+  return mergedBlanks;
 }
+
+// ===== 以下函数已废弃，由后端 /api/fill-blanks 处理 =====
+// replaceBlanksInXml - XML 文本替换逻辑已迁移到后端 python-docx
+// 相关辅助函数也已废弃：buildTextNodeMap, rebuildParagraphXml, findBlankInFullText,
+// getExpandedPlaceholderRange, getOverlappingNodes, replaceTextRangeInNodes
 
 export function extractIndexedParagraphs(xmlString) {
   const paragraphs = [];
@@ -1014,117 +641,6 @@ export function extractDocumentXml(file) {
   });
 }
 
-export async function generateFilledDocx(zip, modifiedXml, blanks, filledValues, imageUrlMap = {}) {
-  const imageRidMap = {};
-  const hyperlinkRidMap = {};
-  const imageEntries = [];
-  const hyperlinkEntries = [];
-
-  for (const blank of blanks) {
-    let val = filledValues[blank.id];
-    
-    if (val && typeof val === 'string' && val.startsWith('{{IMG_')) {
-      for (const [placeholder, realUrl] of Object.entries(imageUrlMap)) {
-        const normalizedVal = normalizeProductName(val);
-        const normalizedPlaceholder = normalizeProductName(placeholder);
-        
-        if (normalizedVal.includes(normalizedPlaceholder)) {
-          const oldVal = val;
-          const regex = buildPlaceholderRegex(placeholder);
-          const newVal = val.replace(regex, realUrl);
-          
-          if (oldVal !== newVal) {
-            val = newVal;
-          } else {
-            val = realUrl;
-          }
-          break;
-        }
-      }
-    }
-    
-    if (val && isImageUrl(val)) {
-      imageEntries.push({ blankId: blank.id, url: val.trim(), blank });
-    }
-    
-    if (val && isDocumentUrl(val)) {
-      let manualName = getDisplayTextFromUrl(val, blank.context);
-      const docCode = `[INSERT_DOC:${manualName}]`;
-      filledValues[blank.id] = docCode;
-    }
-  }
-
-  const fetchedImages = [];
-  if (imageEntries.length > 0) {
-    const results = await Promise.allSettled(
-      imageEntries.map(async (entry) => {
-        const { buffer, mime } = await fetchImageAsArrayBuffer(entry.url);
-        const { w, h } = await loadImageNaturalSize(buffer);
-        return { ...entry, buffer, mime, naturalW: w, naturalH: h };
-      })
-    );
-    for (const r of results) {
-      if (r.status === 'fulfilled') {
-        fetchedImages.push(r.value);
-      }
-    }
-  }
-
-  let relsObj = null;
-  const IMAGE_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
-  const RELS_PATH = 'word/_rels/document.xml.rels';
-
-  if (fetchedImages.length > 0) {
-    let relsXml = zip.file(RELS_PATH)?.asText();
-    if (!relsXml) {
-      relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
-    }
-    relsObj = parseRelsXml(relsXml);
-
-    let ctXml = zip.file('[Content_Types].xml')?.asText() || '';
-    const ensureExt = (ext, mime) => {
-      if (!ctXml.includes(`Extension="${ext}"`)) {
-        ctXml = ctXml.replace('</Types>', `<Default Extension="${ext}" ContentType="${mime}"/></Types>`);
-      }
-    };
-    ensureExt('png', 'image/png'); ensureExt('jpeg', 'image/jpeg'); ensureExt('gif', 'image/gif'); ensureExt('bmp', 'image/bmp');
-    zip.file('[Content_Types].xml', ctXml);
-
-    for (let i = 0; i < fetchedImages.length; i++) {
-      const img = fetchedImages[i];
-      const ext = guessImageExt(img.mime);
-      const mediaFileName = `word/media/injected_${i + 1}.${ext}`;
-      const target = `media/injected_${i + 1}.${ext}`;
-      zip.file(mediaFileName, img.buffer);
-      const rId = addRelationship(relsObj, target, IMAGE_REL_TYPE);
-      const imageType = detectImageInsertType(img.blank, img.url, img.naturalW, img.naturalH);
-      const { cx, cy } = getImageSizeStrategy(imageType, img.naturalW, img.naturalH);
-      imageRidMap[img.blankId] = { rId, cxEmu: cx, cyEmu: cy };
-    }
-    zip.file(RELS_PATH, relsObj.xml);
-  }
-
-  if (hyperlinkEntries.length > 0) {
-    let relsXml = zip.file(RELS_PATH)?.asText();
-    if (!relsXml) {
-      relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
-      zip.file(RELS_PATH, relsXml);
-    }
-    
-    const HYPERLINK_REL_TYPE = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink';
-    let updatedRelsXml = relsXml;
-    
-    hyperlinkEntries.forEach((entry, index) => {
-      const rId = `rId_hyperlink_${index + 1}`;
-      updatedRelsXml = updatedRelsXml.replace('</Relationships>', 
-        `<Relationship Id="${rId}" Type="${HYPERLINK_REL_TYPE}" Target="${entry.url}" TargetMode="External"/>\n</Relationships>`);
-      hyperlinkRidMap[entry.blankId] = rId;
-    });
-    
-    zip.file(RELS_PATH, updatedRelsXml);
-  }
-
-  const finalXml = replaceBlanksInXml(modifiedXml, blanks, filledValues, imageRidMap, hyperlinkRidMap);
-  zip.file('word/document.xml', finalXml);
-  return zip.generate({ type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
-}
+// ===== generateFilledDocx 函数已废弃 =====
+// 文档生成逻辑已完全迁移到后端 /api/fill-blanks 接口
+// 前端现在通过 exportFilledDocument() 调用后端 API
