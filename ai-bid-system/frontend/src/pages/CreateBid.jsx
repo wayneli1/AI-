@@ -1010,12 +1010,59 @@ if (images.length > 0) {
     try {
       const text = await extractTextFromDocument(file);
       if (text && text.trim()) {
-        setTenderContext(text);
-        message.success({ 
-          content: '提取成功！建议您删除无关页内容，仅保留核心要求，以提升 AI 准确度。', 
-          key: 'extract_tender',
-          duration: 5
-        });
+        // 智能过滤：仅提取关键招标信息
+        const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+        const extracted = { projectName: '', projectNumber: '', purchaser: '' };
+
+        for (const line of lines) {
+          // 项目名称匹配
+          if (!extracted.projectName) {
+            const nameMatch = line.match(/(?:项目\s*名\s*称|采购\s*项目\s*名\s*称|招标\s*项目\s*名\s*称|工程\s*名\s*称)[：:\s]+(.{2,50})/);
+            if (nameMatch) {
+              extracted.projectName = nameMatch[1].replace(/[。；;，,].*$/, '').trim();
+            }
+          }
+
+          // 项目编号匹配
+          if (!extracted.projectNumber) {
+            const numMatch = line.match(/(?:项目\s*编\s*号|招标\s*编\s*号|采购\s*编\s*号|标\s*书\s*编\s*号|编\s*号)[：:\s]+([A-Za-z0-9\u4e00-\u9fa5\-_.]{2,30})/);
+            if (numMatch) {
+              extracted.projectNumber = numMatch[1].replace(/[。；;，,].*$/, '').trim();
+            }
+          }
+
+          // 采购人匹配
+          if (!extracted.purchaser) {
+            const buyerMatch = line.match(/(?:采\s*购\s*人|招\s*标\s*人|业\s*主\s*单\s*位|甲\s*方|委\s*托\s*人|用\s*户\s*单\s*位)[：:\s]+(.{2,50})/);
+            if (buyerMatch) {
+              extracted.purchaser = buyerMatch[1].replace(/[。；;，,].*$/, '').trim();
+            }
+          }
+        }
+
+        // 构建精简结果
+        const parts = [];
+        if (extracted.projectName) parts.push(`项目名称：${extracted.projectName}`);
+        if (extracted.projectNumber) parts.push(`项目编号：${extracted.projectNumber}`);
+        if (extracted.purchaser) parts.push(`采购人：${extracted.purchaser}`);
+
+        if (parts.length > 0) {
+          setTenderContext(parts.join('\n'));
+          const found = parts.length;
+          message.success({ 
+            content: `✅ 智能提取成功！已提取 ${found}/3 项关键信息`, 
+            key: 'extract_tender',
+            duration: 3,
+          });
+        } else {
+          // 未匹配到任何字段，保留原文但提示用户
+          setTenderContext(text);
+          message.warning({ 
+            content: '未能自动识别关键字段，已保留全文，请手动编辑', 
+            key: 'extract_tender',
+            duration: 5,
+          });
+        }
       } else {
         message.warning({ content: '未能从文件中提取到有效文字', key: 'extract_tender' });
       }
@@ -1777,9 +1824,9 @@ if (images.length > 0) {
           styles={{ body: { maxHeight: '70vh', overflowY: 'auto' } }}
         >
           <div className="py-2">
-            <div className="text-sm text-gray-600 mb-4 bg-amber-50 p-3 rounded-lg border border-amber-200 leading-relaxed">
-              💡 <b>强烈建议：</b>上传招标文件或粘贴关键要求后，<b>请删除无关页内容</b>（如通用条款、免责声明等），仅保留项目概况、技术参数、评分标准等核心内容。<br/>
-              <span className="text-amber-700">内容越精简，AI 填报越准确。</span>
+            <div className="text-sm text-gray-600 mb-4 bg-indigo-50 p-3 rounded-lg border border-indigo-200 leading-relaxed">
+              💡 <b>智能提取：</b>上传招标文件后自动过滤无关内容，仅保留<b>项目名称、项目编号、采购人</b>三项关键信息。<br/>
+              <span className="text-indigo-700">如需补充其他要求，可在下方文本框手动编辑。</span>
             </div>
 
             <div className="flex justify-between items-center mb-2">
@@ -1830,7 +1877,7 @@ if (images.length > 0) {
             <Input.TextArea
               value={tenderContext}
               onChange={(e) => setTenderContext(e.target.value)}
-              placeholder={"请上传文件自动提取，或手动粘贴文本。\n\n例如：\n本项目名称为《2026年邮件系统采购项目》\n项目编号：GD-2026-001\n采购人：某某局\n预算金额：100万元\n交货时间：合同签订后30日内..."}
+              placeholder={"上传文件自动提取，或手动粘贴文本。\n\n示例格式：\n项目名称：2026年邮件系统采购项目\n项目编号：GD-2026-001\n采购人：某某局"}
               className="w-full p-4 text-sm leading-relaxed custom-scrollbar rounded-xl border-gray-300 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all"
               style={{ resize: 'vertical', minHeight: '420px' }}
               autoSize={{ minRows: 18, maxRows: 35 }}
