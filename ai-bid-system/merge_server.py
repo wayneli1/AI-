@@ -116,10 +116,18 @@ def shift_heading_levels(element, doc):
                 is_body_text_2 = True
                 style_elem.set(qn('w:val'), 'Normal')
 
-        # 剥离标题段落的 numPr
+       # 剥离标题段落的 numPr，防止编号冲突
+        # Body Text 2 样式也需要剥离 numPr
         if is_heading or is_body_text_2:
             numPr = pPr.find(qn_numPr)
             if numPr is not None:
+                # 🌟 新增判断：检查是否为原作者手动取消了编号
+                num_id = numPr.find(qn('w:numId'))
+                if num_id is not None and num_id.get(qn('w:val')) == '0':
+                    # 如果原文档明确取消了编号（val="0"），则保留该护身符，跳过删除
+                    continue 
+                
+                # 如果是正常编号，才移除它以防止冲突
                 pPr.remove(numPr)
 
 

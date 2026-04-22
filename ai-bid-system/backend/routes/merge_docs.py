@@ -65,15 +65,6 @@ def _build_heading_level_map(doc):
 
 
 def shift_heading_levels(element, doc):
-    """
-    合并子文档时处理段落样式：
-    1. 标题降一级（Heading1→Heading2 等）
-    2. 剥离标题段落的 numPr，防止编号冲突
-    3. 保留非标题段落的 numPr（如列表项的编号）
-    4. 处理 Body Text 2 样式：重置为 Normal，防止父文档编号样式感染
-
-    自动根据文档的 styles 表识别标题样式 ID 映射（兼容 docxcompose 样式映射后的结果）。
-    """
     heading_level_map = _build_heading_level_map(doc)
 
     qn_pStyle = qn('w:pStyle')
@@ -84,6 +75,9 @@ def shift_heading_levels(element, doc):
         if pPr is None:
             continue
 
+        # 🌟 提取段落纯文本内容
+        text = "".join(t.text for t in p.iter(qn('w:t')) if t.text).strip()
+
         style_elem = pPr.find(qn_pStyle)
         is_heading = False
         is_body_text_2 = False
@@ -91,40 +85,49 @@ def shift_heading_levels(element, doc):
         if style_elem is not None:
             val = style_elem.get(qn('w:val'), '')
 
-            # 匹配文本格式：Heading1 / Heading 1 / Heading11 等
+            # 判断是否为标题
             m = re.match(r'^Heading\s*(\d+)$', val, re.IGNORECASE)
-            if m:
-                is_heading = True
-                old_level = int(m.group(1))
-                new_level = min(old_level + 1, 9)
-                style_elem.set(qn('w:val'), f'Heading{new_level}')
-            # 匹配动态构建的样式 ID 映射（docxcompose 映射后的数字 ID）
-            elif val in heading_level_map:
-                is_heading = True
-                old_level = heading_level_map[val]
-                new_level = min(old_level + 1, 9)
-                # 查找新级别对应的样式 ID
-                new_style_id = None
-                for sid, level in heading_level_map.items():
-                    if level == new_level:
-                        new_style_id = sid
-                        break
-                if new_style_id:
-                    style_elem.set(qn('w:val'), new_style_id)
-                else:
-                    # fallback 到文本格式
-                    style_elem.set(qn('w:val'), f'Heading{new_level}')
-            # 处理 Body Text 2 样式：重置为 Normal
-            # Word 中样式 ID 可能是 "BodyText2" 或 "Body Text 2"
-            elif val == '2' or val.lower().replace(' ', '') == 'bodytext2':
-                is_body_text_2 = True
-                style_elem.set(qn('w:val'), 'Normal')
+            is_heading_match = bool(m or val in heading_level_map)
+            
+            # 判断是否为“正文文本”的变体（罪魁祸首：ID为 2 或 3）
+            is_body_text_variant = val in ['2', '3'] or 'bodytext' in val.lower().replace(' ', '')
 
-        # 剥离标题段落的 numPr，防止编号冲突
-        # Body Text 2 样式也需要剥离 numPr
+            if is_heading_match or is_body_text_variant:
+                # 🛡️ 绝杀拦截：如果是长文本或以冒号/句号结尾，统统打回原形
+                if len(text) > 35 or text.endswith(('。', '.', '：', ':')) or not text:
+                    style_elem.set(qn('w:val'), 'Normal')
+                    is_body_text_2 = True
+                else:
+                    if is_heading_match:
+                        is_heading = True
+                        if m:
+                            old_level = int(m.group(1))
+                            new_level = min(old_level + 1, 9)
+                            style_elem.set(qn('w:val'), f'Heading{new_level}')
+                        elif val in heading_level_map:
+                            old_level = heading_level_map[val]
+                            new_level = min(old_level + 1, 9)
+                            new_style_id = None
+                            for sid, level in heading_level_map.items():
+                                if level == new_level:
+                                    new_style_id = sid
+                                    break
+                            if new_style_id:
+                                style_elem.set(qn('w:val'), new_style_id)
+                            else:
+                                style_elem.set(qn('w:val'), f'Heading{new_level}')
+                    elif is_body_text_variant:
+                        # 确实是短文本的 Body Text，为了防止 ID 冲突也洗成 Normal
+                        style_elem.set(qn('w:val'), 'Normal')
+                        is_body_text_2 = True
+
+        # 剥离可能残留的编号属性
         if is_heading or is_body_text_2:
             numPr = pPr.find(qn_numPr)
             if numPr is not None:
+                num_id = numPr.find(qn('w:numId'))
+                if num_id is not None and num_id.get(qn('w:val')) == '0':
+                    continue 
                 pPr.remove(numPr)
 
 
@@ -179,7 +182,15 @@ def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
 
         # 标题降级、Body Text 2 重置（docxcompose 不处理这个）
         shift_heading_levels(new_element, main_doc)
-
+# ========================================================
+        # 👇👇👇 方案B：抓鬼代码 👇👇👇
+        # ========================================================
+        paragraph_text = "".join(t.text for t in new_element.iter(qn('w:t')) if t.text)
+        if "如网关故障" in paragraph_text:
+            print("\n🚨🚨🚨 抓到幽灵了！马上要插入的 XML 是：\n")
+            print(new_element.xml)
+            print("\n🚨🚨🚨 抓鬼结束\n")
+        # ========================================================
         parent_elm.insert(insert_index, new_element)
         insert_index += 1
         inserted_count += 1
