@@ -316,12 +316,6 @@ export default function CreateBid() {
           return group;
         });
         
-        console.log('🔍 构建的产品树数据:', treeData);
-        console.log('🔍 服务手册统计:', {
-          总产品数: rawData.length,
-          有服务手册的产品数: Object.keys(serviceManualsByProductId).length,
-          总服务手册数: Object.values(serviceManualsByProductId).reduce((sum, arr) => sum + arr.length, 0)
-        });
         setProductTreeData(treeData);
       } catch (error) {
         console.error('加载产品数据失败:', error);
@@ -414,8 +408,6 @@ export default function CreateBid() {
 
   // 处理树选择变化
   const handleTreeSelectChange = useCallback((selectedValues) => {
-    console.log('🔍 handleTreeSelectChange 收到选择值:', selectedValues);
-    
     if (!Array.isArray(selectedValues)) {
       selectedValues = [];
     }
@@ -436,21 +428,12 @@ export default function CreateBid() {
       }
     });
     
-    console.log('🔍 分离后的ID:', {
-      产品ID: productIds,
-      服务手册ID: serviceManualIds,
-      产品数量: productIds.length,
-      服务手册数量: serviceManualIds.length
-    });
-    
     setSelectedProductIds(productIds);
     setSelectedServiceManualIds(serviceManualIds);
   }, []);
 
   const handleFileUpload = async (event) => {
-    console.log('🔍 [handleFileUpload] 文件上传开始');
     const file = event.target.files[0];
-    console.log('🔍 上传文件:', file.name, '大小:', file.size);
     if (!file || !user) return message.error('请先登录！');
 
     const ext = file.name.split('.').pop().toLowerCase();
@@ -466,13 +449,7 @@ export default function CreateBid() {
       message.loading({ content: '正在调用后端解析标书...', key: 'scan', duration: 0 });
 
       // 调用后端API解析
-      console.log('🔵 [前端] 开始调用后端 parseBidDocx...');
       const parseResult = await parseBidDocx(file);
-      console.log('🔵 [前端] 后端返回成功:', parseResult.success);
-      console.log('🔵 [前端] normalBlanks:', parseResult.normalBlanks?.length);
-      console.log('🔵 [前端] dynamicTables:', parseResult.dynamicTables?.length);
-      console.log('🔵 [前端] manualTables:', parseResult.manualTables?.length);
-      console.log('🔵 [前端] meta:', JSON.stringify(parseResult.meta));
       
       if (!parseResult.success) {
         throw new Error(parseResult.message || '解析失败');
@@ -2486,7 +2463,7 @@ if (attachments) {
                                             }
                                           };
                                         });
-                                        console.log(`✅ [Dify填充-汇总表] ${personName}: 数据行已追加到累积表格`);
+                                        
                                       } else {
                                         // 单人简历表：直接存储
                                         setFilledTableHtmls(prev => ({
@@ -2496,7 +2473,6 @@ if (attachments) {
                                             byPerson: { [personName]: result.filled_table_html }
                                           }
                                         }));
-                                        console.log(`✅ [Dify填充-单人简历表] ${personName}: HTML表格已生成，长度=${result.filled_table_html.length}字符`);
                                       }
                                       
                                       message.success(`✅ ${personName} 填充完成`);

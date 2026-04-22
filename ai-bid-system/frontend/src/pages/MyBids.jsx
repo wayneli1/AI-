@@ -35,7 +35,7 @@ const MyBids = () => {
       if (error) throw error;
       setProjects(data || []);
     } catch (error) {
-      console.error('获取项目失败:', error);
+
       message.error('获取项目失败');
     } finally {
       setLoading(false);
@@ -119,7 +119,7 @@ const MyBids = () => {
       setSelectedIds(new Set());
       fetchProjects();
     } catch (error) {
-      console.error('批量删除失败:', error);
+
       message.error('批量删除失败，请重试');
     } finally {
       setIsBatchDeleting(false);

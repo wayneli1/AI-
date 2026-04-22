@@ -49,7 +49,6 @@ const ImageLibrary = () => {
 
       setCategories(data || []);
     } catch (error) {
-      console.error('获取分类失败:', error);
       message.error('获取分类列表失败');
     } finally {
       setLoadingCategories(false);
@@ -92,7 +91,6 @@ const ImageLibrary = () => {
 
       setImages(formattedImages);
     } catch (error) {
-      console.error('获取图片失败:', error);
       message.error('获取图片列表失败');
     } finally {
       setLoadingImages(false);
@@ -150,7 +148,6 @@ const ImageLibrary = () => {
       // 自动选中新创建的分类
       handleCategorySelect(data.id);
     } catch (error) {
-      console.error('创建分类失败:', error);
       message.error('创建分类失败，请重试');
     } finally {
       setIsCreatingCategory(false);
@@ -191,7 +188,6 @@ const ImageLibrary = () => {
         handleCategorySelect('all');
       }
     } catch (error) {
-      console.error('删除分类失败:', error);
       message.error('删除分类失败，请重试');
     } finally {
       setIsDeleteModalVisible(false);
@@ -327,7 +323,6 @@ const ImageLibrary = () => {
               placement: 'bottomRight',
               duration: 5
             });
-            console.error('数据库插入错误:', insertError);
             return;
           }
 
@@ -368,7 +363,7 @@ const ImageLibrary = () => {
                   .eq('id', insertDataResult.id);
               }
             } catch (syncError) {
-              console.error('同步到Dify失败:', syncError);
+              // Dify同步失败，不影响本地状态
             }
             
             setImages(prev => prev.map(img => 
@@ -383,7 +378,6 @@ const ImageLibrary = () => {
               duration: 4
             });
           } catch (ocrError) {
-            console.error(`OCR提取失败（图片ID: ${insertDataResult.id}）:`, ocrError);
             await supabase
               .from('images')
               .update({ ocr_status: 'failed' })
@@ -398,7 +392,6 @@ const ImageLibrary = () => {
             });
           }
         } catch (fileError) {
-          console.error(`上传文件 ${file.name} 失败:`, fileError);
           notification.error({
             key: taskKey,
             message: '上传失败',
@@ -479,7 +472,6 @@ const ImageLibrary = () => {
         try {
           await deleteDocumentFromDify(imageToDelete.dify_document_id);
         } catch (difyError) {
-          console.error('从 Dify 知识库删除图片数据失败:', difyError);
           message.warning('图片已从本地删除，但 Dify 知识库文档删除失败，请手动清理');
         }
       }
@@ -509,7 +501,6 @@ const ImageLibrary = () => {
       setImages(prev => prev.filter(img => img.id !== imageId));
       message.success('图片及 AI 记忆删除成功');
     } catch (error) {
-      console.error('删除失败:', error);
       message.error('删除失败，请重试');
     }
   };

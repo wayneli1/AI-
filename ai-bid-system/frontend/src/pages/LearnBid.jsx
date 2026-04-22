@@ -119,7 +119,6 @@ export default function LearnBid() {
       if (error) throw error;
       setSystemSlots(normalizeTemplateSlots((data || []).length ? (data || []) : DEFAULT_TEMPLATE_SLOTS));
     } catch (error) {
-      console.error('加载模板槽位失败:', error);
       setSystemSlots(normalizeTemplateSlots(DEFAULT_TEMPLATE_SLOTS));
     } finally {
       setLoading(false);
@@ -162,7 +161,6 @@ export default function LearnBid() {
 
       setSavedLearningRecords(buildSavedLearningRecords(slotRes.data || [], assetRes.data || [], sampleRes.data || []));
     } catch (error) {
-      console.error('加载学习管理数据失败:', error);
       setSavedLearningRecords([]);
     } finally {
       setSavedLoading(false);
@@ -182,7 +180,6 @@ export default function LearnBid() {
       setCompanyOptions(options);
       setSelectedCompanyId((prev) => (prev && options.some((item) => item.value === prev) ? prev : options[0]?.value || null));
     } catch (error) {
-      console.error('加载投标主体失败:', error);
       setCompanyOptions([]);
       setSelectedCompanyId(null);
     }
@@ -318,7 +315,6 @@ export default function LearnBid() {
       closeEditor();
       await loadSavedLearningRecords();
     } catch (error) {
-      console.error('保存人工校验结果失败:', error);
       message.error(`保存失败: ${error.message}`);
     } finally {
       setSavingManagedSlot('');
@@ -409,7 +405,7 @@ export default function LearnBid() {
               };
             }
           } catch (error) {
-            console.warn(`AI 归纳 ${slot.slot_name} 失败，回退到本地规则:`, error);
+            // AI 归纳失败，使用本地规则结果
           }
         }
 
@@ -439,7 +435,6 @@ export default function LearnBid() {
       setProgress({ percent: 100, text: '整理完成，请先校对后确认使用' });
       message.success(`已完成整理，识别到 ${learned.length} 个可复用内容项`);
     } catch (error) {
-      console.error('自动学习失败:', error);
       message.error(`学习失败: ${error.message}`);
       setProgress({ percent: 0, text: '学习失败，请重试' });
     } finally {
@@ -536,7 +531,6 @@ export default function LearnBid() {
       await Promise.all([loadExistingSlots(), loadSavedLearningRecords()]);
       message.success('整理结果已确认并投入使用');
     } catch (error) {
-      console.error('确认学习结果失败:', error);
       message.error(`确认失败: ${error.message}`);
     } finally {
       setConfirming(false);
