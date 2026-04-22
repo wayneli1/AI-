@@ -832,11 +832,6 @@ if (images.length > 0) {
     }
 
     try {
-      console.log('🔍 [handleExportFilledWord] 开始导出Word文档（新架构：后端处理）');
-      console.log('🔍 导出参数:', {
-        scannedBlanksCount: scannedBlanks.length,
-        manualEditsCount: Object.keys(manualEdits).length,
-      });
 
       // 数据完整性验证
       const scannedBlankIds = new Set(scannedBlanks.map(b => b.id));
@@ -847,10 +842,7 @@ if (images.length > 0) {
       );
       
       if (orphanedBlanks.length > 0) {
-        console.error('❌ 发现孤立的blanks（有值但不在scannedBlanks中）:', orphanedBlanks);
-        orphanedBlanks.forEach(id => {
-          console.error(`  - ${id}: "${manualEdits[id].substring(0, 50)}..."`);
-        });
+        // 静默处理，不影响用户
       }
 
       message.loading({ content: '正在生成已填报的 Word 文件...', key: 'export', duration: 0 });
@@ -865,8 +857,6 @@ if (images.length > 0) {
           type: blank.type || '',
           context: blank.context || '',
         }));
-      
-      console.log('📝 构建的 normal_blanks 数据:', normalBlanksData.length, '个填空');
 
       // 从 manualEdits 中提取所有 [INSERT_DOC:xxx] 暗号
       const codesToResolve = new Map();
@@ -885,7 +875,6 @@ if (images.length > 0) {
         }
       }
 
-      console.log('🔍 从 manualEdits 中提取到的暗号:', Array.from(codesToResolve.keys()));
 
       // 提取动态表格数据（根据fillMode选择不同的HTML）
       const dynamicTableDataList = Object.keys(filledTableHtmls || {})
@@ -898,15 +887,12 @@ if (images.length > 0) {
           if (fillMode === 'multi_person') {
             // 汇总表：使用累积的完整表格
             filledHtml = tableData?.accumulated || '';
-            console.log(`📊 表格 ${tableId} (汇总表): 使用累积表格，长度=${filledHtml.length}`);
           } else {
             // 单人简历表：使用单个表格
             filledHtml = tableData?.single || '';
-            console.log(`📊 表格 ${tableId} (单人简历表): 使用单个表格，长度=${filledHtml.length}`);
           }
           
           if (!filledHtml) {
-            console.warn(`⚠️ 表格 ${tableId} 没有填充数据`);
             return null;
           }
           
@@ -919,20 +905,11 @@ if (images.length > 0) {
         })
         .filter(item => item && item.filled_html);
 
-      console.log('🔍 动态表格数据:', dynamicTableDataList.length, '个表格');
-      console.log('🔍 动态表格详情:', dynamicTableDataList);
-      dynamicTableDataList.forEach(item => {
-        const imgByPerson = item.append_images_by_person || {};
-        const totalImages = Object.values(imgByPerson).flat().length;
-        console.log(`🔍 表格 ${item.table_id} 图片数据:`, imgByPerson, `共 ${totalImages} 张`);
-      });
-      console.log('🔍 dynamicTableImages 原始状态:', dynamicTableImages);
 
       // ===== 如果有服务手册暗号，需要查询 Supabase 构建 mapping =====
       let dynamicManualUrlMap = {};
       
       if (codesToResolve.size > 0) {
-        console.log('📡 正在查询服务手册资产以动态构建映射...');
 
         const { data: products, error: productsError } = await supabase
           .from('products')
@@ -942,7 +919,6 @@ if (images.length > 0) {
         if (productsError) throw productsError;
 
         const productIds = (products || []).map(p => p.id);
-        console.log('📡 当前用户的产品ID数量:', productIds.length);
 
         let serviceManuals = [];
         if (productIds.length > 0) {
@@ -964,16 +940,12 @@ if (images.length > 0) {
             return isDoc && isManual;
           });
 
-          console.log('📡 找到的服务手册资产:', serviceManuals.length);
-          serviceManuals.forEach(sm => {
-            console.log(`  - ${sm.asset_name} -> ${sm.file_url}`);
-          });
+          // 静默过滤结果
         }
 
         // ===== 用标准化名称模糊匹配暗号与资产 =====
         for (const [fullCode, { name: codeName }] of codesToResolve) {
           const normalizedCodeName = normalizeProductName(codeName);
-          console.log(`🔍 尝试匹配暗号: ${fullCode}, 标准化: ${normalizedCodeName}`);
 
           let matched = false;
           for (const manual of serviceManuals) {
@@ -983,34 +955,23 @@ if (images.length > 0) {
             manualName = manualName.replace(/[\s_-]+/g, ' ').trim();
             const normalizedManualName = normalizeProductName(manualName);
 
-            console.log(`  对比: "${normalizedManualName}" (原始: "${manual.asset_name}")`);
 
             if (normalizedCodeName === normalizedManualName ||
                 normalizedManualName.includes(normalizedCodeName) ||
                 normalizedCodeName.includes(normalizedManualName)) {
               dynamicManualUrlMap[fullCode] = manual.file_url;
-              console.log(`✅ 匹配成功: ${fullCode} -> ${manual.file_url}`);
               matched = true;
               break;
             }
           }
 
           if (!matched) {
-            console.warn(`⚠️ 未找到匹配的资产: ${fullCode}`);
+            // 未找到匹配资产，静默处理
           }
         }
-
-        console.log('📡 动态构建的 mapping:', dynamicManualUrlMap);
       }
 
-      // ===== 调用新的后端 API：/api/fill-blanks =====
-      console.log('📡 调用后端填充接口 /api/fill-blanks');
-      console.log('📡 请求数据:', {
-        normalBlanks: normalBlanksData.length,
-        dynamicTables: dynamicTableDataList.length,
-        mappingKeys: Object.keys(dynamicManualUrlMap).length
-      });
-
+      // 调用新的后端 API：/api/fill-blanks
       const filledBlob = await exportFilledDocument(
         originalFile,
         normalBlanksData,
@@ -1018,15 +979,11 @@ if (images.length > 0) {
         dynamicManualUrlMap
       );
 
-      console.log('📡 后端返回文档，大小:', filledBlob.size, 'bytes');
-
       // 下载文件
       saveAs(filledBlob, `已填报_${originalFile.name}`);
       message.success({ content: '导出成功！格式 100% 还原原文件。', key: 'export' });
 
     } catch (err) {
-      console.error('❌ 导出失败:', err);
-      console.error('❌ 错误堆栈:', err.stack);
       if (err.message && (err.message.includes('Failed to fetch') || err.message.includes('NetworkError'))) {
         message.error({
           content: '网络错误：请确认后端服务已启动',
