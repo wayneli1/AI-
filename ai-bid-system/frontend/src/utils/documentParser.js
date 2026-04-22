@@ -137,7 +137,6 @@ const parsePDF = async (file) => {
     fullText += pageText + '\n\n';
   }
   
-  console.log(`✅ PDF 解析成功，共 ${pdf.numPages} 页，${fullText.length} 个字符`);
   return fullText;
 };
 
@@ -262,7 +261,6 @@ const parseWord = async (file) => {
   }
 
   const fullText = output.join('\n\n');
-  console.log(`Word 解析成功，共 ${fullText.length} 个字符`);
   return fullText;
 };
 
@@ -332,7 +330,6 @@ const parseWordToMarkdown = async (file) => {
   let markdown = turndownService.turndown(html);
   markdown = cleanMarkdown(markdown);
   
-  console.log(`✅ Word 转 Markdown 成功，共 ${markdown.length} 个字符`);
   return markdown;
 };
 
@@ -348,7 +345,6 @@ const enhanceTextToMarkdown = (text) => {
   
   markdown = markdown.replace(/\n{3,}/g, '\n\n');
   
-  console.log(`✅ PDF 转 Markdown 成功，共 ${markdown.length} 个字符`);
   return markdown;
 };
 

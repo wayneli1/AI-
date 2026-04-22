@@ -5,15 +5,12 @@ export async function parseBidDocx(file) {
   formData.append('file', file);
 
   const url = `${BACKEND_API_BASE}/api/parse-bid-docx`;
-  console.log('🚀 [backendApi] 发送请求到:', url);
-  console.log('🚀 [backendApi] 文件:', file.name, file.size, 'bytes');
 
   const response = await fetch(url, {
     method: 'POST',
     body: formData,
   });
 
-  console.log('🚀 [backendApi] 响应状态:', response.status);
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -22,13 +19,6 @@ export async function parseBidDocx(file) {
   }
 
   const result = await response.json();
-  console.log('🚀 [backendApi] 响应数据:', {
-    success: result.success,
-    normalBlanks: result.normalBlanks?.length,
-    dynamicTables: result.dynamicTables?.length,
-    manualTables: result.manualTables?.length,
-    meta: result.meta,
-  });
   return result;
 }
 
@@ -57,20 +47,12 @@ export async function exportFilledDocument(templateFile, normalBlanks = [], dyna
   formData.append('mapping', JSON.stringify(mapping));
 
   const url = `${BACKEND_API_BASE}/api/fill-blanks`;
-  console.log('📤 [exportFilledDocument] 发送请求到:', url);
-  console.log('📤 [exportFilledDocument] 数据:', {
-    file: templateFile.name,
-    normalBlanks: normalBlanks.length,
-    dynamicTables: dynamicTables.length,
-    mappingKeys: Object.keys(mapping).length
-  });
 
   const response = await fetch(url, {
     method: 'POST',
     body: formData,
   });
 
-  console.log('📤 [exportFilledDocument] 响应状态:', response.status);
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -79,6 +61,5 @@ export async function exportFilledDocument(templateFile, normalBlanks = [], dyna
   }
 
   const blob = await response.blob();
-  console.log('📤 [exportFilledDocument] 成功接收文档:', blob.size, 'bytes');
   return blob;
 }

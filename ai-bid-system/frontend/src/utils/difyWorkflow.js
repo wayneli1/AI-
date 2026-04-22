@@ -241,7 +241,6 @@ export const intelligentChunking = (markdownContent, options = {}) => {
     maxChunks = 20
   } = options;
 
-  console.log(`开始智能分块，内容长度: ${markdownContent.length} 字符，策略: ${strategy}`);
 
   let content = markdownContent.trim();
   if (content.length === 0) {
@@ -251,13 +250,11 @@ export const intelligentChunking = (markdownContent, options = {}) => {
   if (strategy === 'semantic' || strategy === 'hybrid') {
     const semanticChunks = chunkByHeadings(content, chunkSize, overlap, maxChunks);
     if (semanticChunks.length > 0 && semanticChunks.length <= maxChunks) {
-      console.log(`语义分块成功: ${semanticChunks.length} 个分块`);
       return semanticChunks;
     }
   }
 
   const fixedChunks = chunkByFixedSize(content, chunkSize, overlap, minChunkSize, maxChunks);
-  console.log(`固定大小分块: ${fixedChunks.length} 个分块`);
   
   return fixedChunks;
 };

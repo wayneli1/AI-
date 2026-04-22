@@ -58,7 +58,6 @@ export async function callSmartFill({ tableId, tableType, anchorContext, headers
     fillMode: fillMode || 'multi_person',  // 🆕 传递填充模式
   };
 
-  console.log(`🤖 [智能填充] 调用: 表格${tableId}, 人员=${slimPerson.name}, 职位=${positionName}, 模式=${fillMode}, 空白数=${slimBlanks.length}, HTML长度=${tableHtml?.length || 0}`);
 
   try {
     const response = await fetch(url, {
@@ -73,7 +72,6 @@ export async function callSmartFill({ tableId, tableType, anchorContext, headers
     }
 
     const result = await response.json();
-    console.log(`✅ [智能填充] 成功: 表格${tableId}, ${result.fills?.length || 0} 个填充值`);
     return result;
   } catch (error) {
     console.error(`❌ [智能填充] 失败:`, error);

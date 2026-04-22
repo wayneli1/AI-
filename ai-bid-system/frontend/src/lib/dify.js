@@ -8,8 +8,6 @@ export async function runDifyAnalysis(file, user_id) {
     formData.append('file', file);
     formData.append('user', user_id);
 
-    console.log('Dify API 请求 URL:', `${API_BASE}/files/upload`);
-    console.log('API Key:', API_KEY);
     
     const uploadResponse = await fetch(`${API_BASE}/files/upload`, {
       method: 'POST',

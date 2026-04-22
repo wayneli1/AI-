@@ -39,7 +39,6 @@ export const appendPersonRowToTable = (accumulatedHtml, newPersonHtml, personNam
   });
   
   if (!hasData) {
-    console.warn(`${personName} 的数据行全是[空白]，跳过追加`);
     return accumulatedHtml;
   }
   
@@ -59,7 +58,6 @@ export const appendPersonRowToTable = (accumulatedHtml, newPersonHtml, personNam
       // 替换这一行
       const clonedRow = dataRow.cloneNode(true);
       row.parentNode.replaceChild(clonedRow, row);
-      console.log(`✅ ${personName} 的数据已插入到第 ${i} 行`);
       inserted = true;
       break;
     }
@@ -69,7 +67,6 @@ export const appendPersonRowToTable = (accumulatedHtml, newPersonHtml, personNam
     // 如果没有空白行，直接追加到表格末尾
     const clonedRow = dataRow.cloneNode(true);
     accTable.appendChild(clonedRow);
-    console.log(`✅ ${personName} 的数据已追加到表格末尾`);
   }
   
   return accTable.outerHTML;

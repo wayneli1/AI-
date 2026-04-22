@@ -45,7 +45,6 @@ export const extractTextFromImage = async (file) => {
     // 4. 解析结果
     if (ocrData.words_result) {
       const fullText = ocrData.words_result.map(item => item.words).join('\n');
-      console.log("✅ OCR 提取成功，共提取", fullText.length, "个字符");
       return fullText;
     } else {
       throw new Error(ocrData.error_msg || '百度接口未返回识别结果');

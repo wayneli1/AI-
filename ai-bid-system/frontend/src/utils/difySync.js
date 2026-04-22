@@ -12,7 +12,6 @@ const autoCleanText = async (rawText) => {
   if (!CLEANER_API_KEY) return rawText;
 
   try {
-    console.log("🧼 引擎 3 启动：正在全自动清洗并脱敏长文本...");
     const response = await fetch(`${DIFY_API_BASE}/workflows/run`, {
       method: 'POST',
       headers: {
@@ -32,7 +31,6 @@ const autoCleanText = async (rawText) => {
     const cleanedText = result?.data?.outputs?.text;
 
     if (cleanedText && String(cleanedText).trim() !== '') {
-      console.log("✅ 引擎 3 清洗完毕");
       return String(cleanedText);
     }
     
@@ -58,7 +56,6 @@ export const syncTextToDify = async (documentName, textContent, category = '通�
     const taggedContent = `【所属主体：${category}】\n\n${safeContent}`;
     const finalFileName = `[${category}]_${documentName}`;
 
-    console.log(`🚀 正在将 [${category}] 的资料同步至知识库...`);
     
     const response = await fetch(`${DIFY_API_BASE}/datasets/${DATASET_ID}/document/create_by_text`, {
       method: 'POST',
@@ -77,7 +74,6 @@ export const syncTextToDify = async (documentName, textContent, category = '通�
     const result = await response.json();
 
     if (result.document && result.document.id) {
-      console.log(`✅ 同步成功！Dify 文档 ID: ${result.document.id}`);
       return result.document.id;
     } else {
       throw new Error(result.message || 'Dify 同步异常');
