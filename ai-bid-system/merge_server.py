@@ -1,9 +1,10 @@
-# merge_server.py - 纯XML节点深度拷贝方案（废弃altChunk，完美适配WPS）
+# merge_server.py - 使用 docxcompose 进行文档合并
 from docx.oxml.ns import qn
 from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from docx import Document
+from docxcompose.composer import Composer
 import json
 import requests
 import re
@@ -48,171 +49,89 @@ def find_url_fuzzy(code, url_mapping):
     return None
 
 
-def transfer_images(main_doc, sub_doc, new_element):
+def _build_heading_level_map(doc):
     """
-    【核心魔法】：借壳生蛋法
-    将子文档的物理图片文件打包进主文档的 ZIP 中，并修复 XML 关系映射。
-    完全适配 BaseOxmlElement，日志不再疯狂刷屏。
+    根据文档的 styles 表动态构建样式 ID -> 标题级别的映射。
     """
-    from docx.oxml.ns import qn
-    
-    # 使用 lxml 的通配符语法绕过命名空间检查：
-    # *[local-name()='blip'] 的意思是不管命名空间是什么，只要标签名是 'blip' 就行
+    mapping = {}
     try:
-        blips = new_element.xpath('.//*[local-name()="blip"]')
-        imagedatas = new_element.xpath('.//*[local-name()="imagedata"]')
+        for style in doc.styles:
+            if style.name:
+                m = re.match(r'^Heading\s*(\d+)$', style.name, re.IGNORECASE)
+                if m:
+                    mapping[style.style_id] = int(m.group(1))
     except Exception as e:
-        # 如果还是报错，说明这个节点压根不支持 xpath，直接静默跳过
-        return
-    
-    # 获取需要修改的属性名
-    embed_attr = qn('r:embed')
-    id_attr = qn('r:id')
-    
-    # 遍历找到的所有图片节点
-    for node, attr_name in [(b, embed_attr) for b in blips] + [(i, id_attr) for i in imagedatas]:
-        old_rid = node.get(attr_name)
-        
-        # 确保这个 rId 在子文档里真的存在
-        if old_rid and old_rid in sub_doc.part.related_parts:
-            img_part = sub_doc.part.related_parts[old_rid]
-            
-            # 确认这真的是一个图片文件
-            if 'image' in img_part.content_type:
-                try:
-                    # 1. 提取物理图片的二进制流
-                    img_stream = io.BytesIO(img_part.blob)
-                    
-                    # 2. 借壳：在主文档末尾创建一个假段落
-                    dummy_p = main_doc.add_paragraph()
-                    dummy_run = dummy_p.add_run()
-                    dummy_run.add_picture(img_stream)
-                    
-                    # 3. 偷蛋：提取刚刚生成的新 rId (同样使用通配符语法)
-                    dummy_blip = dummy_p._element.xpath('.//*[local-name()="blip"]')[0]
-                    new_rid = dummy_blip.get(embed_attr)
-                    
-                    # 4. 移花接木：更新 XML 节点
-                    node.set(attr_name, new_rid)
-                    print(f"   🖼️ 成功迁移图片关系: {old_rid} -> {new_rid}")
-                    
-                except Exception as e:
-                    print(f"   ⚠️ 单张图片迁移失败: {e}")
-                finally:
-                    # 5. 毁尸灭迹：删除假段落
-                    try:
-                        p_elm = dummy_p._element
-                        p_elm.getparent().remove(p_elm)
-                    except Exception:
-                        pass
+        print(f"   [WARN] 构建标题映射失败: {e}")
+    return mapping
+
+
+def shift_heading_levels(element, doc):
     """
-    【核心魔法】：借壳生蛋法
-    将子文档的物理图片文件打包进主文档的 ZIP 中，并修复 XML 关系映射。
+    合并子文档时处理段落样式：
+    1. 标题降一级（Heading1→Heading2 等）
+    2. 剥离标题段落的 numPr，防止编号冲突
+    3. 处理 Body Text 2 样式：重置为 Normal
     """
-    from docx.oxml.ns import nsmap
-    
-    # ⚠️ 关键修复：手动注册缺失的命名空间，防止 XPath 崩溃
-    # 补充 VML (v:) 的命名空间
-    if 'v' not in nsmap:
-        nsmap['v'] = 'urn:schemas-microsoft-com:vml'
-        
-    try:
-        # 使用传入 nsmap 的原生方式查找，彻底规避 Undefined namespace prefix 错误
-        blips = new_element.xpath('.//a:blip', namespaces=nsmap)
-        imagedatas = new_element.xpath('.//v:imagedata', namespaces=nsmap)
-    except Exception as e:
-        print(f"   ⚠️ XPath 解析跳过: {e}")
-        blips = []
-        imagedatas = []
-    
-    embed_attr = qn('r:embed')
-    id_attr = qn('r:id')
-    
-    # 将找到的图片节点和它们对应的属性名组合起来遍历
-    for node, attr_name in [(b, embed_attr) for b in blips] + [(i, id_attr) for i in imagedatas]:
-        old_rid = node.get(attr_name)
-        
-        # 确保这个 rId 在子文档里真的存在
-        if old_rid and old_rid in sub_doc.part.related_parts:
-            img_part = sub_doc.part.related_parts[old_rid]
-            
-            # 确认这真的是一个图片文件
-            if 'image' in img_part.content_type:
-                try:
-                    # 1. 提取物理图片的二进制流
-                    img_stream = io.BytesIO(img_part.blob)
-                    
-                    # 2. 借壳：在主文档末尾创建一个假段落，让 python-docx 帮我们完成复杂的 ZIP 注入
-                    dummy_p = main_doc.add_paragraph()
-                    dummy_run = dummy_p.add_run()
-                    dummy_run.add_picture(img_stream)
-                    
-                    # 3. 偷蛋：从假段落的 XML 里提取刚刚生成的新 rId
-                    dummy_blip = dummy_p._element.xpath('.//a:blip', namespaces=nsmap)[0]
-                    new_rid = dummy_blip.get(embed_attr)
-                    
-                    # 4. 移花接木：更新我们正准备插入的 XML 节点
-                    node.set(attr_name, new_rid)
-                    print(f"   🖼️ 成功迁移图片关系: {old_rid} -> {new_rid}")
-                    
-                except Exception as e:
-                    print(f"   ⚠️ 单张图片迁移失败: {e}")
-                finally:
-                    # 5. 毁尸灭迹：从 XML 树中彻底删除这个假段落（但图片文件已经合法存留在文档包里了）
-                    try:
-                        p_elm = dummy_p._element
-                        p_elm.getparent().remove(p_elm)
-                    except Exception:
-                        pass
-    """
-    【核心魔法】：借壳生蛋法
-    将子文档的物理图片文件打包进主文档的 ZIP 中，并修复 XML 关系映射。
-    """
-    # 查找所有现代内嵌图片 <a:blip> 和 旧版浮动图片 <v:imagedata>
-    blips = new_element.xpath('.//a:blip')
-    imagedatas = new_element.xpath('.//v:imagedata')
-    
-    embed_attr = qn('r:embed')
-    id_attr = qn('r:id')
-    
-    # 将找到的图片节点和它们对应的属性名组合起来遍历
-    for node, attr_name in [(b, embed_attr) for b in blips] + [(i, id_attr) for i in imagedatas]:
-        old_rid = node.get(attr_name)
-        
-        # 确保这个 rId 在子文档里真的存在
-        if old_rid and old_rid in sub_doc.part.related_parts:
-            img_part = sub_doc.part.related_parts[old_rid]
-            
-            # 确认这真的是一个图片文件
-            if 'image' in img_part.content_type:
-                try:
-                    # 1. 提取物理图片的二进制流
-                    img_stream = io.BytesIO(img_part.blob)
-                    
-                    # 2. 借壳：在主文档末尾创建一个假段落，让 python-docx 帮我们完成复杂的 ZIP 注入
-                    dummy_p = main_doc.add_paragraph()
-                    dummy_run = dummy_p.add_run()
-                    dummy_run.add_picture(img_stream)
-                    
-                    # 3. 偷蛋：从假段落的 XML 里提取刚刚生成的新 rId
-                    dummy_blip = dummy_p._element.xpath('.//a:blip')[0]
-                    new_rid = dummy_blip.get(embed_attr)
-                    
-                    # 4. 移花接木：更新我们正准备插入的 XML 节点
-                    node.set(attr_name, new_rid)
-                    print(f"   🖼️ 成功迁移图片关系: {old_rid} -> {new_rid}")
-                    
-                except Exception as e:
-                    print(f"   ⚠️ 单张图片迁移失败: {e}")
-                finally:
-                    # 5. 毁尸灭迹：从 XML 树中彻底删除这个假段落（但图片文件已经合法存留在文档包里了）
-                    p_elm = dummy_p._element
-                    p_elm.getparent().remove(p_elm)
+    heading_level_map = _build_heading_level_map(doc)
+
+    qn_pStyle = qn('w:pStyle')
+    qn_numPr = qn('w:numPr')
+
+    for p in element.iter(qn('w:p')):
+        pPr = p.find(qn('w:pPr'))
+        if pPr is None:
+            continue
+
+        style_elem = pPr.find(qn_pStyle)
+        is_heading = False
+        is_body_text_2 = False
+
+        if style_elem is not None:
+            val = style_elem.get(qn('w:val'), '')
+
+            # 匹配文本格式：Heading1 / Heading 1 / Heading11 等
+            m = re.match(r'^Heading\s*(\d+)$', val, re.IGNORECASE)
+            if m:
+                is_heading = True
+                old_level = int(m.group(1))
+                new_level = min(old_level + 1, 9)
+                style_elem.set(qn('w:val'), f'Heading{new_level}')
+            # 匹配动态构建的样式 ID 映射（docxcompose 映射后的数字 ID）
+            elif val in heading_level_map:
+                is_heading = True
+                old_level = heading_level_map[val]
+                new_level = min(old_level + 1, 9)
+                new_style_id = None
+                for sid, level in heading_level_map.items():
+                    if level == new_level:
+                        new_style_id = sid
+                        break
+                if new_style_id:
+                    style_elem.set(qn('w:val'), new_style_id)
+                else:
+                    style_elem.set(qn('w:val'), f'Heading{new_level}')
+            # 处理 Body Text 2 样式：重置为 Normal
+            # Word 中样式 ID 可能是 "BodyText2" 或 "Body Text 2"
+            elif val == '2' or val.lower().replace(' ', '') == 'bodytext2':
+                is_body_text_2 = True
+                style_elem.set(qn('w:val'), 'Normal')
+
+        # 剥离标题段落的 numPr
+        if is_heading or is_body_text_2:
+            numPr = pPr.find(qn_numPr)
+            if numPr is not None:
+                pPr.remove(numPr)
 
 
 def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
     """
-    带图片解析的深度 XML 缝合版
+    使用 docxcompose 插入子文档，自动处理样式映射、编号冲突、图片迁移。
+    保留标题降级和 Body Text 2 重置逻辑。
+
+    关键设计决策：
+    - restart_numbering=False: 防止 docxcompose 重置多级列表编号，
+      避免 ilvl=0 硬编码导致层级丢失（如 5.4.6.3 变成 5.5）
+    - reset_reference_mapping: 每个子文档重置映射，防止 numId 冲突
     """
     sub_doc = Document(io.BytesIO(subdoc_bytes))
 
@@ -226,7 +145,15 @@ def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
     insert_index = list(parent_elm).index(target_element)
     inserted_count = 0
 
-    for child in sub_doc._element.body:
+    # 使用 docxcompose Composer 处理样式、编号、图片等
+    composer = Composer(main_doc)
+    # 🔑 关键：禁止编号重启，防止多级列表编号层级丢失
+    composer.restart_numbering = False
+    # 🔑 每个子文档都需要重置映射，防止 numId 映射冲突
+    composer.reset_reference_mapping()
+    composer._create_style_id_mapping(sub_doc)
+
+    for child in sub_doc.element.body:
         tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
 
         if tag == 'sectPr':
@@ -235,67 +162,22 @@ def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
         if tag not in ('p', 'tbl'):
             continue
 
-        # 深度拷贝图纸
+        # 深度拷贝并应用 docxcompose 转换
         new_element = copy.deepcopy(child)
-        
-        # 🌟 插入前，执行图片迁移魔法！
-        transfer_images(main_doc, sub_doc, new_element)
-        
-        # 将修复好图片的节点插入主文档
-        parent_elm.insert(insert_index, new_element)
-        insert_index += 1
-        inserted_count += 1
+        composer.add_styles(sub_doc, new_element)
+        composer.add_numberings(sub_doc, new_element)
+        composer.add_images(sub_doc, new_element)
+        composer.add_shapes(sub_doc, new_element)
+        composer.add_diagrams(sub_doc, new_element)
 
-    # 移除暗码段落
-    parent_elm.remove(target_element)
+        # 标题降级、Body Text 2 重置
+        shift_heading_levels(new_element, main_doc)
 
-    return inserted_count
-
-
-
-
-    """
-    将子文档的 XML 节点深度拷贝插入主文档，完全废弃 altChunk。
-
-    参数:
-        main_doc: python-docx Document 对象（主文档）
-        target_paragraph: python-docx Paragraph 对象（包含 [INSERT_DOC:xxx] 暗码的段落）
-        subdoc_bytes: 子文档的二进制数据
-
-    返回:
-        成功插入的节点数量
-    """
-    sub_doc = Document(io.BytesIO(subdoc_bytes))
-
-    target_element = target_paragraph._element
-    parent_elm = target_element.getparent()
-
-    if parent_elm is None:
-        print(f"   ❌ 无法找到暗码节点的父元素")
-        return 0
-
-    insert_index = list(parent_elm).index(target_element)
-
-    inserted_count = 0
-
-    for child in sub_doc._element.body:
-        tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
-
-        if tag == 'sectPr':
-            print(f"   ⏭️ 过滤掉 <w:sectPr> 节属性节点，避免破坏主文档页面布局")
-            continue
-
-        if tag not in ('p', 'tbl'):
-            print(f"   ⏭️ 跳过未知节点类型: <w:{tag}>")
-            continue
-
-        new_element = copy.deepcopy(child)
         parent_elm.insert(insert_index, new_element)
         insert_index += 1
         inserted_count += 1
 
     parent_elm.remove(target_element)
-
     return inserted_count
 
 
@@ -318,6 +200,9 @@ def find_and_replace_insert_codes(main_doc, url_mapping):
         return 0
 
     print(f"   📍 共找到 {len(paragraphs_to_process)} 个暗码引用")
+
+    # 🔄 倒序处理，避免插入操作导致后续暗码索引偏移
+    paragraphs_to_process.reverse()
 
     for para, code in paragraphs_to_process:
         print(f"\n   📍 处理暗号: [INSERT_DOC:{code}]")

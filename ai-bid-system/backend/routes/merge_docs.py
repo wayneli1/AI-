@@ -11,6 +11,7 @@ from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 from docx.text.paragraph import Paragraph
 from docx.shared import Cm
+from docxcompose.composer import Composer
 from fastapi import APIRouter, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, JSONResponse
 
@@ -46,71 +47,38 @@ def find_url_fuzzy(code, url_mapping):
     return None
 
 
-def transfer_images(main_doc, sub_doc, new_element):
+def _build_heading_level_map(doc):
+    """
+    根据文档的 styles 表动态构建样式 ID -> 标题级别的映射。
+    这样无论文档使用什么样式 ID 约定，都能正确识别标题。
+    """
+    mapping = {}
     try:
-        blips = new_element.xpath('.//*[local-name()="blip"]')
-        imagedatas = new_element.xpath('.//*[local-name()="imagedata"]')
-    except Exception:
-        return
-
-    embed_attr = qn('r:embed')
-    id_attr = qn('r:id')
-
-    for node, attr_name in [(b, embed_attr) for b in blips] + [(i, id_attr) for i in imagedatas]:
-        old_rid = node.get(attr_name)
-
-        if old_rid and old_rid in sub_doc.part.related_parts:
-            img_part = sub_doc.part.related_parts[old_rid]
-
-            if 'image' in img_part.content_type:
-                try:
-                    img_stream = io.BytesIO(img_part.blob)
-
-                    dummy_p = main_doc.add_paragraph()
-                    dummy_run = dummy_p.add_run()
-                    dummy_run.add_picture(img_stream)
-
-                    dummy_blip = dummy_p._element.xpath('.//*[local-name()="blip"]')[0]
-                    new_rid = dummy_blip.get(embed_attr)
-
-                    node.set(attr_name, new_rid)
-                    print(f"   🖼️ 成功迁移图片关系: {old_rid} -> {new_rid}")
-
-                except Exception as e:
-                    print(f"   ⚠️ 单张图片迁移失败: {e}")
-                finally:
-                    try:
-                        p_elm = dummy_p._element
-                        p_elm.getparent().remove(p_elm)
-                    except Exception:
-                        pass
+        for style in doc.styles:
+            if style.name:
+                m = re.match(r'^Heading\s*(\d+)$', style.name, re.IGNORECASE)
+                if m:
+                    mapping[style.style_id] = int(m.group(1))
+    except Exception as e:
+        print(f"   [WARN] 构建标题映射失败: {e}")
+    return mapping
 
 
-def shift_heading_levels(element):
+def shift_heading_levels(element, doc):
     """
     合并子文档时处理段落样式：
     1. 标题降一级（Heading1→Heading2 等）
-    2. 只对标题样式的段落剥离 numPr，防止：
-       - 子文档编号与父文档编号拼接（如 "5.4.1.5.3."）
-       - 普通正文被父文档编号样式感染（如 "5.5.如网关故障..."）
+    2. 剥离标题段落的 numPr，防止编号冲突
     3. 保留非标题段落的 numPr（如列表项的编号）
     4. 处理 Body Text 2 样式：重置为 Normal，防止父文档编号样式感染
-    
-    支持两种样式格式：
-    - 文本格式：Heading1, Heading 2, Heading3 等
-    - 数字 ID 格式：3 (Heading 1), 4 (Heading 2), 5 (Heading 3) 等
+
+    自动根据文档的 styles 表识别标题样式 ID 映射（兼容 docxcompose 样式映射后的结果）。
     """
+    heading_level_map = _build_heading_level_map(doc)
+
     qn_pStyle = qn('w:pStyle')
     qn_numPr = qn('w:numPr')
-    
-    # 样式 ID 到标题级别的映射（常见的 Word 标题样式 ID）
-    # 3=Heading 1, 4=Heading 2, 5=Heading 3, 6=Heading 4, 7=Heading 5, 
-    # 8=Heading 6, 9=Heading 7, 10=Heading 8, 11=Heading 9
-    style_id_to_heading_level = {
-        '3': 1, '4': 2, '5': 3, '6': 4, '7': 5,
-        '8': 6, '9': 7, '10': 8, '11': 9
-    }
-    
+
     for p in element.iter(qn('w:p')):
         pPr = p.find(qn('w:pPr'))
         if pPr is None:
@@ -119,35 +87,41 @@ def shift_heading_levels(element):
         style_elem = pPr.find(qn_pStyle)
         is_heading = False
         is_body_text_2 = False
-        
+
         if style_elem is not None:
             val = style_elem.get(qn('w:val'), '')
-            
-            # 匹配 Heading1 / Heading 1 / Heading11 等格式
+
+            # 匹配文本格式：Heading1 / Heading 1 / Heading11 等
             m = re.match(r'^Heading\s*(\d+)$', val, re.IGNORECASE)
             if m:
                 is_heading = True
                 old_level = int(m.group(1))
-                new_level = min(old_level + 1, 9)  # 最多降到 Heading9
+                new_level = min(old_level + 1, 9)
                 style_elem.set(qn('w:val'), f'Heading{new_level}')
-            # 匹配纯数字样式 ID（如 '3', '4', '5' 等）
-            elif val in style_id_to_heading_level:
+            # 匹配动态构建的样式 ID 映射（docxcompose 映射后的数字 ID）
+            elif val in heading_level_map:
                 is_heading = True
-                old_level = style_id_to_heading_level[val]
-                new_level = min(old_level + 1, 9)  # 最多降到 Heading9
-                # 将数字 ID 转换为新的数字 ID
-                new_style_id = str(new_level + 2)  # 3=Heading1, 所以 new_level+2 = 对应的 ID
-                style_elem.set(qn('w:val'), new_style_id)
-            # 处理 Body Text 2 样式：重置为 Normal，防止父文档编号样式感染
-            # Body Text 2 在父文档中可能被定义为具有编号（如级别2），导致子文档段落被错误编号
-            elif val == '2' or val.lower() == 'body text 2':
+                old_level = heading_level_map[val]
+                new_level = min(old_level + 1, 9)
+                # 查找新级别对应的样式 ID
+                new_style_id = None
+                for sid, level in heading_level_map.items():
+                    if level == new_level:
+                        new_style_id = sid
+                        break
+                if new_style_id:
+                    style_elem.set(qn('w:val'), new_style_id)
+                else:
+                    # fallback 到文本格式
+                    style_elem.set(qn('w:val'), f'Heading{new_level}')
+            # 处理 Body Text 2 样式：重置为 Normal
+            # Word 中样式 ID 可能是 "BodyText2" 或 "Body Text 2"
+            elif val == '2' or val.lower().replace(' ', '') == 'bodytext2':
                 is_body_text_2 = True
-                # 将 Body Text 2 重置为 Normal 样式
                 style_elem.set(qn('w:val'), 'Normal')
 
-        # 只对标题样式的段落剥离 numPr
-        # 非标题段落保留 numPr（保留列表编号等）
-        # Body Text 2 样式也需要剥离 numPr，防止父文档编号感染
+        # 剥离标题段落的 numPr，防止编号冲突
+        # Body Text 2 样式也需要剥离 numPr
         if is_heading or is_body_text_2:
             numPr = pPr.find(qn_numPr)
             if numPr is not None:
@@ -155,6 +129,15 @@ def shift_heading_levels(element):
 
 
 def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
+    """
+    使用 docxcompose 插入子文档，自动处理样式映射、编号冲突、图片迁移。
+    保留标题降级和 Body Text 2 重置逻辑。
+
+    关键设计决策：
+    - restart_numbering=False: 防止 docxcompose 重置多级列表编号，
+      避免 ilvl=0 硬编码导致层级丢失（如 5.4.6.3 变成 5.5）
+    - reset_reference_mapping: 每个子文档重置映射，防止 numId 冲突
+    """
     sub_doc = Document(io.BytesIO(subdoc_bytes))
 
     target_element = target_paragraph._element
@@ -167,7 +150,17 @@ def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
     insert_index = list(parent_elm).index(target_element)
     inserted_count = 0
 
-    for child in sub_doc._element.body:
+    # 使用 docxcompose Composer 处理样式、编号、图片等
+    composer = Composer(main_doc)
+    # 🔑 关键：禁止编号重启，防止多级列表编号层级丢失
+    # docxcompose 的 restart_first_numbering 会硬编码 ilvl=0，
+    # 导致 5.4.6.3 层级丢失变成 5.5
+    composer.restart_numbering = False
+    # 🔑 每个子文档都需要重置映射，防止 numId 映射冲突
+    composer.reset_reference_mapping()
+    composer._create_style_id_mapping(sub_doc)
+
+    for child in sub_doc.element.body:
         tag = child.tag.split('}')[-1] if '}' in child.tag else child.tag
 
         if tag == 'sectPr':
@@ -176,11 +169,16 @@ def insert_docx_via_xml(main_doc, target_paragraph, subdoc_bytes):
         if tag not in ('p', 'tbl'):
             continue
 
+        # 深度拷贝并应用 docxcompose 转换（样式、编号、图片、形状、图表）
         new_element = copy.deepcopy(child)
-        transfer_images(main_doc, sub_doc, new_element)
+        composer.add_styles(sub_doc, new_element)
+        composer.add_numberings(sub_doc, new_element)
+        composer.add_images(sub_doc, new_element)
+        composer.add_shapes(sub_doc, new_element)
+        composer.add_diagrams(sub_doc, new_element)
 
-        # ✅ 合并时将子文档标题降一级（Heading1→Heading2 等），自然嵌套在父文档之下
-        shift_heading_levels(new_element)
+        # 标题降级、Body Text 2 重置（docxcompose 不处理这个）
+        shift_heading_levels(new_element, main_doc)
 
         parent_elm.insert(insert_index, new_element)
         insert_index += 1
@@ -231,6 +229,9 @@ def find_and_replace_insert_codes(main_doc, url_mapping):
         return 0
 
     print(f"   📍 共找到 {len(paragraphs_to_process)} 个暗码引用")
+
+    # 🔄 倒序处理，避免插入操作导致后续暗码索引偏移
+    paragraphs_to_process.reverse()
 
     for para, code in paragraphs_to_process:
         print(f"\n   📍 处理暗号: [INSERT_DOC:{code}]")
