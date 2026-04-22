@@ -3,6 +3,7 @@ import { Outlet, useLocation } from 'react-router-dom';
 import { Button } from 'antd';
 import { PanelLeftClose, PanelLeftOpen } from 'lucide-react';
 import Sidebar from './Sidebar';
+import ScreenSizeWarning from './ScreenSizeWarning';
 
 const pageTitles = {
   '/create-bid': '新建标书',
@@ -38,6 +39,8 @@ const Layout = () => {
     <div className="flex h-screen bg-gray-50 text-gray-800">
       <Sidebar collapsed={sidebarCollapsed} />
       <main className="flex-1 overflow-auto flex flex-col">
+        {/* 屏幕适配提示 */}
+        <ScreenSizeWarning />
         {/* 页面标题栏 */}
         <div className="bg-white border-b border-gray-100 px-6 py-4">
           <div className="flex items-center justify-between">
