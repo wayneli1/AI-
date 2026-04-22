@@ -553,15 +553,7 @@ export default function CreateBid() {
     try {
       message.loading({ content: `正在调用 AI 分析并填写 ${scannedBlanks.length} 处空白...`, key: 'fill', duration: 0 });
 
-       console.log('🔍 [handleAutoFill] 调试信息开始');
-      console.log('🔍 targetCompany:', targetCompany);
-      console.log('🔍 productCompanyName:', productCompanyName);
-      console.log('🔍 selectedProductIds:', selectedProductIds);
-      console.log('🔍 selectedProductIds长度:', selectedProductIds.length);
-      console.log('🔍 selectedServiceManualIds:', selectedServiceManualIds);
-      console.log('🔍 selectedServiceManualIds长度:', selectedServiceManualIds.length);
-      
-      const structuredProfile = buildStructuredProfile(selectedCompany);
+       const structuredProfile = buildStructuredProfile(selectedCompany);
       const uniqueMatchedSlots = [];
       const matchedSlotIds = new Set();
       Object.values(matchedTemplateSlots).forEach((match) => {
@@ -581,68 +573,41 @@ export default function CreateBid() {
       const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
       const productUuids = selectedProductIds.filter(id => uuidRegex.test(id));
       
-      console.log('🔍 productUuids过滤后:', productUuids);
-      console.log('🔍 productUuids长度:', productUuids.length);
-
       // 处理服务手册选择
       const serviceManualAssetIds = [];
       selectedServiceManualIds.forEach(id => {
-        // 解析服务手册ID格式: manual-{productId}-{assetId}
-        // 示例: manual-0b5e5bd1-b437-441d-b048-63b6ee218464-7437b908-2b65-4551-af95-9a728e998078
         if (id.startsWith('manual-')) {
-          // 移除 "manual-" 前缀
-          const idWithoutPrefix = id.substring(7); // "manual-".length = 7
-          
-          // UUID格式: 8-4-4-4-12 字符，共36个字符
-          // productId是前36个字符
+          const idWithoutPrefix = id.substring(7);
           if (idWithoutPrefix.length >= 36) {
             const productId = idWithoutPrefix.substring(0, 36);
-            const assetId = idWithoutPrefix.substring(37); // 跳过中间的连字符
+            const assetId = idWithoutPrefix.substring(37);
             
-            console.log(`🔍 解析服务手册ID: ${id}`);
-            console.log(`🔍   productId: ${productId}`);
-            console.log(`🔍   assetId: ${assetId}`);
-            
-            // 验证assetId是否是有效的UUID格式
             const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
             if (uuidRegex.test(assetId)) {
               serviceManualAssetIds.push(assetId);
-              console.log(`✅ 有效assetId: ${assetId}`);
-            } else {
-              console.warn(`⚠️ 无效的assetId格式: ${assetId}`);
             }
-          } else {
-            console.warn(`⚠️ 服务手册ID格式错误: ${id}`);
           }
         }
       });
-      
-      console.log('🔍 服务手册资产ID:', serviceManualAssetIds);
 
       if ((productUuids.length > 0 || serviceManualAssetIds.length > 0) && user) {
-        console.log('🔍 开始查询产品资产');
         try {
           let assets = [];
           
           if (serviceManualAssetIds.length > 0) {
-            // 查询选中的服务手册
-            console.log('🔍 查询选中的服务手册资产，资产ID列表:', serviceManualAssetIds);
             const { data: manualAssets, error: manualError } = await supabase
               .from('product_assets')
               .select('*, products!inner(product_name, version)')
               .in('id', serviceManualAssetIds);
             
-             if (manualError) {
+            if (manualError) {
               console.error('❌ 查询服务手册资产失败:', manualError);
               throw manualError;
             }
             assets.push(...(manualAssets || []));
-            console.log('🔍 查询到的服务手册数量:', (manualAssets || []).length);
           }
           
           if (productUuids.length > 0) {
-            // 查询选中产品的所有资产（包括图片）
-            console.log('🔍 查询产品所有资产，产品UUID列表:', productUuids);
             const { data: productAssets, error: productError } = await supabase
               .from('product_assets')
               .select('*, products!inner(product_name, version)')
@@ -650,11 +615,8 @@ export default function CreateBid() {
             
             if (productError) throw productError;
             assets.push(...(productAssets || []));
-            console.log('🔍 查询到的产品资产数量:', (productAssets || []).length);
           }
           
-          console.log('🔍 查询到的资产数量:', assets?.length || 0);
-
           // 按产品分组（使用标准化后的产品名称）
           const grouped = {};
           (assets || []).forEach(asset => {
@@ -666,35 +628,24 @@ export default function CreateBid() {
             grouped[key].push(asset);
           });
 
-          console.log('🔍 分组后的产品资产:', grouped);
-          console.log('🔍 分组数量:', Object.keys(grouped).length);
-
           // 构建提示词
           if (Object.keys(grouped).length > 0) {
             assetPrompt = '\n\n【产品资产库（如需引用产品信息或插入图片，请严格使用以下占位符和文本内容）】\n';
             Object.entries(grouped).forEach(([productLabel, items]) => {
-              console.log(`🔍 处理产品: ${productLabel}, 资产数量: ${items.length}`);
               assetPrompt += `\n--- [产品：${productLabel}] ---\n`;
               
               const images = items.filter(i => i.asset_type === 'image');
               const texts = items.filter(i => i.asset_type === 'text' || i.asset_type === 'document');
               
-              console.log(`🔍 产品 ${productLabel} 的图片资产数量: ${images.length}`);
-              
-              if (images.length > 0) {
+if (images.length > 0) {
                 assetPrompt += '包含图片占位符（如需插入本产品图片，请严格输出此占位符，严禁输出真实链接）：\n';
                 images.forEach(img => {
-                  // 标准化产品标签和资产名称
                   const normalizedProductLabel = normalizeProductName(productLabel);
                   const normalizedAssetName = normalizeProductName(img.asset_name);
                   const placeholder = `{{IMG_${normalizedProductLabel}_${normalizedAssetName}}}`;
                   assetPrompt += `- ${placeholder}\n`;
-                  // 建立占位符到真实 URL 的映射
                   if (img.file_url) {
                     localImageUrlMap[placeholder] = img.file_url;
-                    console.log(`🔍 建立映射: ${placeholder} -> ${img.file_url}`);
-                  } else {
-                    console.warn(`🔍 资产 ${img.asset_name} 没有 file_url`);
                   }
                 });
               }
@@ -702,7 +653,6 @@ export default function CreateBid() {
               if (texts.length > 0) {
                 assetPrompt += '包含文本资产内容（如需引用产品信息，请参考以下内容）：\n';
                 texts.forEach(txt => {
-                  // 判断是否为服务手册
                   const isServiceManual = txt.asset_name && (
                     txt.asset_name.includes('售后服务手册') || 
                     txt.asset_name.includes('服务手册') ||
@@ -710,25 +660,16 @@ export default function CreateBid() {
                      (txt.file_url.includes('.doc') || txt.file_url.includes('.docx')))
                   );
                   
-                   if (isServiceManual && txt.file_url) {
-                     // 服务手册：提供暗号标记，不提供URL
-                     // 从资产名称生成简化的暗号名称
-                     let manualName = txt.asset_name;
-                     // 移除括号和日期等冗余信息
-                     manualName = manualName.replace(/[（）()]/g, '');
-                     manualName = manualName.replace(/\d{4,}/g, ''); // 移除年份
-                     manualName = manualName.replace(/[\s_-]+/g, ' ').trim();
-                     
-                     // 生成暗号标记
-                     const docCode = `[INSERT_DOC:${manualName}]`;
-                     assetPrompt += `- [${txt.asset_name}]：文档暗号 - ${docCode}\n`;
-                     
-                     // 建立暗号到URL的映射
-                     localManualUrlMap[docCode] = txt.file_url;
-                     
-                     console.log(`🔍 识别为服务手册: ${txt.asset_name}, 暗号: ${docCode}, URL: ${txt.file_url}`);
-                   } else {
-                    // 普通文档：截断显示内容
+                  if (isServiceManual && txt.file_url) {
+                    let manualName = txt.asset_name;
+                    manualName = manualName.replace(/[（）()]/g, '');
+                    manualName = manualName.replace(/\d{4,}/g, '');
+                    manualName = manualName.replace(/[\s_-]+/g, ' ').trim();
+                    
+                    const docCode = `[INSERT_DOC:${manualName}]`;
+                    assetPrompt += `- [${txt.asset_name}]：文档暗号 - ${docCode}\n`;
+                    localManualUrlMap[docCode] = txt.file_url;
+                  } else {
                     const contentPreview = txt.text_content && txt.text_content.length > 5000 
                       ? `${txt.text_content.substring(0, 5000)}...(全文共 ${txt.text_content.length} 字，已截断)` 
                       : txt.text_content || '';
@@ -737,28 +678,14 @@ export default function CreateBid() {
                 });
               }
             });
-           }
-           
-           // 记录assetPrompt内容
-           console.log('🔍 assetPrompt内容预览（前1000字符）:', assetPrompt.substring(0, 1000));
-           console.log('🔍 assetPrompt总长度:', assetPrompt.length);
-           console.log('🔍 assetPrompt是否包含服务手册URL:', assetPrompt.includes('文档URL - http'));
-         } catch (assetError) {
-           console.warn('加载产品资产失败，继续执行:', assetError);
-         }
-       }
-       
-       console.log('🔍 localImageUrlMap构建结果:', localImageUrlMap);
-      console.log('🔍 localImageUrlMap条目数量:', Object.keys(localImageUrlMap).length);
-      console.log('🔍 localImageUrlMap键列表（标准化后）:');
-      Object.keys(localImageUrlMap).forEach(key => {
-        console.log(`  - "${key}" (标准化: "${normalizeProductName(key)}")`);
-      });
-      
-       // 保存到状态，供导出时使用
-       setImageUrlMap(localImageUrlMap);
-        console.log('🔍 localManualUrlMap构建结果:', localManualUrlMap);
-       console.log('🔍 localManualUrlMap条目数量:', Object.keys(localManualUrlMap).length);
+          }
+          } catch (assetError) {
+            console.warn('加载产品资产失败，继续执行:', assetError);
+          }
+        }
+        
+        // 保存到状态，供导出时使用
+        setImageUrlMap(localImageUrlMap);
 
       // === 新增：查询知识库中与目标公司相关的资质图片 ===
       try {
@@ -779,111 +706,50 @@ export default function CreateBid() {
         console.warn('加载知识库图片失败，继续执行:', kbImageError);
       }
 
-      console.log('📊 ========== 空白上下文体检 ==========');
-      scannedBlanks.forEach((b, i) => {
-        const ctx = b.context || '';
-        const chineseCount = (ctx.match(/[\u4e00-\u9fa5]/g) || []).length;
-        const isPoorContext = chineseCount < 3 && ['underscore', 'dash', 'keyword_space'].includes(b.type);
-        console.log(`👉 #${i + 1} ID: ${b.id} | 类型: ${b.type} | 符号: "${b.matchText}" | paraIndex: ${b.paraIndex}`);
-        console.log(`   靶心上下文: "${ctx}"`);
-        console.log(`   中文字符数: ${chineseCount}${isPoorContext ? ' ⚠️ 上下文不足！' : ' ✅'}`);
-      });
-      console.log('📊 ========== 体检结束 ==========');
-
       const enrichedContext = (structuredProfile ? structuredProfile + '\n' : '') 
         + (tenderContext || '') 
         + (templateLearningPrompt ? `\n${templateLearningPrompt}` : '')
         + assetPrompt;
       
-      console.log('🔍 [handleAutoFill] 调用AI填空API');
-      console.log('🔍 localImageUrlMap 内容:', localImageUrlMap);
-      console.log('🔍 localImageUrlMap 键列表（标准化调试）:');
-      Object.keys(localImageUrlMap).forEach(key => {
-        console.log(`  - 原始: "${key}"`);
-        console.log(`    标准化: "${normalizeProductName(key)}"`);
-      });
-      console.log('🔍 发送给AI的空白列表:', scannedBlanks.map(b => ({ 
-        id: b.id, 
-        type: b.type, 
-        context: b.context,
-        matchText: b.matchText,
-        need_image: b.need_image 
-      })));
-      
-      console.log('🔍 富文本上下文预览（前500字符）:', enrichedContext.substring(0, 500) + '...');
-      
       const result = await fillDocumentBlanks(scannedBlanks, targetCompany, enrichedContext);
-      console.log('🔍 AI返回结果:', result);
-      console.log('🔍 AI返回结果键:', Object.keys(result));
 
       // 处理 AI 返回结果：将占位符替换为真实 URL
       const processedResult = {};
       for (const blankId in result) {
         let value = result[blankId] || '';
-        console.log(`🔍 处理空白 ${blankId}: 原始值="${value}"`);
-        console.log(`🔍 空白 ${blankId} 原始值长度:`, value.length);
         
-          // 替换所有图片占位符为真实 URL
-          if (value && typeof value === 'string') {
-            let replaced = false;
-            console.log(`🔍 检查空白 ${blankId} 的占位符替换，localImageUrlMap条目数:`, Object.keys(localImageUrlMap).length);
-            
-            for (const [placeholder, realUrl] of Object.entries(localImageUrlMap)) {
-              console.log(`🔍 检查占位符匹配:`);
-              console.log(`  - 空白值: "${value}"`);
-              console.log(`  - 占位符: "${placeholder}"`);
-              console.log(`  - 空白值标准化: "${normalizeProductName(value)}"`);
-              console.log(`  - 占位符标准化: "${normalizeProductName(placeholder)}"`);
-              console.log(`  - 是否包含: ${value.includes(placeholder)}`);
-              console.log(`  - 模糊匹配: ${fuzzyMatchPlaceholder(value, placeholder)}`);
+        // 替换所有图片占位符为真实 URL
+        if (value && typeof value === 'string') {
+          let replaced = false;
+          
+          for (const [placeholder, realUrl] of Object.entries(localImageUrlMap)) {
+            // 使用模糊匹配
+            if (fuzzyMatchPlaceholder(value, placeholder)) {
+              const regex = buildPlaceholderRegex(placeholder);
+              const newValue = value.replace(regex, realUrl);
               
-              // 使用模糊匹配
-              if (fuzzyMatchPlaceholder(value, placeholder)) {
-                console.log(`✅ 模糊匹配占位符 ${placeholder}，替换为 ${realUrl}`);
-                
-                // 使用新的正则表达式构建函数
-                const oldValue = value;
-                const regex = buildPlaceholderRegex(placeholder);
-                const newValue = value.replace(regex, realUrl);
-                
-                console.log(`🔍 替换测试: 正则表达式 ${regex}`);
-                console.log(`🔍 替换测试: 旧值 "${oldValue}"`);
-                console.log(`🔍 替换测试: 新值 "${newValue}"`);
-                console.log(`🔍 替换测试: 是否改变 ${oldValue !== newValue}`);
-                
-                if (oldValue !== newValue) {
-                  value = newValue;
-                  replaced = true;
-                  console.log(`✅ 替换成功: ${placeholder} -> ${realUrl}`);
-                } else {
-                  console.log(`❌ 正则表达式替换失败，尝试直接替换`);
-                  // 如果正则表达式替换失败，尝试直接替换
-                  value = realUrl;
-                  replaced = true;
-                }
-                break; // 找到匹配后跳出循环
-              } else if (value.includes(placeholder)) {
-                console.log(`✅ 精确匹配占位符 ${placeholder}，替换为 ${realUrl}`);
-                value = value.replace(new RegExp(placeholder, 'g'), realUrl);
+              if (value !== newValue) {
+                value = newValue;
                 replaced = true;
-                break; // 找到匹配后跳出循环
+              } else {
+                value = realUrl;
+                replaced = true;
               }
+              break;
+            } else if (value.includes(placeholder)) {
+              value = value.replace(new RegExp(placeholder, 'g'), realUrl);
+              replaced = true;
+              break;
             }
-          if (replaced) {
-            console.log(`✅ 空白 ${blankId} 占位符替换完成，新值="${value.substring(0, 100)}..."`);
-          } else {
-            console.log(`🔍 空白 ${blankId} 未找到匹配的占位符`);
           }
           // === 新增：如果 LLM 输出了 Markdown 图片格式，提取纯 URL ===
           const mdImgMatch = value.match(/!\[.*?\]\((https?:\/\/[^\s)]+)\)/);
           if (mdImgMatch) {
-            console.log(`🔍 提取Markdown图片URL: ${mdImgMatch[1]}`);
             value = mdImgMatch[1];
           }
         }
         
         processedResult[blankId] = value;
-        console.log(`🔍 空白 ${blankId} 最终值="${value.substring(0, 100)}..."`);
       }
 
       Object.entries(matchedTemplateSlots).forEach(([blankId, match]) => {
@@ -901,55 +767,26 @@ export default function CreateBid() {
           processedResult[blank.id] = structuredValue;
         }
       });
-       
-      console.log('🔍 processedResult 最终结果:', processedResult);
-      console.log('🔍 processedResult 键:', Object.keys(processedResult));
-
-      // ===== 🔍 新增：验证AI返回的blank IDs是否都在scannedBlanks中 =====
-      const scannedBlankIds = new Set(scannedBlanks.map(b => b.id));
-      const processedBlankIds = Object.keys(processedResult);
-      const orphanedIds = processedBlankIds.filter(id => !scannedBlankIds.has(id));
-      
-      if (orphanedIds.length > 0) {
-        console.warn('⚠️ [数据一致性警告] AI返回了不在scannedBlanks中的blank IDs:', orphanedIds);
-        console.warn('⚠️ 这些值将无法导出到Word文档！');
-      }
-      
-      console.log('🔍 [数据验证] scannedBlanks数量:', scannedBlanks.length);
-      console.log('🔍 [数据验证] scannedBlanks IDs:', Array.from(scannedBlankIds));
-      console.log('🔍 [数据验证] processedResult IDs:', processedBlankIds);
-      console.log('🔍 [数据验证] 孤立的IDs:', orphanedIds);
-      // ===== 验证结束 =====
 
       const merged = { ...manualEdits };
       
       // ===== 🔧 修复：改进合并逻辑，确保所有processedResult的值都被合并 =====
+      const scannedBlankIds = new Set(scannedBlanks.map(b => b.id));
       // 策略1：优先合并scannedBlanks中的blanks（正常路径）
       for (const blank of scannedBlanks) {
         if (processedResult[blank.id] !== undefined && processedResult[blank.id] !== null) {
-          // 如果AI返回了值，使用AI的值（即使manualEdits中已有值，AI的值优先）
           merged[blank.id] = processedResult[blank.id] || '';
         }
       }
       
-      // 策略2：合并processedResult中所有有值的项（包括可能的孤立blanks）
-      // 注意：这些孤立的blanks虽然会被存储，但在导出时会被忽略（因为不在scannedBlanks中）
+      // 策略2：合并processedResult中所有有值的项
       for (const [blankId, value] of Object.entries(processedResult)) {
         if (value !== undefined && value !== null && value !== '') {
           if (!merged[blankId]) {
             merged[blankId] = value;
-            if (!scannedBlankIds.has(blankId)) {
-              console.warn(`⚠️ [合并警告] 合并了孤立blank ${blankId}，但它不会被导出`);
-            }
           }
         }
       }
-      // ===== 修复结束 =====
-      
-      // ===== 🔍 新增：记录合并后的状态 =====
-      console.log('🔍 [合并后] merged键数量:', Object.keys(merged).length);
-      console.log('🔍 [合并后] merged中有值的键:', Object.keys(merged).filter(k => merged[k]));
-      // ===== 记录结束 =====
       
       setManualEdits(merged);
 
