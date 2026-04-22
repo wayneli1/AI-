@@ -1,7 +1,7 @@
 import React, { useRef, useCallback, useEffect, useMemo } from 'react';
 import { Alert, Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect, Select, Popconfirm } from 'antd';
 import {
-  UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package, ShieldCheck, TriangleAlert
+  UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package, TriangleAlert
 } from 'lucide-react';
 import { saveAs } from 'file-saver';
 import { useSearchParams } from 'react-router-dom';
@@ -1497,75 +1497,9 @@ if (images.length > 0) {
                   {isReviewed ? 'AI 已完成填写，可直接修改后导出' : '点击任意行 ↔ 左右双向联动定位'}
                 </p>
               </div>
-
-              {isReviewed && (
-                <div className="mt-2 rounded-xl border border-indigo-100 bg-gradient-to-r from-indigo-50 via-white to-emerald-50 p-2.5">
-                  <div className="flex flex-col gap-2 xl:flex-row xl:items-start xl:justify-between">
-                    <div>
-                      <div className="flex items-center gap-2 text-gray-800 font-semibold text-sm">
-                        <ShieldCheck size={16} className="text-indigo-600" />
-                        智能审核
-                        {isAuditing && <Tag color="processing">审核中</Tag>}
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <div className="rounded-lg bg-white px-3 py-1 shadow-sm border border-gray-100 text-center">
-                        <div className="text-[10px] text-gray-500">已审</div>
-                        <div className="text-sm font-bold text-gray-900">{auditSummary.total}</div>
-                      </div>
-                      <div className="rounded-lg bg-white px-3 py-1 shadow-sm border border-gray-100 text-center">
-                        <div className="text-[10px] text-gray-500">通过</div>
-                        <div className="text-sm font-bold text-emerald-600">{auditSummary.pass}</div>
-                      </div>
-                      <div className="rounded-lg bg-white px-3 py-1 shadow-sm border border-gray-100 text-center">
-                        <div className="text-[10px] text-gray-500">可疑</div>
-                        <div className="text-sm font-bold text-amber-500">{auditSummary.warning}</div>
-                      </div>
-                      <div className="rounded-lg bg-white px-3 py-1 shadow-sm border border-gray-100 text-center">
-                        <div className="text-[10px] text-gray-500">风险</div>
-                        <div className="text-sm font-bold text-red-500">{auditSummary.error}</div>
-                      </div>
-                    </div>
-                  </div>
-                  {auditSummary.total > 0 && (auditSummary.warning > 0 || auditSummary.error > 0) && (
-                    <Alert
-                      className="mt-2 rounded-md py-1 px-3 text-xs"
-                      type={auditSummary.error > 0 ? 'warning' : 'info'}
-                      showIcon
-                      icon={<TriangleAlert size={14} />}
-                      message={`发现 ${auditSummary.error} 项高风险、${auditSummary.warning} 项可疑，建议优先检查。`}
-                    />
-                  )}
-                </div>
-              )}
             </div>
 
-            {/* 2. 复杂表格入口按钮 */}
-            {dynamicTables.length > 0 && (
-              <div className="shrink-0 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50 px-3 py-2 flex items-center justify-between">
-                <div className="flex items-center">
-                  <Package size={14} className="mr-2 text-blue-500" />
-                  <span className="text-sm font-bold text-gray-800">复杂表格</span>
-                  <Tag color="blue" className="ml-2">{dynamicTables.length} 个</Tag>
-                  {Object.keys(dynamicTableEdits).filter(id => dynamicTableEdits[id]?.length > 0).length > 0 && (
-                    <Tag color="green" className="ml-1">
-                      已填 {Object.values(dynamicTableEdits).reduce((s, r) => s + (r?.length || 0), 0)} 行
-                    </Tag>
-                  )}
-                </div>
-                <Button
-                  type="primary"
-                  size="small"
-                  icon={<Edit3 size={12} />}
-                  onClick={() => setIsTableModalVisible(true)}
-                  className="bg-blue-600 hover:bg-blue-700 border-0 rounded-md text-xs"
-                >
-                  填写复杂表格 ({dynamicTables.length})
-                </Button>
-              </div>
-            )}
-
-            {/* 3. 高危表格提示 */}
+            {/* 2. 高危表格提示 */}
             {manualTables.length > 0 && (
               <div className="shrink-0 border-b border-gray-100 px-3 py-1.5 flex items-center gap-2 bg-amber-50/50 text-xs text-amber-700">
                 <TriangleAlert size={12} className="shrink-0" />
@@ -1573,7 +1507,7 @@ if (images.length > 0) {
               </div>
             )}
 
-            {/* 4. 普通填空表格 */}
+            {/* 3. 普通填空表格 */}
             <div className="flex-1 min-w-0 p-0 relative bg-white">
               <div className="absolute inset-0">
                 <Table
@@ -1598,7 +1532,49 @@ if (images.length > 0) {
               </div>
             </div>
 
-            {/* 3. 底部操作栏：极简强制单行，横向滑动 */}
+            {/* 4. 复杂表格入口 - 企业级醒目卡片 */}
+            {dynamicTables.length > 0 && (
+              <div className="shrink-0 mx-3 my-2">
+                <div className="relative overflow-hidden rounded-xl border border-purple-200 bg-gradient-to-r from-purple-400 via-violet-400 to-indigo-400 shadow-lg shadow-purple-200/50">
+                  {/* 装饰性背景 */}
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -translate-y-8 translate-x-8" />
+                  <div className="absolute bottom-0 left-20 w-20 h-20 bg-white/10 rounded-full translate-y-6" />
+                  
+                  <div className="relative px-4 py-3 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                    {/* 左侧：图标 + 标题 + 进度 */}
+                    <div className="flex items-center gap-3">
+                      <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-white/20 backdrop-blur-sm">
+                        <Package size={20} className="text-white" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-base font-bold text-white">复杂表格</span>
+                          <span className="px-2 py-0.5 rounded-full bg-white/20 text-white text-xs font-medium backdrop-blur-sm">
+                            {dynamicTables.length} 个待填写
+                          </span>
+                        </div>
+                        <p className="text-xs text-purple-100 mt-0.5">
+                          {Object.keys(dynamicTableEdits).filter(id => dynamicTableEdits[id]?.length > 0).length > 0 
+                            ? `已填写 ${Object.values(dynamicTableEdits).reduce((s, r) => s + (r?.length || 0), 0)} 行数据` 
+                            : '包含人员简历、业绩等结构化数据'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* 右侧：操作按钮 */}
+                    <button
+                      onClick={() => setIsTableModalVisible(true)}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-white text-purple-600 font-semibold text-sm hover:bg-purple-50 active:scale-95 transition-all shadow-md hover:shadow-lg whitespace-nowrap"
+                    >
+                      <Edit3 size={14} />
+                      立即填写
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 5. 底部操作栏：极简强制单行，横向滑动 */}
             <div className="p-3 bg-white border-t border-gray-200 shrink-0 overflow-x-auto custom-scrollbar shadow-[0_-4px_10px_-2px_rgba(0,0,0,0.05)] z-10">
               <div className="flex flex-nowrap items-center gap-3 min-w-max">
                 
