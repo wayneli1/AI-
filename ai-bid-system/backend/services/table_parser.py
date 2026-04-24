@@ -399,9 +399,10 @@ def detect_first_row_type(table: Table) -> str:
 def detect_table_fill_mode(table: Table, headers: List[str], anchor_context: str, empty_row_count: int = None) -> str:
     """
     检测表格填充模式
-    返回: "multi_person" (汇总表) 或 "single_person_detail" (单人简历表)
+    返回: "multi_person" (汇总表), "single_person_detail" (单人简历表), 或 "company_info" (公司基本情况表)
     
     判断规则：
+    0. 公司基本情况表：表头+锚点命中3个以上公司关键词
     1. 汇总表：空白行 >= 3 且表头不含"项目/业绩/经验/工作经历"
     2. 单人简历表：表头含"项目/业绩/经验/工作经历"
     
@@ -414,6 +415,19 @@ def detect_table_fill_mode(table: Table, headers: List[str], anchor_context: str
     
     # 检查表头和锚点文本中的关键词
     combined_text = ' '.join(headers) + ' ' + anchor_context
+    
+    # 🆕 优先检查：公司基本情况表
+    company_keywords = [
+        "基本情况", "供应商名称", "注册资金", "注册地址",
+        "法定代表人", "开户银行", "银行账号", "邮政编码",
+        "成立时间", "成立日期", "员工总数", "联系人",
+        "营业执照", "投标人名称", "被邀请单位", "营业额",
+        "基本账户", "关联企业", "资质证书",
+    ]
+    company_score = sum(1 for kw in company_keywords if kw in combined_text)
+    if company_score >= 3:
+        return "company_info"
+    
     project_keywords = ['项目', '业绩', '经验', '工作经历', '项目经历', '主要业绩']
     has_project_keywords = any(kw in combined_text for kw in project_keywords)
     

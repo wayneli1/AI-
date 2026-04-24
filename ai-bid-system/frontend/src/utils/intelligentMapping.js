@@ -1,20 +1,21 @@
 const BACKEND_API_BASE = import.meta.env.VITE_BACKEND_API_BASE || 'http://localhost:8000';
 
 /**
- * 调用后端智能填充接口（用户选人后调用）
+ * 调用后端智能填充接口（用户选人/公司后调用）
  * @param {Object} params
  * @param {number} params.tableId
  * @param {string} params.tableType
  * @param {string} params.anchorContext
  * @param {string[]} params.headers
  * @param {Array} params.blankCells - 空白单元格列表
- * @param {Object} params.personData - 人员库中的完整数据
+ * @param {Object} params.personData - 人员库中的完整数据（人员表时使用）
  * @param {string} params.positionName - 选择的职位名称
- * @param {string} params.tableHtml - 🆕 完整的表格HTML结构
- * @param {string} params.fillMode - 🆕 填充模式：multi_person 或 single_person_detail
+ * @param {string} params.tableHtml - 完整的表格HTML结构
+ * @param {string} params.fillMode - 填充模式：multi_person / single_person_detail / company_info
+ * @param {Object} [params.companyData] - 🆕 公司数据（company_info 模式使用）
  * @returns {Promise<Object>} { tableId, fills: [{row, col, header, value}], success }
  */
-export async function callSmartFill({ tableId, tableType, anchorContext, headers, blankCells, personData, positionName, tableHtml, fillMode }) {
+export async function callSmartFill({ tableId, tableType, anchorContext, headers, blankCells, personData, positionName, tableHtml, fillMode, companyData }) {
   const url = `${BACKEND_API_BASE}/api/intelligent-field-mapping`;
 
   // 精简人员数据，只发必要字段
@@ -52,10 +53,11 @@ export async function callSmartFill({ tableId, tableType, anchorContext, headers
     anchorContext: anchorContext || '',
     headers: headers || [],
     blankCells: slimBlanks,
-    personData: slimPerson,
+    personData: fillMode !== 'company_info' ? slimPerson : {},
     positionName: positionName || '',
     tableHtml: tableHtml || '',  // 🆕 传递完整的表格HTML
     fillMode: fillMode || 'multi_person',  // 🆕 传递填充模式
+    companyData: fillMode === 'company_info' ? (companyData || null) : null,  // 🆕 公司数据
   };
 
 

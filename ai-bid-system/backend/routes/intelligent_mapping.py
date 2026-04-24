@@ -25,11 +25,12 @@ class SmartFillRequest(BaseModel):
     anchorContext: str
     headers: List[str]
     blankCells: List[BlankCellInfo]
-    personData: Dict[str, Any]
+    personData: Dict[str, Any] = {}  # 🆕 改为默认空dict，公司表时不需要
     positionName: str = ""
     tableHtml: str = ""  # 🆕 完整的表格HTML结构，供AI理解表格布局
-    fillMode: str = "multi_person"  # 🆕 填充模式：multi_person 或 single_person_detail
+    fillMode: str = "multi_person"  # 🆕 填充模式：multi_person / single_person_detail / company_info
     firstRowType: str = "field_row"  # 🆕 第一行类型：title_row (标题行) 或 field_row (字段行)
+    companyData: Optional[Dict[str, Any]] = None  # 🆕 公司数据（company_info 模式使用）
 
 
 class CellFillResult(BaseModel):
@@ -166,7 +167,8 @@ def call_dify_smart_fill(
     table_data: Dict[str, Any],
     person_data: Dict[str, Any],
     dify_api_key: str,
-    dify_base_url: str
+    dify_base_url: str,
+    company_data: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     url = f"{dify_base_url}/workflows/run"
 
@@ -175,24 +177,42 @@ def call_dify_smart_fill(
         "Content-Type": "application/json"
     }
 
-    # 🆕 传递5个关键变量（新增 fill_mode 和 first_row_type）
-    payload = {
-        "inputs": {
-            "table_html": table_data.get("tableHtml", ""),  # 原始表格HTML
-            "personnel_data": json.dumps(person_data, ensure_ascii=False),  # 人员数据JSON
-            "position_name": table_data.get("positionName", ""),  # 职位名称
-            "fill_mode": table_data.get("fillMode", "multi_person"),  # 🆕 填充模式
-            "first_row_type": table_data.get("firstRowType", "field_row"),  # 🆕 第一行类型
-        },
-        "response_mode": "blocking",
-        "user": "system"
-    }
-    print(f"🤖 [Dify] 调用智能填充工作流")
-    print(f"🤖 [Dify] 表格ID: {table_data.get('tableId')}")
-    print(f"🤖 [Dify] 表格HTML长度: {len(table_data.get('tableHtml', ''))} 字符")
-    print(f"🤖 [Dify] 职位: {table_data.get('positionName', '')}")
-    print(f"🤖 [Dify] 填充模式: {table_data.get('fillMode', 'multi_person')}")
-    print(f"🤖 [Dify] 第一行类型: {table_data.get('firstRowType', 'field_row')}")
+    fill_mode = table_data.get("fillMode", "multi_person")
+
+    # 🆕 公司信息表：用不同的输入变量
+    if fill_mode == "company_info" and company_data:
+        payload = {
+            "inputs": {
+                "table_html": table_data.get("tableHtml", ""),
+                "company_data": json.dumps(company_data, ensure_ascii=False),
+                "fill_mode": "company_info",
+            },
+            "response_mode": "blocking",
+            "user": "system"
+        }
+        print(f"🤖 [Dify] 调用公司信息表填充工作流")
+        print(f"🤖 [Dify] 表格ID: {table_data.get('tableId')}")
+        print(f"🤖 [Dify] 表格HTML长度: {len(table_data.get('tableHtml', ''))} 字符")
+        print(f"🤖 [Dify] 公司数据: {company_data.get('company_name', '?')}")
+    else:
+        # 原有人员表逻辑
+        payload = {
+            "inputs": {
+                "table_html": table_data.get("tableHtml", ""),  # 原始表格HTML
+                "personnel_data": json.dumps(person_data, ensure_ascii=False),  # 人员数据JSON
+                "position_name": table_data.get("positionName", ""),  # 职位名称
+                "fill_mode": fill_mode,  # 🆕 填充模式
+                "first_row_type": table_data.get("firstRowType", "field_row"),  # 🆕 第一行类型
+            },
+            "response_mode": "blocking",
+            "user": "system"
+        }
+        print(f"🤖 [Dify] 调用智能填充工作流")
+        print(f"🤖 [Dify] 表格ID: {table_data.get('tableId')}")
+        print(f"🤖 [Dify] 表格HTML长度: {len(table_data.get('tableHtml', ''))} 字符")
+        print(f"🤖 [Dify] 职位: {table_data.get('positionName', '')}")
+        print(f"🤖 [Dify] 填充模式: {fill_mode}")
+        print(f"🤖 [Dify] 第一行类型: {table_data.get('firstRowType', 'field_row')}")
 
     try:
         resp = http_requests.post(url, json=payload, headers=headers, timeout=180)
@@ -223,23 +243,30 @@ async def intelligent_field_mapping(request: SmartFillRequest):
     智能填充接口：接收表格结构 + 人员数据，返回每个空白单元格应填的值。
     """
     print(f"\n🧠 [智能填充] 表格ID={request.tableId}, 类型={request.tableType}, "
-          f"空白={len(request.blankCells)}, 人员={request.personData.get('name', '?')}")
+          f"填充模式={request.fillMode}, "
+          f"空白={len(request.blankCells)}, "
+          f"{'公司=' + (request.companyData or {}).get('company_name', '?') if request.fillMode == 'company_info' else '人员=' + request.personData.get('name', '?')}")
 
     enable = os.getenv("ENABLE_INTELLIGENT_MAPPING", "false").lower() == "true"
     if not enable:
         return SmartFillResponse(
             tableId=request.tableId,
-            personName=request.personData.get("name", ""),
+            personName=request.personData.get("name", "") if request.fillMode != "company_info" else (request.companyData or {}).get("company_name", ""),
             filled_table_html="",  # 🆕 返回空HTML
             success=True,
             message="智能映射未启用"
         )
 
-    dify_api_key = os.getenv("DIFY_FIELD_MAPPING_API_KEY", "")
+    # 🆕 根据填充模式选择不同的 API Key
+    if request.fillMode == "company_info":
+        dify_api_key = os.getenv("DIFY_COMPANY_FILL_API_KEY", "")
+    else:
+        dify_api_key = os.getenv("DIFY_FIELD_MAPPING_API_KEY", "")
     dify_base_url = os.getenv("DIFY_BASE_URL", "http://192.168.169.107/v1")
 
     if not dify_api_key or dify_api_key == "app-placeholder":
-        raise HTTPException(status_code=500, detail="DIFY_FIELD_MAPPING_API_KEY 未配置")
+        key_name = "DIFY_COMPANY_FILL_API_KEY" if request.fillMode == "company_info" else "DIFY_FIELD_MAPPING_API_KEY"
+        raise HTTPException(status_code=500, detail=f"{key_name} 未配置")
 
     table_data = {
         "tableId": request.tableId,
@@ -260,9 +287,11 @@ async def intelligent_field_mapping(request: SmartFillRequest):
 
     # 把人员数据传给Dify，让AI根据实际数据精准填充
     person_data = request.personData
+    # 🆕 公司数据（company_info 模式使用）
+    company_data = request.companyData
 
     try:
-        dify_result = call_dify_smart_fill(table_data, person_data, dify_api_key, dify_base_url)
+        dify_result = call_dify_smart_fill(table_data, person_data, dify_api_key, dify_base_url, company_data=company_data)
 
         filled_html = dify_result.get("filled_table_html", "")  # 🆕 接收完整HTML
         
@@ -276,10 +305,14 @@ async def intelligent_field_mapping(request: SmartFillRequest):
 
         print(f"🔍 [智能填充] sanitize后filled_html:\n{filled_html}")
         
+        display_name = person_data.get("name", "")
+        if request.fillMode == "company_info" and company_data:
+            display_name = company_data.get("company_name", "")
+        
         print(f"✅ [智能填充] 完成: HTML长度={len(filled_html)}字符")
         return SmartFillResponse(
             tableId=request.tableId,
-            personName=request.personData.get("name", ""),
+            personName=display_name,
             filled_table_html=filled_html,  # 🆕 返回清理后的HTML
             success=True,
             message=f"成功生成填充后的HTML表格"

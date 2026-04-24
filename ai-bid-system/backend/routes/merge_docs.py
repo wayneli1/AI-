@@ -450,27 +450,33 @@ def fill_dynamic_tables(doc, dynamic_tables):
         if filled_html:
             print(f"   📋 HTML填充模式：直接按行列对应填充")
             
-            # 🐛 修复：智能识别表头行，兼容带大标题行的表格
-            # 场景：Row 0 是大标题，Row 1 是表头，Row 2 是数据
-            header_row_idx = 0
-            for i, row in enumerate(rows_data):
-                row_text = " ".join(str(c) for c in row).lower()
-                if '序号' in row_text or '姓名' in row_text or 'name' in row_text:
-                    header_row_idx = i
-                    break
+            # 🆕 公司信息表：每行都是标签+值，没有独立表头行，直接从第0行开始填
+            if fill_mode == 'company_info':
+                data_rows = rows_data
+                word_start_row = 0
+                print(f"   📋 公司信息表模式: 从第0行开始填充, 共 {len(data_rows)} 行")
             
-            # 🐛 修复：单人简历表的表头行包含数据值（如"姓名|吴亦凡|性别|男"），
-            # 不能跳过；多人汇总表的表头行是纯标签，应跳过。
-            if fill_mode == 'single_person_detail':
-                # 单人简历表：包含所有行，从表头行开始填充到 Word 的表头行
-                data_rows = rows_data[header_row_idx:]
-                word_start_row = header_row_idx
             else:
-                # 多人汇总表：跳过表头行，从数据行开始填充
-                data_rows = rows_data[header_row_idx + 1:] if header_row_idx + 1 < len(rows_data) else []
-                word_start_row = header_row_idx + 1
-            
-            print(f"   📋 识别到表头在第 {header_row_idx} 行, fill_mode={fill_mode}, 数据行数: {len(data_rows)}, Word起始行: {word_start_row}")
+                # 🐛 修复：智能识别表头行，兼容带大标题行的表格
+                # 场景：Row 0 是大标题，Row 1 是表头，Row 2 是数据
+                header_row_idx = 0
+                for i, row in enumerate(rows_data):
+                    row_text = " ".join(str(c) for c in row).lower()
+                    if '序号' in row_text or '姓名' in row_text or 'name' in row_text:
+                        header_row_idx = i
+                        break
+                
+                # 单人简历表的表头行包含数据值（如"姓名|吴亦凡|性别|男"），不能跳过；
+                # 多人汇总表的表头行是纯标签，应跳过。
+                if fill_mode == 'single_person_detail':
+                    data_rows = rows_data[header_row_idx:]
+                    word_start_row = header_row_idx
+                else:
+                    # 多人汇总表：跳过表头行，从数据行开始填充
+                    data_rows = rows_data[header_row_idx + 1:] if header_row_idx + 1 < len(rows_data) else []
+                    word_start_row = header_row_idx + 1
+                
+                print(f"   📋 识别到表头在第 {header_row_idx} 行, fill_mode={fill_mode}, 数据行数: {len(data_rows)}, Word起始行: {word_start_row}")
             
             # 检测 Word 表格是否含合并单元格
             has_merge = False
@@ -511,7 +517,6 @@ def fill_dynamic_tables(doc, dynamic_tables):
                             vm_val = vMerge.get(qn('w:val'))
                             if vm_val != 'restart':
                                 # 纯续接单元格，跳过但需要推进 html_col
-                                # 续接单元格的 gridSpan 决定了它占据的列数
                                 gs = tc.find(qn('w:gridSpan'))
                                 span = int(gs.get(qn('w:val'))) if gs is not None else 1
                                 html_col += span

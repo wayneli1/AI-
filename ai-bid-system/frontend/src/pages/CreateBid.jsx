@@ -1,4 +1,4 @@
-import React, { useRef, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Alert, Button, Input, message, Modal, Table, Tag, Empty, Spin, TreeSelect, Select, Popconfirm } from 'antd';
 import {
   UploadCloud, ArrowLeft, Download, FileText, Cpu, Database, Edit3, Eye, Trash2, Package, TriangleAlert
@@ -161,6 +161,9 @@ export default function CreateBid() {
   const fileInputRef = useRef(null);
   const tenderFileInputRef = useRef(null);
 
+  // 🆕 公司信息表：临时选中的公司ID（按 tableId）
+  const [tempCompanySelection, setTempCompanySelection] = useState({});
+
   /**
    * 获取表格的实际填充模式（优先使用用户手动选择的值）
    */
@@ -172,10 +175,14 @@ export default function CreateBid() {
     if (!user) return;
     const fetchPersonnel = async () => {
       try {
-        const { data } = await supabase.from('personnel_profiles').select('*').eq('user_id', user.id);
-        if (data) setPersonnelProfiles(data);
+        const [personnelRes, companyRes] = await Promise.all([
+          supabase.from('personnel_profiles').select('*').eq('user_id', user.id),
+          supabase.from('company_profiles').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+        ]);
+        if (personnelRes.data) setPersonnelProfiles(personnelRes.data);
+        if (companyRes.data) setCompanyProfiles(companyRes.data);
       } catch (err) {
-        console.error('拉取人员库失败:', err);
+        console.error('拉取人员库/公司库失败:', err);
       }
     };
     fetchPersonnel();
@@ -847,8 +854,11 @@ if (images.length > 0) {
   };
 
   const handleExportFilledWord = async () => {
-    if (!originalZip || !originalXml || scannedBlanks.length === 0) {
+    if (!originalZip || !originalXml) {
       return message.error('缺少原始文件数据，请重新上传');
+    }
+    if (scannedBlanks.length === 0 && Object.keys(filledTableHtmls || {}).length === 0) {
+      return message.error('没有可导出的填报数据');
     }
 
     try {
@@ -1980,9 +1990,14 @@ if (images.length > 0) {
                           value={getEffectiveFillModeWrapper(dt.tableId)}
                           onChange={(value) => {
                             setManualFillModes(prev => ({ ...prev, [dt.tableId]: value }));
-                            message.success(`已设置为${value === 'multi_person' ? '汇总表（多人）' : '单人简历表'}`);
+                            const labels = {
+                              'multi_person': '汇总表（多人）',
+                              'single_person_detail': '单人简历表',
+                              'company_info': '公司信息表',
+                            };
+                            message.success(`已设置为${labels[value] || value}`);
                           }}
-                          style={{ width: 200 }}
+                          style={{ width: 220 }}
                           size="small"
                         >
                           <Select.Option value="multi_person">
@@ -1991,16 +2006,21 @@ if (images.length > 0) {
                           <Select.Option value="single_person_detail">
                             👤 单人简历表
                           </Select.Option>
+                          <Select.Option value="company_info">
+                            🏢 公司信息表
+                          </Select.Option>
                         </Select>
                         <span className="text-xs text-gray-500">
                           {getEffectiveFillMode(dt.tableId) === 'multi_person' 
                             ? '可添加多个人员，每人占一行' 
+                            : getEffectiveFillMode(dt.tableId) === 'company_info'
+                            ? '从投标主体库自动填充公司信息'
                             : '只能添加一个人员'}
                         </span>
                       </div>
                       {manualFillModes[dt.tableId] && manualFillModes[dt.tableId] !== dt.fillMode && (
                         <div className="text-xs text-orange-600 mt-2">
-                          ⚠️ 已手动覆盖系统检测（原检测为: {dt.fillMode === 'multi_person' ? '汇总表' : '单人简历表'}）
+                          ⚠️ 已手动覆盖系统检测（原检测为: {dt.fillMode === 'multi_person' ? '汇总表' : dt.fillMode === 'company_info' ? '公司信息表' : '单人简历表'}）
                         </div>
                       )}
                     </div>
@@ -2158,7 +2178,136 @@ if (images.length > 0) {
                       )}
                     </div>
 
-                    {/* 两级联动选择器 */}
+                    {/* 🆕 公司信息表：公司选择器 */}
+                    {getEffectiveFillModeWrapper(dt.tableId) === 'company_info' && (
+                      <div className="space-y-3 mb-3">
+                        <div className="flex items-start gap-3">
+                          <span className="text-xs font-medium text-gray-600 shrink-0 pt-1">选择投标主体:</span>
+                          <div className="flex-1">
+                            <Select
+                              placeholder="选择投标主体..."
+                              style={{ width: '100%' }}
+                              value={tempCompanySelection[dt.tableId] || undefined}
+                              onChange={(companyId) => {
+                                setTempCompanySelection(prev => ({ ...prev, [dt.tableId]: companyId }));
+                              }}
+                              options={companyProfiles.map(c => ({ value: c.id, label: c.company_name }))}
+                            />
+                          </div>
+                        </div>
+
+                        {/* 智能填充按钮 */}
+                        {tempCompanySelection[dt.tableId] && (
+                          <div className="flex items-center gap-3">
+                            <Button
+                              type="primary"
+                              size="small"
+                              onClick={async () => {
+                                const companyId = tempCompanySelection[dt.tableId];
+                                const companyProfile = companyProfiles.find(c => c.id === companyId);
+                                if (!companyProfile) return;
+
+                                message.loading({ content: '正在智能填充公司信息...', key: 'smart-fill', duration: 0 });
+
+                                try {
+                                  // 铺平公司数据（包括 custom_fields）
+                                  const flatCompanyData = {
+                                    company_name: companyProfile.company_name || '',
+                                    uscc: companyProfile.uscc || '',
+                                    registered_capital: companyProfile.registered_capital || '',
+                                    company_type: companyProfile.company_type || '',
+                                    establish_date: companyProfile.establish_date || '',
+                                    operating_period: companyProfile.operating_period || '',
+                                    phone: companyProfile.phone || '',
+                                    email: companyProfile.email || '',
+                                    address: companyProfile.address || '',
+                                    zip_code: companyProfile.zip_code || '',
+                                    registration_authority: companyProfile.registration_authority || '',
+                                    business_scope: companyProfile.business_scope || '',
+                                    legal_rep_name: companyProfile.legal_rep_name || '',
+                                    id_number: companyProfile.id_number || '',
+                                    position: companyProfile.position || '',
+                                    custom_fields: companyProfile.custom_fields || {},
+                                  };
+
+                                  const blankCells = (dt.blankCells || []).map(bc => ({
+                                    row: bc.row,
+                                    col: bc.col,
+                                    label: bc.label || '',
+                                    headerText: bc.headerText || '',
+                                    rowHeader: bc.rowHeader || '',
+                                    text: '',
+                                  }));
+
+                                  const result = await callSmartFill({
+                                    tableId: dt.tableId,
+                                    tableType: dt.type,
+                                    anchorContext: dt.anchorContext,
+                                    headers: dt.headers,
+                                    blankCells: blankCells,
+                                    personData: {},
+                                    positionName: '',
+                                    tableHtml: dt.tableHtml || '',
+                                    fillMode: 'company_info',
+                                    companyData: flatCompanyData,
+                                  });
+
+                                  if (result.success && result.filled_table_html) {
+                                    // 公司表用 single 模式存储（只有一个公司）
+                                    setFilledTableHtmls(prev => ({
+                                      ...prev,
+                                      [dt.tableId]: {
+                                        single: result.filled_table_html,
+                                        byPerson: { [companyProfile.company_name]: result.filled_table_html }
+                                      }
+                                    }));
+
+                                    message.success({ content: `✅ ${companyProfile.company_name} 填充完成`, key: 'smart-fill' });
+                                  } else {
+                                    throw new Error('Dify返回空结果或格式错误');
+                                  }
+                                } catch (err) {
+                                  console.error('❌ [公司信息填充失败]:', err);
+                                  message.error({ content: `智能填充失败: ${err.message}`, key: 'smart-fill' });
+                                }
+                              }}
+                            >
+                              🤖 智能填充
+                            </Button>
+                            <span className="text-xs text-gray-400">AI 将根据公司信息自动填写表格</span>
+                          </div>
+                        )}
+
+                        {/* 填充成功后的公司标签 */}
+                        {filledTableHtmls[dt.tableId]?.byPerson && Object.keys(filledTableHtmls[dt.tableId].byPerson).length > 0 && (
+                          <div className="flex items-start gap-3">
+                            <span className="text-xs font-medium text-gray-600 shrink-0 pt-1">已填充:</span>
+                            <div className="flex flex-wrap gap-2">
+                              {Object.keys(filledTableHtmls[dt.tableId].byPerson).map(companyName => (
+                                <Tag
+                                  key={companyName}
+                                  closable
+                                  color="green"
+                                  onClose={() => {
+                                    setFilledTableHtmls(prev => {
+                                      const newHtmls = { ...prev };
+                                      delete newHtmls[dt.tableId];
+                                      return newHtmls;
+                                    });
+                                    message.success(`已清除 ${companyName} 的填充数据`);
+                                  }}
+                                >
+                                  🏢 {companyName}
+                                </Tag>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* 人员表：两级联动选择器（非公司信息表时显示） */}
+                    {getEffectiveFillModeWrapper(dt.tableId) !== 'company_info' && (
                     <div className="space-y-3 mb-3">
                       {/* 第一级：选择人员 */}
                       <div className="flex items-start gap-3">
@@ -2405,6 +2554,7 @@ if (attachments) {
                         </div>
                       )}
                     </div>
+                    )} {/* 结束人员选择器条件渲染 */}
 
                   </div>
                 </div>
