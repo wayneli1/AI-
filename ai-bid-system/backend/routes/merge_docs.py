@@ -423,6 +423,7 @@ def fill_dynamic_tables(doc, dynamic_tables):
         # 🆕 优先使用HTML，如果没有则使用rows（向后兼容）
         if filled_html:
             print(f"   📊 表格 {table_id} 使用HTML填充模式")
+            print(f"   🔍 [DEBUG] filled_html 原始内容:\n{filled_html[:1000]}...")
             rows_data = parse_filled_html_to_cells(filled_html)
             if not rows_data:
                 print(f"   ⚠️ HTML解析失败，跳过表格 {table_id}")
@@ -443,10 +444,23 @@ def fill_dynamic_tables(doc, dynamic_tables):
         if filled_html:
             print(f"   📋 HTML填充模式：直接按行列对应填充")
             
-            # 从第0行开始填充（简历表所有行都是数据行，无表头行需跳过）
-            for row_idx, row_cells in enumerate(rows_data):
+            # 🐛 修复：智能识别表头行，兼容带大标题行的表格
+            # 场景：Row 0 是大标题，Row 1 是表头，Row 2 是数据
+            header_row_idx = 0
+            for i, row in enumerate(rows_data):
+                row_text = " ".join(str(c) for c in row).lower()
+                if '序号' in row_text or '姓名' in row_text or 'name' in row_text:
+                    header_row_idx = i
+                    break
+            
+            data_rows = rows_data[header_row_idx + 1:] if header_row_idx + 1 < len(rows_data) else []
+            print(f"   📋 识别到表头在第 {header_row_idx} 行，数据行数: {len(data_rows)}")
+            
+            # 从表头行的下一行开始填充到 Word 表格的第 1 行（数据行）
+            for data_idx, row_cells in enumerate(data_rows):
+                row_idx = data_idx + 1  # Word 表格第 0 行是表头，从第 1 行开始填数据
                 if row_idx >= len(table.rows):
-                    print(f"   ⚠️ HTML行 {row_idx} 超出Word表格范围，跳过")
+                    print(f"   ⚠️ 数据行 {data_idx} (Word行 {row_idx}) 超出Word表格范围，跳过")
                     break
                 
                 target_row = table.rows[row_idx]
@@ -466,8 +480,8 @@ def fill_dynamic_tables(doc, dynamic_tables):
                 
                 print(f"   ✅ 表格 {table_id} 行 {row_idx}: 填充 {filled_count}/{len(row_cells)} 个单元格")
             
-            total_filled += len(rows_data)
-            print(f"   ✅ 表格 {table_id} HTML填充完成: {len(rows_data)} 行")
+            total_filled += len(data_rows)
+            print(f"   ✅ 表格 {table_id} HTML填充完成: {len(data_rows)} 行数据")
 
         else:
             # 🆕 构建归一化映射表（仅用于旧的rows模式）

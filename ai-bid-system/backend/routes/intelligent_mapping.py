@@ -52,18 +52,36 @@ class SmartFillResponse(BaseModel):
 def sanitize_table_html(html: str) -> str:
     """
     清理Dify返回的HTML表格，移除重复的表头列
-    
+
     Bug场景：Dify有时会生成重复的表头，例如：
     <tr><td>姓名</td><td>年龄</td><td>年龄</td><td>专业</td><td>专业</td></tr>
-    
+
     修复策略：
     1. 解析第一行（表头行）
     2. 检测连续重复的单元格内容
     3. 移除重复列，保留第一次出现
     4. 对所有行应用相同的列删除操作
     """
-    if not html or '<table' not in html.lower():
+    if not html:
         return html
+
+    # 🐛 修复：去除markdown代码块标记（如 ```html ... ```）
+    original_len = len(html)
+    html = html.strip()
+    if html.startswith('```'):
+        # 去除开头的 ```html 或 ``` 等标记
+        html = re.sub(r'^```[\w]*\s*', '', html, flags=re.MULTILINE)
+        print(f"[HTML清理] 去除开头代码块标记: {original_len} -> {len(html)} 字符")
+    if html.endswith('```'):
+        # 去除结尾的 ``` 标记
+        html = html[:-3].strip()
+        print(f"[HTML清理] 去除结尾代码块标记")
+
+    if '<table' not in html.lower():
+        print(f"[HTML清理] ❌ 清理后仍未找到table标签！HTML前100字符: {html[:100]}")
+        return html
+
+    print(f"[HTML清理] ✅ 找到table标签，HTML长度: {len(html)}")
     
     try:
         # 简单的HTML表格解析
@@ -248,12 +266,16 @@ async def intelligent_field_mapping(request: SmartFillRequest):
 
         filled_html = dify_result.get("filled_table_html", "")  # 🆕 接收完整HTML
         
+        print(f"🔍 [智能填充] Dify返回的原始filled_html:\n{filled_html}")
+        
         if not filled_html:
             raise HTTPException(status_code=500, detail="Dify返回的HTML为空")
 
         # 🐛 修复：清理Dify返回的HTML，移除重复表头列
         filled_html = sanitize_table_html(filled_html)
 
+        print(f"🔍 [智能填充] sanitize后filled_html:\n{filled_html}")
+        
         print(f"✅ [智能填充] 完成: HTML长度={len(filled_html)}字符")
         return SmartFillResponse(
             tableId=request.tableId,

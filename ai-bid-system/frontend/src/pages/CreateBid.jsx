@@ -882,6 +882,13 @@ if (images.length > 0) {
           const fillMode = getEffectiveFillModeWrapper(parseInt(tableId));
           const tableData = filledTableHtmls[tableId];
           
+          console.log(`🔍 [DEBUG] 表格 ${tableId}:`, {
+            fillMode,
+            tableData,
+            accumulated: tableData?.accumulated,
+            single: tableData?.single
+          });
+          
           let filledHtml = '';
           
           if (fillMode === 'multi_person') {
@@ -892,7 +899,10 @@ if (images.length > 0) {
             filledHtml = tableData?.single || '';
           }
           
+          console.log(`🔍 [DEBUG] 表格 ${tableId} 最终filledHtml:`, filledHtml?.substring(0, 200));
+          
           if (!filledHtml) {
+            console.warn(`⚠️ [DEBUG] 表格 ${tableId} 的filledHtml为空！`);
             return null;
           }
           
@@ -2264,6 +2274,7 @@ if (attachments) {
                                     });
 
                                     if (result.success && result.filled_table_html) {
+                                      console.log(`🔍 [Dify填充成功] ${personName} 的filled_table_html:`, result.filled_table_html);
                                       // 🆕 根据fillMode采用不同的存储策略
                                       if (fillMode === 'multi_person') {
                                         // 汇总表：提取当前人员的数据行，追加到累积表格中

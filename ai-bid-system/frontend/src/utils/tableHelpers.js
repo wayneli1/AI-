@@ -23,14 +23,26 @@ export const appendPersonRowToTable = (accumulatedHtml, newPersonHtml, personNam
     return accumulatedHtml;
   }
   
-  // 提取新表格的第1行数据（跳过表头第0行）
+// 🐛 修复：动态识别表头行，而不是硬编码取第 1 行
+  // 场景：有些表格第一行是跨列的大标题（如"项目团队人员情况"），第二行才是表头
   const newRows = Array.from(newTable.querySelectorAll('tr'));
-  if (newRows.length < 2) {
-    console.error('新表格没有数据行');
+  let headerRowIndex = 0;
+  for (let i = 0; i < newRows.length; i++) {
+    const text = newRows[i].textContent.toLowerCase();
+    // 检查是否包含表头特征关键词
+    if (text.includes('序号') || text.includes('姓名') || text.includes('name')) {
+      headerRowIndex = i;
+      break;
+    }
+  }
+
+  const dataRowIndex = headerRowIndex + 1;
+  if (dataRowIndex >= newRows.length) {
+    console.warn('未找到数据行');
     return accumulatedHtml;
   }
   
-  const dataRow = newRows[1];  // 第1行是数据行
+  const dataRow = newRows[dataRowIndex];
   
   // 检查是否有实际数据（不是全[空白]）
   const hasData = Array.from(dataRow.querySelectorAll('td')).some(td => {
@@ -43,11 +55,20 @@ export const appendPersonRowToTable = (accumulatedHtml, newPersonHtml, personNam
   }
   
   // 在累积表格中找到第一个可填充的空行，替换它
-  // 🐛 修复：允许空行中存在序号（纯数字），不要求整行所有单元格都为空
+  // 🐛 修复：智能识别累积表格的表头行，跳过表头和大标题行
   const accRows = Array.from(accTable.querySelectorAll('tr'));
+  let accHeaderRowIndex = 0;
+  for (let i = 0; i < accRows.length; i++) {
+    const text = accRows[i].textContent.toLowerCase();
+    if (text.includes('序号') || text.includes('姓名') || text.includes('name')) {
+      accHeaderRowIndex = i;
+      break;
+    }
+  }
+  
   let inserted = false;
   
-  for (let i = 1; i < accRows.length; i++) {  // 跳过表头
+  for (let i = accHeaderRowIndex + 1; i < accRows.length; i++) {  // 跳过表头和大标题
     const row = accRows[i];
     const cells = Array.from(row.querySelectorAll('td'));
     const isBlankRow = cells.every(td => {
