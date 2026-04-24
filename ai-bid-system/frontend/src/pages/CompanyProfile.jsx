@@ -440,6 +440,9 @@ const CompanyProfile = () => {
                     <Form.Item label="身份证正面（人像面）" name="id_photo_front_url" className="col-span-2">
                       <Input type="hidden" />
                     </Form.Item>
+                    <Form.Item name="id_photo_back_url" className="hidden">
+                      <Input type="hidden" />
+                    </Form.Item>
                     <div className="col-span-2 flex gap-4 -mt-4 mb-2">
                       <div className="flex-1">
                         <Form.Item noStyle shouldUpdate={(prev, cur) => prev.id_photo_front_url !== cur.id_photo_front_url}>
