@@ -363,6 +363,7 @@ def normalize_header(text):
 def parse_filled_html_to_cells(html_string):
     """
     解析Dify返回的HTML表格，提取单元格文本内容为二维数组
+    支持 colspan 属性：colspan>1 的单元格会产生占位标记，确保逻辑列对齐
     
     Args:
         html_string: HTML表格字符串
@@ -388,6 +389,11 @@ def parse_filled_html_to_cells(html_string):
                 # 获取单元格文本，去除首尾空白
                 text = td.get_text(strip=True)
                 cells.append(text)
+                # 🐛 修复：处理 colspan，插入占位符保持逻辑列对齐
+                colspan = int(td.get('colspan', 1))
+                if colspan > 1:
+                    for _ in range(colspan - 1):
+                        cells.append('')  # 占位：合并单元格的后续列标记为空
             if cells:  # 只添加非空行
                 rows.append(cells)
         
@@ -453,33 +459,100 @@ def fill_dynamic_tables(doc, dynamic_tables):
                     header_row_idx = i
                     break
             
-            data_rows = rows_data[header_row_idx + 1:] if header_row_idx + 1 < len(rows_data) else []
-            print(f"   📋 识别到表头在第 {header_row_idx} 行，数据行数: {len(data_rows)}")
+            # 🐛 修复：单人简历表的表头行包含数据值（如"姓名|吴亦凡|性别|男"），
+            # 不能跳过；多人汇总表的表头行是纯标签，应跳过。
+            if fill_mode == 'single_person_detail':
+                # 单人简历表：包含所有行，从表头行开始填充到 Word 的表头行
+                data_rows = rows_data[header_row_idx:]
+                word_start_row = header_row_idx
+            else:
+                # 多人汇总表：跳过表头行，从数据行开始填充
+                data_rows = rows_data[header_row_idx + 1:] if header_row_idx + 1 < len(rows_data) else []
+                word_start_row = header_row_idx + 1
             
-            # 数据行从 Word 表格的表头下一行开始填充
-            # Word 表格中第 0~header_row_idx 行是标题/表头行（保持不变），数据从 header_row_idx+1 行开始
+            print(f"   📋 识别到表头在第 {header_row_idx} 行, fill_mode={fill_mode}, 数据行数: {len(data_rows)}, Word起始行: {word_start_row}")
+            
+            # 检测 Word 表格是否含合并单元格
+            has_merge = False
+            for row in table.rows:
+                for tc in row._element.findall(qn('w:tc')):
+                    if tc.find(qn('w:gridSpan')) is not None:
+                        has_merge = True
+                        break
+                    vm = tc.find(qn('w:vMerge'))
+                    if vm is not None:
+                        has_merge = True
+                        break
+                if has_merge:
+                    break
+            print(f"   📋 Word表格含合并单元格: {has_merge}")
+            
+            # 数据行填充循环
             for data_idx, row_cells in enumerate(data_rows):
-                row_idx = header_row_idx + data_idx + 1  # 跳过标题行和表头行
+                row_idx = word_start_row + data_idx
                 if row_idx >= len(table.rows):
                     print(f"   ⚠️ 数据行 {data_idx} (Word行 {row_idx}) 超出Word表格范围，跳过")
                     break
                 
                 target_row = table.rows[row_idx]
-                word_cells = target_row._element.findall(qn('w:tc'))
                 
-                filled_count = 0
-                for col_idx, cell_value in enumerate(row_cells):
-                    if col_idx >= len(word_cells):
-                        break
+                if has_merge:
+                    # 🐛 修复：处理合并单元格（gridSpan + vMerge）
+                    # 遍历 Word 行的 XML tc 元素，用逻辑列索引映射 HTML 数据
+                    word_tcs = target_row._element.findall(qn('w:tc'))
                     
-                    # 过滤[空白]标记和空字符串
-                    if cell_value and str(cell_value).strip() and str(cell_value).strip() != "[空白]":
-                        tc = word_cells[col_idx]
-                        set_cell_text(tc, str(cell_value))
-                        filled_count += 1
-                        print(f"      ✓ [{row_idx},{col_idx}] = '{cell_value}'")
+                    html_col = 0  # HTML 逻辑列索引
+                    filled_count = 0
+                    
+                    for tc_idx, tc in enumerate(word_tcs):
+                        # 跳过垂直合并续接单元格
+                        vMerge = tc.find(qn('w:vMerge'))
+                        if vMerge is not None:
+                            vm_val = vMerge.get(qn('w:val'))
+                            if vm_val != 'restart':
+                                # 纯续接单元格，跳过但需要推进 html_col
+                                # 续接单元格的 gridSpan 决定了它占据的列数
+                                gs = tc.find(qn('w:gridSpan'))
+                                span = int(gs.get(qn('w:val'))) if gs is not None else 1
+                                html_col += span
+                                continue
+                        
+                        gridSpan_elem = tc.find(qn('w:gridSpan'))
+                        grid_span = int(gridSpan_elem.get(qn('w:val'))) if gridSpan_elem is not None else 1
+                        
+                        # 一个 gridSpan=N 的 Word 单元格对应 HTML 中 N 个逻辑列
+                        cell_value = ''
+                        for offset in range(grid_span):
+                            col_pos = html_col + offset
+                            if col_pos < len(row_cells):
+                                val = str(row_cells[col_pos]).strip()
+                                if val and val != '[空白]':
+                                    cell_value = val
+                                    break
+                        
+                        html_col += grid_span
+                        
+                        if cell_value:
+                            set_cell_text(tc, cell_value)
+                            filled_count += 1
+                            print(f"      ✓ [{row_idx},{tc_idx}] (grid={grid_span}) = '{cell_value}'")
+                    
+                    print(f"   ✅ 表格 {table_id} 行 {row_idx}: 填充 {filled_count} 个有效单元格(合并模式)")
                 
-                print(f"   ✅ 表格 {table_id} 行 {row_idx}: 填充 {filled_count}/{len(row_cells)} 个单元格")
+                else:
+                    # 普通表格：简单 1:1 映射
+                    word_tcs = target_row._element.findall(qn('w:tc'))
+                    filled_count = 0
+                    for col_idx, cell_value in enumerate(row_cells):
+                        if col_idx >= len(word_tcs):
+                            break
+                        if cell_value and str(cell_value).strip() and str(cell_value).strip() != "[空白]":
+                            tc = word_tcs[col_idx]
+                            set_cell_text(tc, str(cell_value).strip())
+                            filled_count += 1
+                            print(f"      ✓ [{row_idx},{col_idx}] = '{cell_value}'")
+                    
+                    print(f"   ✅ 表格 {table_id} 行 {row_idx}: 填充 {filled_count}/{len(row_cells)} 个单元格")
             
             total_filled += len(data_rows)
             print(f"   ✅ 表格 {table_id} HTML填充完成: {len(data_rows)} 行数据")

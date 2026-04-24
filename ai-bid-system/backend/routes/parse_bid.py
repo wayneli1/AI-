@@ -60,10 +60,13 @@ async def parse_bid_docx(file: UploadFile = File(...)):
             
             headers = table_info["headers"]
             anchor = table_info["anchorContext"]
-            table_type = classify_table(anchor, headers)
+            # 🆕 收集所有单元格文本，用于合并单元格表格的分类
+            cell_texts = [cell["text"] for cell in table_info["cells"] if cell.get("text")]
+            table_type = classify_table(anchor, headers, cell_texts)
             type_label = get_table_type_label(anchor, headers)
-            print(f"📊 [后端] 表格 {idx}: type={table_type}, label={type_label}, rows={table_info['rowCount']}, anchor=\"{anchor[:40]}\"")
+            print(f"📊 [后端] 表格 {idx}: type={table_type}, label={type_label}, rows={table_info['rowCount']}, anchor=\"{anchor[:60]}\"")
             print(f"📊 [后端] 表格 {idx} headers: {headers}")
+            print(f"📊 [后端] 表格 {idx} cell_texts样本: {cell_texts[:10]}")
             print(f"📊 [后端] 表格 {idx} blankCells: {len(table_info['blankCells'])}")
 
             table_structure = TableStructure(

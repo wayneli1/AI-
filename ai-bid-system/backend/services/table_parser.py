@@ -294,22 +294,34 @@ def generate_table_html(table: Table) -> str:
 
 
 def get_anchor_context(doc: Document, table: Table) -> str:
+    """
+    获取表格的锚点上下文：向上收集最多5个非空段落
+    这样可以捕获距离表格稍远的标题（如"拟委任的本合同项目主要人员资历表"）
+    """
     try:
         table_element = table._element
         body = doc._element.body
         
+        contexts = []
         prev_element = table_element.getprevious()
-        while prev_element is not None:
+        
+        while prev_element is not None and len(contexts) < 5:
             tag = prev_element.tag.split("}")[-1]
             if tag == "p":
                 for para in doc.paragraphs:
                     if para._element == prev_element:
                         text = para.text.strip()
                         if text:
-                            return text
+                            contexts.append(text)
+                        break
+            elif tag == "tbl":
+                # 遇到另一个表格，停止向上查找
+                break
             prev_element = prev_element.getprevious()
         
-        return ""
+        # 反转顺序（最远的在前，最近的在后）
+        contexts.reverse()
+        return " ".join(contexts) if contexts else ""
     except Exception:
         return ""
 
