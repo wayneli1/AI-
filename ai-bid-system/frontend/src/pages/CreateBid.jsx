@@ -35,6 +35,26 @@ import {
 } from '../utils/createBidHelpers';
 import { appendPersonRowToTable, getEffectiveFillMode } from '../utils/tableHelpers';
 
+/**
+ * 从锚点上下文中提取简短的表格显示名称
+ * anchorContext 是表格上方多个段落拼接的文本（最近的段落在末尾）
+ * 用户只需要知道"这是什么表"，不需要看到签名区、盖章等说明文字
+ */
+const extractTableTitle = (anchorContext, tableId) => {
+  if (!anchorContext) return `表格 ${tableId + 1}`;
+
+  // 优先匹配以"表/情况/简历/清单/汇总/明细/说明"结尾的中文短语（通常是表名）
+  const titleMatch = anchorContext.match(/([\u4e00-\u9fa5A-Za-z0-9（）()]+(?:表|情况|简历|清单|汇总|明细|说明))\s*$/);
+  if (titleMatch) return titleMatch[1];
+
+  // 兜底：取最后一个短句（按句号/分号分割）
+  const lastSentence = anchorContext.split(/[。；]/).pop().trim();
+  if (lastSentence && lastSentence.length <= 30) return lastSentence;
+
+  // 最终兜底
+  return `表格 ${tableId + 1}`;
+};
+
 export default function CreateBid() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
@@ -1939,10 +1959,10 @@ if (images.length > 0) {
                     <div className="flex items-center justify-between">
                       <div>
                         <div className="text-sm font-bold text-gray-800">
-                          📋 {dt.anchorContext || `表格 ${dt.tableId + 1}`}
+                          📋 {extractTableTitle(dt.anchorContext, dt.tableId)}
                         </div>
                         <div className="text-[11px] text-gray-400 mt-0.5">
-                          表头: {dt.headers.join(' | ')} · 原始 {dt.rowCount} 行
+                          {dt.headers.length > 0 ? `${dt.headers.join(' · ')} · ` : ''}{dt.rowCount} 行待填
                         </div>
                       </div>
                       <Tag color={selectedNames.length > 0 ? 'green' : 'default'}>
