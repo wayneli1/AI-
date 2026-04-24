@@ -456,9 +456,10 @@ def fill_dynamic_tables(doc, dynamic_tables):
             data_rows = rows_data[header_row_idx + 1:] if header_row_idx + 1 < len(rows_data) else []
             print(f"   📋 识别到表头在第 {header_row_idx} 行，数据行数: {len(data_rows)}")
             
-            # 从表头行的下一行开始填充到 Word 表格的第 1 行（数据行）
+            # 数据行从 Word 表格的表头下一行开始填充
+            # Word 表格中第 0~header_row_idx 行是标题/表头行（保持不变），数据从 header_row_idx+1 行开始
             for data_idx, row_cells in enumerate(data_rows):
-                row_idx = data_idx + 1  # Word 表格第 0 行是表头，从第 1 行开始填数据
+                row_idx = header_row_idx + data_idx + 1  # 跳过标题行和表头行
                 if row_idx >= len(table.rows):
                     print(f"   ⚠️ 数据行 {data_idx} (Word行 {row_idx}) 超出Word表格范围，跳过")
                     break
