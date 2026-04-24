@@ -2221,7 +2221,13 @@ if (attachments) {
                                   let blankCells = [];
                                   if (fillMode === 'multi_person') {
                                     // 汇总表：只发送下一个要填充的行的空白单元格
-                                    const nextRowIndex = currentRows.length + 1;  // 下一行索引（跳过表头）
+                                    // 🐛 修复：从 blankCells 提取实际空行索引，替代 currentRows.length + 1
+                                    // 原因：表格含标题行/小标题行时，数据行不从 Row 1 开始
+                                    const blankRowIndices = [...new Set((dt.blankCells || []).map(bc => bc.row))].sort((a, b) => a - b);
+                                    const nextRowIndex = blankRowIndices[currentRows.length];
+                                    if (nextRowIndex === undefined) {
+                                      throw new Error('没有更多可填充的行');
+                                    }
                                     blankCells = (dt.blankCells || [])
                                       .filter(bc => bc.row === nextRowIndex)
                                       .map(bc => ({

@@ -384,7 +384,7 @@ def detect_first_row_type(table: Table) -> str:
     return "field_row"
 
 
-def detect_table_fill_mode(table: Table, headers: List[str], anchor_context: str) -> str:
+def detect_table_fill_mode(table: Table, headers: List[str], anchor_context: str, empty_row_count: int = None) -> str:
     """
     检测表格填充模式
     返回: "multi_person" (汇总表) 或 "single_person_detail" (单人简历表)
@@ -392,9 +392,13 @@ def detect_table_fill_mode(table: Table, headers: List[str], anchor_context: str
     判断规则：
     1. 汇总表：空白行 >= 3 且表头不含"项目/业绩/经验/工作经历"
     2. 单人简历表：表头含"项目/业绩/经验/工作经历"
+    
+    empty_row_count: 优先使用从 blankCells 推导的空行数（更精确），
+                     未传入时回退到 count_empty_rows（兼容旧调用方式）
     """
-    # 统计空白行
-    empty_row_count = count_empty_rows(table)
+    # 统计空白行：优先使用外部传入的精确值
+    if empty_row_count is None:
+        empty_row_count = count_empty_rows(table)
     
     # 检查表头和锚点文本中的关键词
     combined_text = ' '.join(headers) + ' ' + anchor_context
@@ -433,8 +437,10 @@ def parse_table(table: Table, table_index: int, doc: Document) -> Dict[str, Any]
         print(f"✅ [DEBUG] HTML 生成成功: {len(table_html)} 字符")
         
         print(f"🔍 [DEBUG] 检测填充模式...")
-        fill_mode = detect_table_fill_mode(table, headers, anchor_context)
-        empty_row_count = count_empty_rows(table)
+        # 🐛 修复：从 blankCells 推导空行数，而非扫描全空行
+        # 原因：表格内含标题行/小标题行/序号列时，count_empty_rows 会误判为 0
+        empty_row_count = len(set(bc["row"] for bc in blank_cells))
+        fill_mode = detect_table_fill_mode(table, headers, anchor_context, empty_row_count)
         print(f"✅ [DEBUG] 填充模式: {fill_mode}, 空白行: {empty_row_count}")
         
         print(f"🔍 [DEBUG] 检测第一行类型...")

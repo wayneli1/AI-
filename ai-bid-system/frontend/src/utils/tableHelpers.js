@@ -42,7 +42,8 @@ export const appendPersonRowToTable = (accumulatedHtml, newPersonHtml, personNam
     return accumulatedHtml;
   }
   
-  // 在累积表格中找到第一个全[空白]的行，替换它
+  // 在累积表格中找到第一个可填充的空行，替换它
+  // 🐛 修复：允许空行中存在序号（纯数字），不要求整行所有单元格都为空
   const accRows = Array.from(accTable.querySelectorAll('tr'));
   let inserted = false;
   
@@ -51,7 +52,9 @@ export const appendPersonRowToTable = (accumulatedHtml, newPersonHtml, personNam
     const cells = Array.from(row.querySelectorAll('td'));
     const isBlankRow = cells.every(td => {
       const text = td.textContent.trim();
-      return !text || text === '[空白]';
+      if (!text || text === '[空白]') return true;
+      // 允许序号列（纯数字），表格中有序号列时该行仍视为可填充的空行
+      return /^\d+$/.test(text);
     });
     
     if (isBlankRow) {
