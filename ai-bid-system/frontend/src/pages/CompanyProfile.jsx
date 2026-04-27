@@ -385,7 +385,7 @@ const CompanyProfile = () => {
                       <Input placeholder="如：1000万元人民币" />
                     </Form.Item>
                     <Form.Item label="公司性质" name="company_type">
-                      <Select placeholder="请选择" allowClear options={companyTypeOptions} />
+                      <Input placeholder="如：有限责任公司、股份有限公司" />
                     </Form.Item>
                     <Form.Item label="成立日期" name="establish_date">
                       <DatePicker className="w-full" placeholder="选择日期" />
