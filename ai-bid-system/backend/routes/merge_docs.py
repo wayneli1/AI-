@@ -716,8 +716,59 @@ def fill_dynamic_tables(doc, dynamic_tables):
 
         if images_to_append and table_id < len(doc.tables):
             table_element = doc.tables[table_id]._element
-            current = table_element
 
+            # ===== 占位符方案：搜索 [人员附件] 占位符 =====
+            # 从表格后方向后扫描，找到最近的 [人员附件] 占位符段落
+            # 找到则替换占位符为图片；未找到则回退到表格正后方（旧行为）
+            PLACEHOLDER = '[人员附件]'
+            body = table_element.getparent()
+            siblings = list(body)
+            table_idx_in_body = siblings.index(table_element)
+
+            insert_before_element = None  # 占位符段落，图片将插在它前面
+
+            for i in range(table_idx_in_body + 1, len(siblings)):
+                sibling = siblings[i]
+                tag = sibling.tag.split('}')[-1] if '}' in sibling.tag else sibling.tag
+
+                # 只扫描段落，遇到表格/分节符则停止
+                if tag == 'tbl' or tag == 'sectPr':
+                    break
+
+                if tag == 'p':
+                    para_text = "".join(t.text for t in sibling.iter(qn('w:t')) if t.text).strip()
+                    if PLACEHOLDER in para_text:
+                        insert_before_element = sibling
+                        print(f"   📎 表格 {table_id} 找到占位符 '{PLACEHOLDER}'，将在该位置插入图片")
+                        break
+
+            # ===== 图片类型 → 中文标签映射（只保留类型，不带人名） =====
+            def get_image_label(att_type):
+                type_labels = {
+                    'id_card_front': '身份证（正面）',
+                    'id_card_back': '身份证（反面）',
+                    'id_card': '身份证',
+                    'business_license': '营业执照',
+                    'qualification_certificate': '资质证书',
+                    'title_certificate': '职称证书',
+                    'certificate': '证书',
+                    'degree_certificate': '学历证书',
+                    'graduation_certificate': '毕业证书',
+                }
+                return type_labels.get(att_type, att_type or '附件') + '：'
+
+            # ===== 确定插入起点 =====
+            if insert_before_element is not None:
+                # 有占位符：图片插在占位符前面，最后删除占位符
+                current = insert_before_element
+                use_placeholder = True
+            else:
+                # 无占位符：回退到表格正后方（旧行为）
+                current = table_element
+                use_placeholder = False
+                print(f"   📎 表格 {table_id} 未找到占位符，回退到表格正后方插入")
+
+            # ===== 插入带标签的图片 =====
             for idx, (person_name, img_url, att_type) in enumerate(images_to_append):
                 if not img_url:
                     continue
@@ -726,9 +777,16 @@ def fill_dynamic_tables(doc, dynamic_tables):
                     resp.raise_for_status()
                     img_stream = io.BytesIO(resp.content)
 
-                    p_elem = OxmlElement('w:p')
-                    current.addnext(p_elem)
+                    # 1. 插入标签文字段落（图片上方）
+                    label_elem = OxmlElement('w:p')
+                    current.addprevious(label_elem)
 
+                    label_p = Paragraph(label_elem, doc._body)
+                    label_p.add_run(get_image_label(att_type))
+
+                    # 2. 插入图片段落
+                    p_elem = OxmlElement('w:p')
+                    label_elem.addnext(p_elem)
                     p = Paragraph(p_elem, doc._body)
                     run = p.add_run()
 
@@ -739,11 +797,17 @@ def fill_dynamic_tables(doc, dynamic_tables):
                         run.add_picture(img_stream, width=width)
 
                     current = p_elem
-                    label = f"{person_name} - " if person_name else ""
-                    print(f"   🖼️ 表格 {table_id} 追加图片 {label}{idx + 1}/{len(images_to_append)} [{att_type}] {width}×{height}: {img_url[:60]}")
+                    print(f"   🖼️ 表格 {table_id} 追加图片 {get_image_label(att_type)} [{att_type}] {width}×{height}: {img_url[:60]}")
 
                 except Exception as e:
                     print(f"   ⚠️ 下载图片失败 [{img_url[:60]}]: {e}")
+
+            # 删除占位符段落
+            if use_placeholder and insert_before_element is not None:
+                parent = insert_before_element.getparent()
+                if parent is not None:
+                    parent.remove(insert_before_element)
+                    print(f"   📎 表格 {table_id} 已删除占位符 '{PLACEHOLDER}'")
 
     return total_filled
 
