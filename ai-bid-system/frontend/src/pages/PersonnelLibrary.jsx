@@ -35,8 +35,8 @@ const DEGREE_OPTIONS = [
 const ATTACHMENT_SECTIONS = [
   { key: 'id_card_front', label: '身份证（正面）', accept: 'image/*', maxCount: 1 },
   { key: 'id_card_back', label: '身份证（反面）', accept: 'image/*', maxCount: 1 },
-  { key: 'degree_certificate', label: '学位证书', accept: 'image/*,.pdf', maxCount: 4 },
-  { key: 'qualification_certificate', label: '资质证书', accept: 'image/*,.pdf', maxCount: 4 },
+  { key: 'degree_certificate', label: '学位证书', accept: 'image/*,.pdf', maxCount: 10 },
+  { key: 'qualification_certificate', label: '资质证书', accept: 'image/*,.pdf', maxCount: 10 },
 ];
 
 const emptyAttachments = () => {
@@ -838,6 +838,7 @@ export default function PersonnelLibrary() {
     listType: 'picture-card',
     fileList: attachmentUrls[section.key],
     accept: section.accept,
+    multiple: section.maxCount > 1,
     maxCount: section.maxCount,
     beforeUpload: () => false,
     onChange: ({ fileList }) => {
@@ -1363,7 +1364,12 @@ export default function PersonnelLibrary() {
             <div className="space-y-5">
               {ATTACHMENT_SECTIONS.map(section => (
                 <div key={section.key}>
-                  <div className="text-sm font-medium text-gray-600 mb-2">{section.label}</div>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-sm font-medium text-gray-600">{section.label}</span>
+                    {section.maxCount > 1 && (
+                      <span className="text-xs text-gray-400">（可按住Ctrl多选，最多{section.maxCount}份）</span>
+                    )}
+                  </div>
                   <Upload {...makeUploadProps(section)}>
                     {attachmentUrls[section.key].length >= section.maxCount ? null : (
                       <div className="w-[104px] h-[104px] rounded-lg border-2 border-dashed border-gray-200 hover:border-indigo-300 hover:bg-indigo-50/30 transition-all flex flex-col items-center justify-center cursor-pointer">
