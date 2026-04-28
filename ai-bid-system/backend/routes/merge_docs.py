@@ -755,7 +755,7 @@ def fill_dynamic_tables(doc, dynamic_tables):
                     'degree_certificate': '学历证书',
                     'graduation_certificate': '毕业证书',
                 }
-                return type_labels.get(att_type, att_type or '附件') + '：'
+                return type_labels.get(att_type, att_type or '附件')
 
             # ===== 确定插入起点 =====
             if insert_before_element is not None:
@@ -779,12 +779,12 @@ def fill_dynamic_tables(doc, dynamic_tables):
 
                     # 1. 插入标签文字段落（图片上方）
                     label_elem = OxmlElement('w:p')
-                    current.addprevious(label_elem)
+                    current.addnext(label_elem)
 
                     label_p = Paragraph(label_elem, doc._body)
                     label_p.add_run(get_image_label(att_type))
 
-                    # 2. 插入图片段落
+                    # 2. 插入图片段落（紧跟标签下方）
                     p_elem = OxmlElement('w:p')
                     label_elem.addnext(p_elem)
                     p = Paragraph(p_elem, doc._body)
