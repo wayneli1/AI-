@@ -3,6 +3,7 @@ import { Button, Table, message, Drawer, Form, Input, Select, DatePicker, Upload
 import { PlusOutlined, EditOutlined, DeleteOutlined, UploadOutlined, UserOutlined, ProjectOutlined, PaperClipOutlined, MinusCircleOutlined, SearchOutlined, DownloadOutlined, FileExcelOutlined, ExclamationCircleOutlined, CheckCircleOutlined } from '@ant-design/icons';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { extractIDCardBack } from '../utils/ocr';
 import dayjs from 'dayjs';
 import * as XLSX from 'xlsx';
 
@@ -92,6 +93,24 @@ const calcAge = (birthDate) => calcYearsDiff(birthDate);
 const calcCompanyWorkYears = (workStartDate) => calcYearsDiff(workStartDate);
 const calcTotalWorkYears = (graduationDate) => calcYearsDiff(graduationDate);
 
+/**
+ * 身份证有效期状态判断
+ * @returns {{ label: string, color: string, daysLeft: number|null }}
+ */
+const getIdCardExpiryStatus = (validEnd, isPermanent) => {
+  if (isPermanent) return { label: '长期', color: 'blue', daysLeft: null };
+  if (!validEnd) return { label: '未录入', color: 'default', daysLeft: null };
+
+  const end = dayjs(validEnd);
+  const now = dayjs();
+  const daysLeft = end.diff(now, 'day');
+
+  if (daysLeft < 0) return { label: '已过期', color: 'red', daysLeft };
+  if (daysLeft <= 30) return { label: '即将过期', color: 'red', daysLeft };
+  if (daysLeft <= 90) return { label: '临近过期', color: 'orange', daysLeft };
+  return { label: '有效', color: 'green', daysLeft };
+};
+
 export default function PersonnelLibrary() {
   const { user } = useAuth();
   const [personnel, setPersonnel] = useState([]);
@@ -104,6 +123,8 @@ export default function PersonnelLibrary() {
   const [searchText, setSearchText] = useState('');
   const [form] = Form.useForm();
   const [attachmentUrls, setAttachmentUrls] = useState(emptyAttachments());
+  const [idCardOcrLoading, setIdCardOcrLoading] = useState(false);
+  const [idCardValidity, setIdCardValidity] = useState({ valid_start: null, valid_end: null, is_permanent: false });
 
   // Excel 导入相关状态
   const [importModalVisible, setImportModalVisible] = useState(false);
@@ -445,6 +466,9 @@ export default function PersonnelLibrary() {
           work_start_date: row.work_start_date || null,
           graduation_date: row.graduation_date || null,
           custom_fields: { job_positions: row._jobPositions || [] },
+          id_card_valid_start: null,
+          id_card_valid_end: null,
+          id_card_is_permanent: false,
         };
 
         const { error } = await supabase
@@ -496,12 +520,20 @@ export default function PersonnelLibrary() {
       }]
     });
     setAttachmentUrls(emptyAttachments());
+    setIdCardValidity({ valid_start: null, valid_end: null, is_permanent: false });
     setDrawerVisible(true);
   };
 
   const handleEdit = async (record) => {
     setEditingRecord(record);
     const cf = record.custom_fields || {};
+    
+    // 加载身份证有效期
+    setIdCardValidity({
+      valid_start: record.id_card_valid_start || null,
+      valid_end: record.id_card_valid_end || null,
+      is_permanent: record.id_card_is_permanent || false,
+    });
     
     // 兼容新旧数据格式
     let jobPositions = [];
@@ -684,6 +716,10 @@ export default function PersonnelLibrary() {
         assigned_role: values.assigned_role || null,
         certificate_summary: values.certificate_summary || null,
         custom_fields: { job_positions: jobPositions },
+        // 身份证有效期
+        id_card_valid_start: idCardValidity.valid_start || null,
+        id_card_valid_end: idCardValidity.valid_end || null,
+        id_card_is_permanent: idCardValidity.is_permanent || false,
       };
 
       let profileId;
@@ -774,6 +810,30 @@ export default function PersonnelLibrary() {
     }));
   };
 
+  /** 身份证反面上传后自动 OCR 识别有效期 */
+  const handleIDCardBackOCR = async (file) => {
+    if (!file || !file.originFileObj) return;
+    setIdCardOcrLoading(true);
+    try {
+      const result = await extractIDCardBack(file.originFileObj);
+      if (result.valid_start || result.valid_end || result.is_permanent) {
+        setIdCardValidity({
+          valid_start: result.valid_start,
+          valid_end: result.valid_end,
+          is_permanent: result.is_permanent,
+        });
+        message.success(`身份证有效期识别成功：${result.is_permanent ? '长期有效' : `${result.valid_start || '?'} 至 ${result.valid_end || '?'}`}`);
+      } else {
+        message.warning('未能识别到身份证有效期，请手动填写');
+      }
+    } catch (err) {
+      console.error('身份证OCR识别失败:', err);
+      message.warning(`身份证识别失败：${err.message}，请手动填写有效期`);
+    } finally {
+      setIdCardOcrLoading(false);
+    }
+  };
+
   const makeUploadProps = (section) => ({
     listType: 'picture-card',
     fileList: attachmentUrls[section.key],
@@ -782,6 +842,13 @@ export default function PersonnelLibrary() {
     beforeUpload: () => false,
     onChange: ({ fileList }) => {
       setAttachmentUrls(prev => ({ ...prev, [section.key]: fileList }));
+      // 身份证反面上传后自动触发 OCR（仅在新文件添加且状态非 done 时触发，避免重复调用）
+      if (section.key === 'id_card_back' && fileList.length > 0) {
+        const latestFile = fileList[fileList.length - 1];
+        if (latestFile.originFileObj && latestFile.status !== 'done' && latestFile.status !== 'removed') {
+          handleIDCardBackOCR(latestFile);
+        }
+      }
     },
     onRemove: (file) => handleRemoveAttachment(file, section.key),
     customRequest: async ({ file, onSuccess, onError }) => {
@@ -967,6 +1034,30 @@ export default function PersonnelLibrary() {
       },
     },
     {
+      title: '身份证有效期',
+      key: 'id_card_validity',
+      width: 140,
+      render: (_, r) => {
+        if (r.id_card_is_permanent) {
+          return <Tag color="blue">长期有效</Tag>;
+        }
+        if (!r.id_card_valid_end && !r.id_card_valid_start) {
+          return <span className="text-gray-300 text-xs">未录入</span>;
+        }
+        const status = getIdCardExpiryStatus(r.id_card_valid_end, r.id_card_is_permanent);
+        const endStr = r.id_card_valid_end ? r.id_card_valid_end.slice(0, 10) : '?';
+        return (
+          <div className="flex flex-col gap-0.5">
+            <span className="text-xs text-gray-600">{endStr}</span>
+            <Tag color={status.color} className="!text-xs !px-1.5 !py-0 !m-0 inline-block" style={{ width: 'fit-content' }}>
+              {status.label}{status.daysLeft !== null && status.daysLeft >= 0 ? ` ${status.daysLeft}天` : ''}
+              {status.daysLeft !== null && status.daysLeft < 0 ? ` ${Math.abs(status.daysLeft)}天` : ''}
+            </Tag>
+          </div>
+        );
+      },
+    },
+    {
       title: '操作',
       key: 'action',
       width: 120,
@@ -1047,7 +1138,7 @@ export default function PersonnelLibrary() {
             selectedRowKeys,
             onChange: setSelectedRowKeys,
           }}
-          scroll={{ x: 1280 }}
+          scroll={{ x: 1420 }}
           className="[&_.ant-table-thead>tr>th]:bg-gray-50/80 [&_.ant-table-thead>tr>th]:font-semibold [&_.ant-table-thead>tr>th]:text-xs"
           locale={{ emptyText: (
             <div className="py-8 text-center">
@@ -1283,6 +1374,83 @@ export default function PersonnelLibrary() {
                   </Upload>
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* 区块 D：身份证有效期（上传反面后自动识别，也可手动填写） */}
+          <div className="mb-2">
+            <div className="flex items-center gap-2 mb-4 mt-2">
+              <div className="w-1 h-4 bg-rose-500 rounded-full" />
+              <span className="font-bold text-sm text-gray-700">身份证有效期</span>
+              {idCardOcrLoading && (
+                <span className="text-xs text-blue-500 animate-pulse">正在识别中...</span>
+              )}
+            </div>
+
+            <div className="bg-gradient-to-r from-rose-50/50 to-orange-50/30 rounded-xl p-4 border border-rose-100">
+              <div className="flex items-center gap-4 mb-3">
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={idCardValidity.is_permanent}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setIdCardValidity(prev => ({
+                        ...prev,
+                        is_permanent: checked,
+                        valid_end: checked ? '9999-12-31' : null,
+                      }));
+                    }}
+                    className="w-4 h-4 rounded border-gray-300 text-rose-500 focus:ring-rose-400"
+                  />
+                  <span className="text-sm text-gray-700">长期有效</span>
+                </label>
+                <span className="text-xs text-gray-400">上传身份证反面后自动识别，也可手动填写</span>
+              </div>
+
+              <div className="flex items-center gap-3">
+                <div className="flex-1">
+                  <label className="block text-xs text-gray-500 mb-1">有效起始日期</label>
+                  <DatePicker
+                    className="w-full"
+                    placeholder="如：2020-01-15"
+                    value={idCardValidity.valid_start ? dayjs(idCardValidity.valid_start) : null}
+                    onChange={(date) => {
+                      setIdCardValidity(prev => ({
+                        ...prev,
+                        valid_start: date ? date.format('YYYY-MM-DD') : null,
+                      }));
+                    }}
+                  />
+                </div>
+                <span className="text-gray-300 mt-5">—</span>
+                <div className="flex-1">
+                  <label className="block text-xs text-gray-500 mb-1">有效截止日期</label>
+                  <DatePicker
+                    className="w-full"
+                    placeholder={idCardValidity.is_permanent ? '长期有效' : '如：2040-01-15'}
+                    value={idCardValidity.valid_end && !idCardValidity.is_permanent ? dayjs(idCardValidity.valid_end) : null}
+                    disabled={idCardValidity.is_permanent}
+                    onChange={(date) => {
+                      setIdCardValidity(prev => ({
+                        ...prev,
+                        valid_end: date ? date.format('YYYY-MM-DD') : null,
+                      }));
+                    }}
+                  />
+                </div>
+                {idCardValidity.valid_end && !idCardValidity.is_permanent && (() => {
+                  const status = getIdCardExpiryStatus(idCardValidity.valid_end, false);
+                  return (
+                    <Tag color={status.color} className="!mt-5">
+                      {status.label}{status.daysLeft !== null ? ` (${status.daysLeft > 0 ? status.daysLeft + '天' : '已超期' + Math.abs(status.daysLeft) + '天'})` : ''}
+                    </Tag>
+                  );
+                })()}
+                {idCardValidity.is_permanent && (
+                  <Tag color="blue" className="!mt-5">长期有效</Tag>
+                )}
+              </div>
             </div>
           </div>
         </Form>
