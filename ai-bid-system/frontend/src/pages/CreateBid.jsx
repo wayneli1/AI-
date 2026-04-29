@@ -2314,7 +2314,8 @@ if (images.length > 0) {
                         <span className="text-xs font-medium text-gray-600 shrink-0 pt-1">选择人员:</span>
                         <div className="flex-1">
                           <Select
-                            placeholder="选择人员后，再选择职位..."
+                            showSearch
+                            placeholder="输入姓名搜索或下拉选择..."
                             style={{ width: '100%' }}
                             value={tempPersonSelection[dt.tableId] || undefined}
                             onChange={(personName) => {
@@ -2324,6 +2325,9 @@ if (images.length > 0) {
                               .filter(p => !isPersonSelected(dt.tableId, p.name))
                               .map(p => ({ value: p.name, label: p.name }))}
                             disabled={personnelProfiles.every(p => isPersonSelected(dt.tableId, p.name))}
+                            filterOption={(input, option) =>
+                              (option?.label || '').toLowerCase().includes(input.toLowerCase())
+                            }
                           />
                         </div>
                       </div>
