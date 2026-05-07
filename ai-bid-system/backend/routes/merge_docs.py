@@ -708,7 +708,7 @@ def fill_dynamic_tables(doc, dynamic_tables):
             if att_type == 'business_license':
                 return (Cm(9.55), Cm(9.55))
             if att_type in ('qualification_certificate', 'title_certificate', 'certificate'):
-                return (Cm(14.63), Cm(20.66))
+                return (Cm(14), Cm(11))
             if att_type in ('degree_certificate', 'graduation_certificate'):
                 return (Cm(14.63), Cm(10.14))
             # 兜底：只设宽度，高度自适应
